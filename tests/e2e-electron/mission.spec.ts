@@ -34,6 +34,17 @@ test('sample mission end to end, with daemon crash and app restart recovery', as
     await expect(page.getByTestId('outcome')).toContainText('Verified: tests passed');
     await expect(page.getByTestId('check-row').first()).toHaveAttribute('data-result', 'pass');
 
+    // Timeline integrity: each event appears once, and every filter shows exactly what its chip counts.
+    await page.getByRole('tab', { name: /Activity/ }).click();
+    const seqs = await page.locator('[data-testid="timeline"] [data-seq]').evaluateAll((els) => els.map((e) => e.getAttribute('data-seq')));
+    expect(new Set(seqs).size).toBe(seqs.length);
+    for (const name of ['Agent', 'Commands', 'Policy & approvals', 'Checks', 'All']) {
+      const chip = page.locator('.lv-chip', { hasText: name }).first();
+      await chip.click();
+      const count = Number(await chip.locator('span').innerText());
+      await expect(page.locator('[data-testid="timeline"] [data-seq]')).toHaveCount(count);
+    }
+
     await page.getByRole('tab', { name: /Changes/ }).click();
     await expect(page.getByTestId('changes')).toContainText('.toLowerCase()');
     await page.screenshot({ path: path.resolve(here, '../../test-results/e2e-electron/mission-changes.png') });
@@ -82,8 +93,43 @@ test('approval card states who, what, where and scope; approve once continues th
     await expect(card).toContainText('src/slugify.js', { timeout: 30_000 });
     await expect(card).toContainText('Coder agent');
     await expect(card).toContainText('This command, once');
+    // The pending decision is visible everywhere, not only on the mission screen.
+    await expect(page.getByTestId('awaiting-count')).toHaveText('1 awaiting you');
+    await expect(page.getByTestId('needs-you-chip')).toContainText('1 needs you');
+    expect(await page.title()).toMatch(/^\(1\) /);
     await card.getByTestId('approve').click();
+    await expect(page.getByTestId('awaiting-count')).toHaveText('0 awaiting you');
     await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'completed', { timeout: 60_000 });
     await expect(page.getByTestId('outcome')).toContainText('Verified');
+  } finally { await app.close(); }
+});
+
+test('command palette navigates to missions and screens from the keyboard', async () => {
+  const repo = sampleRepo();
+  const { app, page } = await launch({ openDir: repo });
+  try {
+    await page.getByRole('button', { name: 'Open repository' }).first().click();
+    await page.getByRole('button', { name: 'New mission' }).first().click();
+    await page.getByTestId('mission-title').fill('Palette target mission');
+    await page.getByTestId('mission-goal').fill('Fix slugify.');
+    await page.getByTestId('plan-mission').click();
+    await expect(page.getByTestId('plan')).toBeVisible();
+
+    await page.keyboard.press('Control+k');
+    await expect(page.getByTestId('palette')).toBeVisible();
+    await page.keyboard.type('settings');
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('settings')).toBeVisible();
+
+    await page.getByTestId('open-palette').click();
+    await page.keyboard.type('palette target');
+    await page.keyboard.press('Enter');
+    await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'awaiting_approval');
+
+    await page.keyboard.press('Control+k');
+    await page.keyboard.type('zzzz-no-such-thing');
+    await expect(page.getByTestId('palette')).toContainText('Nothing matches');
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('palette')).toHaveCount(0);
   } finally { await app.close(); }
 });

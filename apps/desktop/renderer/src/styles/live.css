@@ -108,3 +108,27 @@
 .lv-preview-banner button { -webkit-app-region: no-drag; }
 .lv-preview-body { flex: 1 1 auto; min-height: 0; position: relative; }
 .lv-nobridge { padding: var(--space-48); display: flex; flex-direction: column; gap: var(--space-12); align-items: flex-start; height: 100%; box-sizing: border-box; }
+
+/* Title bar search, needs-you chip, palette entry points */
+.lv-tb-search { flex: 0 1 360px; margin-left: var(--space-8); }
+.lv-needs-chip { -webkit-app-region: no-drag; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; margin-right: var(--space-8); border: 0; border-radius: var(--radius-xs); background: var(--warning-wash); color: var(--warning); font: inherit; font-size: 12px; font-weight: 500; cursor: pointer; }
+.lv-needs-chip:hover { box-shadow: inset 0 0 0 1px var(--warning); }
+.lv-badge-warn { background: var(--warning); color: var(--on-accent); }
+[data-runtime="desktop"]:not([data-platform="darwin"]) .lv-app .at-titlebar { padding-right: 148px; }
+
+/* Timeline filters and collapsible details */
+.lv-tl-wrap { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.lv-tl-filters { flex: none; display: flex; gap: 6px; padding: 10px var(--space-20) 2px; flex-wrap: wrap; }
+.lv-chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 0; border-radius: var(--radius-xs); background: none; box-shadow: inset 0 0 0 1px var(--line-hair); color: var(--ink-muted); font: inherit; font-size: 12px; cursor: pointer; transition: background var(--dur-1, 160ms), color var(--dur-1, 160ms); }
+.lv-chip span { color: var(--ink-subtle); font-size: 10.5px; }
+.lv-chip:hover { background: var(--bg-surface); color: var(--ink); }
+.lv-chip[aria-pressed="true"] { background: var(--accent-wash); color: var(--accent-hi); box-shadow: inset 0 0 0 1px var(--accent-line); }
+.lv-chip[aria-pressed="true"] span { color: var(--accent-hi); }
+.lv-chip:focus-visible, .lv-more:focus-visible, .lv-needs-chip:focus-visible { outline: 1px solid var(--accent-hi); outline-offset: 1px; }
+.lv-more { display: block; margin-top: 4px; padding: 0; border: 0; background: none; color: var(--accent-hi); font: inherit; font-size: 12px; cursor: pointer; }
+.lv-more:hover { text-decoration: underline; }
+
+/* Preview banner uses the interface type even outside .at-root */
+.lv-preview-banner { font-family: var(--font-sans); }
+/* A closing overlay never intercepts input meant for what is underneath. */
+.at-scrim[data-closing="true"], .at-palette[data-closing="true"] { pointer-events: none; }

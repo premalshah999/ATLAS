@@ -17,6 +17,9 @@ interface LiveState {
   missions: MissionListItem[];
   /** Bumped on every daemon event so subscribed views can refetch. */
   tick: number;
+  palette: boolean;
+  /** Incremented on every opening so the palette starts each session empty. */
+  paletteSession: number;
 }
 
 let state: LiveState = {
@@ -25,6 +28,8 @@ let state: LiveState = {
   workspaces: [],
   missions: [],
   tick: 0,
+  palette: false,
+  paletteSession: 0,
 };
 const listeners = new Set<() => void>();
 const eventListeners = new Set<(e: AtlasEvent) => void>();
@@ -35,7 +40,7 @@ export function set(patch: Partial<LiveState>) {
   listeners.forEach((l) => l());
 }
 export const get = () => state;
-export const go = (route: Route) => set({ route });
+export const go = (route: Route) => set({ route, palette: false });
 
 export function useLive<T>(sel: (s: LiveState) => T): T {
   return useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => sel(state), () => sel(state));

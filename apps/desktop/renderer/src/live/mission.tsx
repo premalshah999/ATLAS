@@ -137,24 +137,60 @@ function PlanReview({ snap, busy, onApprove }: { snap: NonNullable<ReturnType<ty
   );
 }
 
+type Filter = 'all' | 'agent' | 'commands' | 'policy' | 'checks';
+const FILTERS: { id: Filter; label: string; match: (e: AtlasEvent) => boolean }[] = [
+  { id: 'all', label: 'All', match: () => true },
+  { id: 'agent', label: 'Agent', match: (e) => e.type.startsWith('agent.') },
+  { id: 'commands', label: 'Commands', match: (e) => e.type.startsWith('process.') },
+  { id: 'policy', label: 'Policy & approvals', match: (e) => e.type.startsWith('policy.') || e.type.startsWith('approval.') },
+  { id: 'checks', label: 'Checks', match: (e) => e.type === 'check.result' || e.type === 'gate.result' || e.type === 'workspace.worktree' },
+];
+
 function ActivityTimeline({ events }: { events: AtlasEvent[] }) {
-  const rows = useMemo(() => events.map((e) => ({ e, r: describeEvent(e) })).filter((x): x is { e: AtlasEvent; r: Row } => !!x.r), [events]);
+  const [filter, setFilter] = useState<Filter>('all');
+  const all = useMemo(() => events.map((e) => ({ e, r: describeEvent(e) })).filter((x): x is { e: AtlasEvent; r: Row } => !!x.r), [events]);
+  const counts = useMemo(() => Object.fromEntries(FILTERS.map((f) => [f.id, all.filter((x) => f.match(x.e)).length])) as Record<Filter, number>, [all]);
+  const rows = useMemo(() => all.filter((x) => FILTERS.find((f) => f.id === filter)!.match(x.e)), [all, filter]);
   const ref = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
   useEffect(() => { const el = ref.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [rows.length]);
   return (
-    <div className="lv-timeline" ref={ref} data-testid="timeline" onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>
-      <div className="lv-trust at-subtle lv-small">Decision summaries and tool traces — not private model reasoning. Agent summaries are claims; evidence comes from checks.</div>
-      {rows.map(({ e, r }) => (
-        <div key={e.seq} className={cx('lv-ev', `lv-ev--${r.tone}`)} data-type={e.type}>
-          <span className="lv-ev-time at-mono at-tnum">{time(e.ts)}</span>
-          <RoleMark mark={markOf(e)} size="sm" human={e.actor.kind === 'operator'} />
-          <div className="lv-ev-main">
-            <div className="lv-ev-title"><span className="lv-ev-text">{r.title}</span>{r.meta && <span className="lv-ev-meta at-mono">{r.meta}</span>}</div>
-            {r.detail && <div className="lv-ev-detail">{r.detail}</div>}
+    <div className="lv-tl-wrap">
+      <div className="lv-tl-filters" role="toolbar" aria-label="Filter activity">
+        {FILTERS.map((f) => (
+          <button key={f.id} type="button" className="lv-chip" aria-pressed={filter === f.id} onClick={() => { setFilter(f.id); stick.current = true; }}>
+            {f.label}<span className="at-mono">{counts[f.id]}</span>
+          </button>
+        ))}
+      </div>
+      <div className="lv-timeline" ref={ref} data-testid="timeline" onScroll={(e) => { const el = e.currentTarget; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40; }}>
+        <div className="lv-trust at-subtle lv-small">Decision summaries and tool traces — not private model reasoning. Agent summaries are claims; evidence comes from checks.</div>
+        {rows.length === 0 && <div className="at-subtle lv-small" style={{ padding: '8px 20px' }}>No events in this view yet.</div>}
+        {rows.map(({ e, r }) => (
+          <div key={e.seq} className={cx("lv-ev", `lv-ev--${r.tone}`)} data-type={e.type} data-seq={e.seq}>
+            <span className="lv-ev-time at-mono at-tnum">{time(e.ts)}</span>
+            <RoleMark mark={markOf(e)} size="sm" human={e.actor.kind === 'operator'} />
+            <div className="lv-ev-main">
+              <div className="lv-ev-title"><span className="lv-ev-text">{r.title}</span>{r.meta && <span className="lv-ev-meta at-mono">{r.meta}</span>}</div>
+              {r.detail && <Detail text={r.detail} />}
+            </div>
           </div>
-        </div>
-      ))}
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Long details (stack traces, test output) collapse to a few lines with an explicit expander. */
+function Detail({ text }: { text: string }) {
+  const lines = text.split('\n');
+  const [open, setOpen] = useState(false);
+  const LIMIT = 4;
+  if (lines.length <= LIMIT + 1) return <div className="lv-ev-detail">{text}</div>;
+  return (
+    <div className="lv-ev-detail">
+      {open ? text : lines.slice(0, LIMIT).join('\n')}
+      <button type="button" className="lv-more" onClick={() => setOpen(!open)} aria-expanded={open}>{open ? 'Show less' : `Show ${lines.length - LIMIT} more lines`}</button>
     </div>
   );
 }

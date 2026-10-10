@@ -19,7 +19,8 @@
     "package": "pnpm --filter @atlas/desktop package",
     "doctor": "node scripts/doctor.mjs",
     "pi:version": "node scripts/pi-version.mjs",
-    "seed:sample": "node scripts/seed-sample.mjs"
+    "seed:sample": "node scripts/seed-sample.mjs",
+    "screenshots": "pnpm build && playwright test -c tests/e2e-electron/screenshots.config.ts"
   },
   "devDependencies": {
     "@atlas/contracts": "workspace:*",

@@ -19,14 +19,23 @@ export function useMission(missionId: string) {
     } catch (e) { setError((e as Error).message); }
   }, [missionId]);
 
+  // Merge strictly by sequence: concurrent catch-ups and live pushes may overlap, but each seq is kept once.
+  const merge = useCallback((incoming: AtlasEvent[]) => {
+    setEvents((prev) => {
+      const last = prev.length ? prev[prev.length - 1].seq : 0;
+      const fresh = incoming.filter((e) => e.seq > last).sort((a, b) => a.seq - b.seq);
+      const out = prev.slice();
+      for (const e of fresh) if (e.seq === (out.length ? out[out.length - 1].seq : 0) + 1) out.push(e);
+      lastSeq.current = out.length ? out[out.length - 1].seq : 0;
+      return out.length === prev.length ? prev : out;
+    });
+  }, []);
+
   // Catch up from the last sequence we saw: no gaps, no duplicates.
   const catchUp = useCallback(async () => {
     const more = await call('events.since', { missionId, afterSeq: lastSeq.current });
-    if (more.length) {
-      lastSeq.current = more[more.length - 1].seq;
-      setEvents((prev) => [...prev, ...more]);
-    }
-  }, [missionId]);
+    if (more.length) merge(more);
+  }, [missionId, merge]);
 
   useEffect(() => {
     lastSeq.current = 0;
@@ -40,11 +49,11 @@ export function useMission(missionId: string) {
     let t: number | undefined;
     return onEvent((e) => {
       if (e.missionId !== missionId) return;
-      if (e.seq === lastSeq.current + 1) { lastSeq.current = e.seq; setEvents((prev) => [...prev, e]); }
-      else if (e.seq > lastSeq.current) void catchUp().catch(() => {});
+      if (e.seq === lastSeq.current + 1) merge([e]);
+      else if (e.seq > lastSeq.current + 1) void catchUp().catch(() => {});
       if (e.type !== 'process.output') { window.clearTimeout(t); t = window.setTimeout(() => void reload(), 120); }
     });
-  }, [missionId, reload, catchUp]);
+  }, [missionId, reload, catchUp, merge]);
 
   // After a daemon restart, resync both views.
   useEffect(() => { if (status === 'ready') { void reload(); void catchUp().catch(() => {}); } }, [status, reload, catchUp]);

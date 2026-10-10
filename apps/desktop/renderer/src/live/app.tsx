@@ -11,6 +11,8 @@ import { NewMission } from './newMission';
 import { MissionView } from './mission';
 import { Settings } from './settings';
 import { bridge } from './api';
+import { LivePalette, togglePalette } from './palette';
+import { useAttentionTitle } from './attention';
 
 function Keys() {
   useEffect(() => {
@@ -18,6 +20,7 @@ function Keys() {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
       const k = e.key.toLowerCase();
+      if (k === 'k') { e.preventDefault(); togglePalette(); return; }
       if (k === 'o') { e.preventDefault(); void openRepository(); }
       else if (k === '1') { e.preventDefault(); go({ screen: 'projects' }); }
       else if (k === 'n') { e.preventDefault(); go({ screen: 'new' }); }
@@ -31,6 +34,7 @@ function Keys() {
 
 export function LiveApp() {
   useEffect(() => { connect(); }, []);
+  useAttentionTitle();
   const route = useLive((s) => s.route);
   const [preview] = useState(() => createStore({ screen: 'mission' }));
   if (!bridge) {
@@ -67,6 +71,7 @@ export function LiveApp() {
         </div>
         <LiveStatusBar />
       </div>
+      <LivePalette />
       <Toasts />
     </div>
   );

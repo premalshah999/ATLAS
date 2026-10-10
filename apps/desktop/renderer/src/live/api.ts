@@ -30,7 +30,7 @@ export interface MissionSnapshot {
 }
 
 export type Preflight = { level: 'block' | 'warn' | 'info'; message: string }[];
-export type MissionListItem = Mission & { tasks: { key: string; state: string }[] };
+export type MissionListItem = Mission & { tasks: { key: string; state: string }[]; pendingApprovals: number };
 export type Credentials = { available: boolean; providers: { provider: string; stored: boolean; fromEnvironment: boolean; env: string }[] };
 export type AppInfo = { version: string; schema: number; pi: { package: string; version: string; gitHead: string; license: string; repository: string }; platform: string; node: string; electron: string; chrome: string; daemon: DaemonStatus; credentialStore: boolean };
 

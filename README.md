@@ -6,6 +6,70 @@ Local-first mission control for autonomous software engineering. You open a repo
 
 This is **v0.1, milestones M0 + M1** of the [implementation manual](docs/spec/manual.md). See [what works and what doesn't yet](docs/spec/status.md).
 
+![Mission Control waiting on a single-use approval](docs/screenshots/05-approval.png)
+
+## Product tour
+
+Every screenshot below was captured from the built Electron app running a real mission on the bundled sample project (`pnpm screenshots` regenerates them). The agent is the scripted runtime; the git worktree, commands, test runs, approvals and evidence are real.
+
+### Projects
+Open any local folder with **Open repository** (⌘O). Each project card shows the real branch, HEAD, uncommitted-change count and its missions with their outcome. An empty state explains what ATLAS will and won't touch.
+
+| Empty | With a project |
+| --- | --- |
+| ![Projects, empty](docs/screenshots/01-projects-empty.png) | ![Projects](docs/screenshots/02-projects.png) |
+
+### Mission composer with preflight
+Choose the repository, describe the outcome, add constraints, then pick an **approval mode** (ask for risky actions · ask for every write · read-only) and a **runtime** (scripted, or Pi when a provider key is set). **Preflight** runs live as you change options and blocks on real problems: not a git repo, no commits, runtime unavailable. It warns about uncommitted changes, missing tests and the absence of a deploy target.
+
+![New mission](docs/screenshots/03-new-mission.png)
+
+### Plan review before anything runs
+The validated plan lists each task, its acceptance criteria, the exact tools it may request, what will ask you first, and how ATLAS will verify the result. Nothing executes until you approve it.
+
+![Plan review](docs/screenshots/04-plan-review.png)
+
+### Live execution and approvals
+- **Needs you**: each approval card states *who* (agent role), *what* (the exact path or command), *where* (worktree), *what it touches*, *for how long* (once) and *why it was asked*, with a live expiry countdown. Approve once or deny.
+- Pending decisions surface everywhere: a **"needs you" chip** in the title bar, an amber rail badge, the **status bar count**, the **window title** (`(1) … — ATLAS`), and a toast if you're on another screen.
+- **Process output** streams the real stdout/stderr of each command, with exit codes and durations.
+- **Tasks** shows state and attempt number, with a per-task **Stop** and a mission-level **Cancel** that kills the whole process tree.
+
+### Activity timeline
+An ordered, resumable audit trail: plan, policy denials, tool calls, commands, checkpoints, checks and your decisions, each with actor and time. **Filter chips** (All · Agent · Commands · Policy & approvals · Checks) show live counts. Long output such as stack traces **collapses** with a "Show N more lines" expander. Agent summaries are labeled *a claim, not evidence*.
+
+| Full timeline | Filtered to policy & approvals |
+| --- | --- |
+| ![Activity](docs/screenshots/06-activity.png) | ![Filtered](docs/screenshots/06b-activity-filtered.png) |
+
+### Changes and evidence
+**Changes** renders the checkpointed patch per file, with +/− counts and branch/base identity. Untrusted content is always shown as text, never HTML. **Evidence** shows the release-gate verdict in words, each check's result, command, commit, duration and full log, plus an explicit list of what this release does **not** verify. **Accept** keeps the branch for you to merge; **Reject** removes the worktree and branch. Neither touches your checkout.
+
+| Changes | Evidence |
+| --- | --- |
+| ![Changes](docs/screenshots/07-changes.png) | ![Evidence](docs/screenshots/08-evidence.png) |
+
+### Command palette (⌘K)
+Jump to any mission (fuzzy search over titles, IDs and objectives), start a mission in a specific project, open a repository or go to any screen. Missions waiting on you are listed first. Fully keyboard-driven: ↑ ↓ ↵ esc.
+
+![Command palette](docs/screenshots/09a-command-palette.png)
+
+### Settings
+Health of each runtime, provider keys stored with the OS credential store (never shown again, redacted everywhere), and versions with Pi provenance (package, commit, license).
+
+![Settings](docs/screenshots/09-settings.png)
+
+### Design preview
+The full design-system prototype (multi-agent graph, inspector, terminals, deploy studio and more) stays available from the rail, under a persistent banner that says it is sample data. It shows where the product is heading in M2–M5.
+
+![Design preview](docs/screenshots/10-design-preview.png)
+
+### Interaction details
+- **Keyboard**: ⌘K palette · ⌘O open repository · ⌘N new mission · ⌘1 projects · ⌘, settings (Ctrl on Linux/Windows).
+- **Resilience**: if the daemon crashes, the status bar shows *Daemon restarting*, the shell restarts it, and every open view resyncs from the event log with no gaps or duplicates. App restarts restore the last screen.
+- **Honest states**: verified (green) only on a passing required check; *unverified* (amber) when no checks exist; *failed* (coral) otherwise. Every state carries a word or glyph, never color alone.
+- **Design system**: dark, near-monochrome "Obsidian" theme; Inter / Inter Display / DejaVu Sans Mono; one accent per view; hairline separation; 4px grid. See [docs/design/DESIGN.md](docs/design/DESIGN.md).
+
 ## Quick start
 
 ```bash
@@ -43,7 +107,8 @@ Every step is an append-only event with actor, task, attempt and time. The timel
 | `pnpm test` | unit tests — policy, state machines, plan validation, gate, storage, paths, executor, Pi contract |
 | `pnpm test:integration` | full missions against temp git repos (approvals, denial, redaction, cancel, crash recovery) |
 | `pnpm test:e2e` | Playwright drives the built Electron app (Linux: `xvfb-run -a pnpm test:e2e`) |
-| `pnpm package` | electron-builder; Linux is the tested target |
+| `pnpm package` | electron-builder → `apps/desktop/release/` (Linux AppImage is the tested target) |
+| `pnpm screenshots` | rebuilds and recaptures `docs/screenshots` from a live mission |
 | `pnpm pi:version` | verifies the pinned Pi SDK (0.87.1, MIT) |
 
 No test needs network access or model credentials. Pi's contract tests run the real SDK against its scripted provider.

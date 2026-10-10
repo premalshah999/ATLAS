@@ -26,6 +26,7 @@ Read this before editing. The functional specification is `docs/spec/manual.md` 
 | `pnpm doctor` | checks local requirements without printing secrets |
 | `pnpm pi:version` | verifies installed Pi packages against the pin |
 | `pnpm seed:sample [dir]` | creates the sample git repository used by the demo |
+| `pnpm screenshots` | rebuilds and recaptures `docs/screenshots` from a live sample mission (Linux: `xvfb-run -a -s "-screen 0 1600x1000x24"`) |
 
 ## Map
 

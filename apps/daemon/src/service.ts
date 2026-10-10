@@ -61,7 +61,7 @@ export class DaemonService {
       case 'workspace.refresh': return this.orch.refreshWorkspace(p.workspaceId);
       case 'workspace.preflight': return this.orch.preflight(p.workspaceId, p.runtime);
       case 'mission.create': return this.orch.createMission(p);
-      case 'mission.list': return this.repo.missions(p.workspaceId).map((m) => ({ ...m, tasks: this.repo.tasks(m.id).map((t) => ({ key: t.key, state: t.state })) }));
+      case 'mission.list': return this.repo.missions(p.workspaceId).map((m) => ({ ...m, tasks: this.repo.tasks(m.id).map((t) => ({ key: t.key, state: t.state })), pendingApprovals: this.repo.approvals(m.id).filter((a) => a.status === 'pending').length }));
       case 'mission.get': return this.snapshot(p.missionId);
       case 'mission.plan': return this.orch.plan(p.missionId);
       case 'mission.approvePlan': return this.orch.approvePlan(p.missionId);

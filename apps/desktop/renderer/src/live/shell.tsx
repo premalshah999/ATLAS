@@ -1,12 +1,13 @@
 // Live application shell: title bar, rail, canvas and status bar wired to the daemon.
 import React from 'react';
 import type { IconType } from 'react-icons';
-import { cx, Dot, Icon, IconButton, Kbd, Menu, MenuItem, Tip } from '../ui/primitives';
-import { IBranch, IChevronDown, IFolder, IFolderOpen, IHome, IMissions, IPlus, ISettings, IPalette } from '../lib/icons';
+import { cx, Dot, Icon, Kbd, Menu, MenuItem, Tip } from '../ui/primitives';
+import { IBranch, IChevronDown, IFolder, IFolderOpen, IHome, IMissions, IPlus, ISettings, IPalette, ISearch, IShield } from '../lib/icons';
 import { call } from './api';
 import { go, refreshLists, useLive, type Route } from './store';
 import { stateWord } from './format';
 import { toast } from './toast';
+import { togglePalette } from './palette';
 
 export async function openRepository(): Promise<string | null> {
   try {
@@ -63,8 +64,26 @@ export function LiveTitleBar() {
           </button>
         </>
       )}
+      <button type="button" className="at-tb-search lv-tb-search" onClick={togglePalette} data-testid="open-palette">
+        <Icon as={ISearch} size="sm" /><span className="at-trunc">Search missions and commands</span><Kbd k="⌘ K" />
+      </button>
       <span style={{ flex: 1 }} />
+      <NeedsYouChip />
     </header>
+  );
+}
+
+function NeedsYouChip() {
+  const missions = useLive((s) => s.missions);
+  const waiting = missions.filter((m) => m.pendingApprovals > 0 || m.state === 'awaiting_approval');
+  const n = waiting.reduce((a, m) => a + m.pendingApprovals + (m.state === 'awaiting_approval' ? 1 : 0), 0);
+  if (!n) return null;
+  return (
+    <Tip label={`${n} decision${n === 1 ? '' : 's'} waiting: ${waiting.map((m) => m.title).join(', ')}`}>
+      <button type="button" className="lv-needs-chip" data-testid="needs-you-chip" onClick={() => go({ screen: 'mission', missionId: waiting[0].id })}>
+        <Icon as={IShield} size="sm" />{n} need{n === 1 ? 's' : ''} you
+      </button>
+    </Tip>
   );
 }
 
@@ -81,15 +100,16 @@ export function LiveRail() {
     </Tip>
   );
   const active = missions.filter((m) => ['planning', 'awaiting_approval', 'running', 'verifying'].includes(m.state));
+  const needs = missions.filter((m) => m.pendingApprovals > 0 || m.state === 'awaiting_approval');
   return (
     <nav className="at-rail" aria-label="Primary">
       <div className="at-rail-group">
         {NAV.map(item)}
         <Tip label={active.length ? `${active.length} active mission${active.length === 1 ? '' : 's'}` : 'Missions'} side="right" delay={250}>
           <button type="button" className="at-rail-item" aria-label="Missions" aria-current={route.screen === 'mission' ? 'page' : undefined}
-            onClick={() => { const m = active[0] ?? missions[0]; if (m) go({ screen: 'mission', missionId: m.id }); else go({ screen: 'projects' }); }}>
+            onClick={() => { const m = needs[0] ?? active[0] ?? missions[0]; if (m) go({ screen: 'mission', missionId: m.id }); else go({ screen: 'projects' }); }}>
             <Icon as={IMissions} size="lg" />
-            {active.length > 0 && <span className="at-rail-badge">{active.length}</span>}
+            {needs.length > 0 ? <span className="at-rail-badge lv-badge-warn">{needs.length}</span> : active.length > 0 && <span className="at-rail-badge">{active.length}</span>}
           </button>
         </Tip>
       </div>
@@ -110,7 +130,7 @@ export function LiveStatusBar() {
   const status = useLive((s) => s.status);
   const missions = useLive((s) => s.missions);
   const running = missions.filter((m) => m.state === 'running' || m.state === 'verifying').length;
-  const waiting = missions.filter((m) => m.state === 'awaiting_approval').length;
+  const waiting = missions.reduce((a, m) => a + m.pendingApprovals + (m.state === 'awaiting_approval' ? 1 : 0), 0);
   const word = { starting: 'Daemon starting', ready: 'Daemon ready', restarting: 'Daemon restarting', stopped: 'Daemon stopped' }[status.state];
   return (
     <footer className="at-statusbar" data-testid="statusbar">
@@ -119,10 +139,10 @@ export function LiveStatusBar() {
       </Tip>
       <span className="at-sep-v" style={{ margin: '6px 2px' }} />
       <span className="at-sb-item">{running} running</span>
-      <span className={cx('at-sb-item', waiting > 0 && 'at-warn')}>{waiting} awaiting approval</span>
+      <span className={cx('at-sb-item', waiting > 0 && 'at-warn')} data-testid="awaiting-count">{waiting} awaiting you</span>
       <span style={{ flex: 1 }} />
       <span className="at-sb-item at-subtle">Local-first · nothing leaves this machine except model requests you configure</span>
-      <span className="at-sb-item"><Kbd k="⌘ K" /></span>
+      <button type="button" className="at-sb-item at-sb-btn" onClick={togglePalette} aria-label="Command palette"><Kbd k="⌘ K" /></button>
     </footer>
   );
 }
@@ -131,8 +151,7 @@ export function PreviewBanner({ onExit }: { onExit: () => void }) {
   return (
     <div className="lv-preview-banner" role="status">
       <span>Design preview · every value on these screens is sample data, not your projects.</span>
-      <IconButton icon={IHome} label="Back to ATLAS" onClick={onExit} />
-      <button type="button" className="lv-link" onClick={onExit}>Back to ATLAS</button>
+      <button type="button" className="at-btn at-btn--sm" onClick={onExit}><Icon as={IHome} size="sm" />Back to ATLAS</button>
     </div>
   );
 }
