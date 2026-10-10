@@ -141,3 +141,15 @@ describe.skipIf(!support.ok)('desktop_action consent', () => {
     expect(mgr.list()).toHaveLength(0);
   });
 });
+
+describe.skipIf(!support.ok)('pointer edge cases', () => {
+  const mgr = new DesktopManager({ session: () => {} });
+  afterEach(async () => { await mgr.shutdown(); });
+  it('moving to where the pointer already is returns promptly (Xvfb starts it at the centre)', async () => {
+    const s = await mgr.open(owner(), null, { width: 640, height: 480 });
+    const t0 = Date.now();
+    expect((await s.act('agent', { action: 'click', x: 320, y: 240 })).ok).toBe(true);
+    expect((await s.act('agent', { action: 'click', x: 320, y: 240 })).ok).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(3000);
+  });
+});

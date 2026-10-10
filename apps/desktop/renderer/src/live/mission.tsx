@@ -2,17 +2,23 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { Approval, AtlasEvent, CheckRecord, Task } from '@atlas/contracts';
 import { Badge, Button, cx, EmptyState, Icon, PanelHead, RoleMark, Status, Tabs, Tip } from '../ui/primitives';
-import { ICheck, ICheckCircle, IClock, IFileDiff, IShield, IStopCircle, ITerminal, IWarn, IXCircle, IUndo, IMerge, IFileText, ITube, ITree } from '../lib/icons';
+import { ICheck, ICheckCircle, IClock, IFileDiff, IShield, IStopCircle, ITerminal, IWarn, IXCircle, IUndo, IMerge, IFileText, ITube, ITree, IGraph, IReviews, IGlobe, IDeploy, IComputer, IMore, IDisk, IClose } from '../lib/icons';
+import { Menu, MenuItem } from '../ui/primitives';
+import { BrowserPanel, BudgetMeter, DeployPanel, DesktopPanel, Findings, TaskGraph, TerminalPanel } from './panels';
+import { go, refreshLists } from './store';
 import { call } from './api';
 import { useMission } from './useMission';
-import { describeEvent, fmtMs, markOf, resultWord, roleName, stateWord, time, type Row } from './format';
+import { describeEvent, fmtMs, markOf, resultWord, roleMark, roleName, stateWord, time, type Row } from './format';
 import { toast } from './toast';
 
 const ACTIVE = new Set(['planning', 'running', 'verifying']);
+type Tab = 'activity' | 'graph' | 'changes' | 'evidence' | 'findings' | 'browser' | 'deploy' | 'desktop' | 'terminal';
 
 export function MissionView({ missionId }: { missionId: string }) {
   const { snap, events, error } = useMission(missionId);
-  const [tab, setTab] = useState<'activity' | 'changes' | 'evidence'>('activity');
+  const [tab, setTab] = useState<Tab>('activity');
+  const [log, setLog] = useState<{ name: string; text: string } | null>(null);
+  const showLog = (artifactId: string) => void call('artifact.read', { artifactId }).then((r) => setLog({ name: r.artifact.name, text: r.text })).catch(() => {});
   const [busy, setBusy] = useState(false);
   const act = async (label: string, fn: () => Promise<unknown>) => {
     setBusy(true);
@@ -28,6 +34,8 @@ export function MissionView({ missionId }: { missionId: string }) {
   const verdict = gate?.payload.verdict as string | undefined;
   const finished = m.state === 'completed' || m.state === 'failed';
   const patchCount = snap.artifacts.filter((a) => a.kind === 'patch').length;
+  const hasBrowser = events.some((e) => e.type === 'browser.step') || snap.checks.some((c) => /^(api|browser):/.test(c.name));
+  const hasDesktop = events.some((e) => e.type.startsWith('desktop.')) || snap.tasks.some((t) => t.role === 'desktop_operator');
 
   return (
     <div className="at-screen lv-mission" data-testid="mission" data-state={m.state}>
@@ -51,6 +59,11 @@ export function MissionView({ missionId }: { missionId: string }) {
               </>
             )}
             {m.decision && <Badge tone="human">{m.decision === 'accepted' ? 'Accepted by you' : 'Rejected by you'}</Badge>}
+            {m.archived && <Badge tone="outline">imported archive · read-only</Badge>}
+            <Menu align="right" width={260} trigger={(_o, toggle) => <Button variant="ghost" icon={IMore} onClick={toggle} aria-label="Mission actions" data-testid="mission-menu">More</Button>}>{(close) => (<>
+              <MenuItem icon={IDisk} onClick={() => { close(); void act('Export failed', async () => { const r = await call('mission.export', { missionId }); if (r) toast({ tone: 'info', title: 'Audit log exported', body: `${r.records} records · SHA-256 ${r.sha256.slice(0, 16)}… → ${r.path}` }); }); }}>Export audit log (JSONL)…</MenuItem>
+              <MenuItem icon={IClose} onClick={() => { close(); if (ACTIVE.has(m.state)) { toast({ tone: 'danger', title: 'Cancel the mission first' }); return; } if (window.confirm('Delete this mission? Its events, artifacts, worktrees and task branches are removed. An accepted branch is kept.')) void act('Delete failed', async () => { await call('mission.delete', { missionId }); await refreshLists(); go({ screen: 'projects' }); }); }}>Delete mission…</MenuItem>
+            </>)}</Menu>
           </div>
           <span className="at-subtle lv-small">{snap.workspace?.name} · base {m.baseCommit?.slice(0, 7) ?? 'not yet snapshotted'} · {modeWord(m.approvalMode)}</span>
         </div>
@@ -71,19 +84,39 @@ export function MissionView({ missionId }: { missionId: string }) {
             <div className="lv-tabs">
               <Tabs value={tab} onChange={setTab} items={[
                 { id: 'activity', label: 'Activity', count: events.length },
+                { id: 'graph', label: 'Tasks', icon: IGraph, count: snap.tasks.length || undefined },
                 { id: 'changes', label: 'Changes', icon: IFileDiff, count: patchCount || undefined },
                 { id: 'evidence', label: 'Evidence', icon: ITube, count: snap.checks.length || undefined },
+                { id: 'findings', label: 'Review', icon: IReviews, count: snap.findings.filter((f) => f.status === 'open').length || undefined },
+                ...(hasBrowser ? [{ id: 'browser' as Tab, label: 'Browser', icon: IGlobe }] : []),
+                ...(m.targetEnvironment ? [{ id: 'deploy' as Tab, label: 'Deploy', icon: IDeploy }] : []),
+                ...(hasDesktop ? [{ id: 'desktop' as Tab, label: 'Desktop', icon: IComputer }] : []),
+                ...(m.archived ? [] : [{ id: 'terminal' as Tab, label: 'Terminal', icon: ITerminal }]),
               ]} />
             </div>
             {tab === 'activity' && <ActivityTimeline events={events} />}
+            {tab === 'graph' && <TaskGraph snap={snap} />}
             {tab === 'changes' && <Changes snap={snap} />}
             {tab === 'evidence' && <Evidence checks={snap.checks} gate={gate} />}
+            {tab === 'findings' && <Findings snap={snap} onLog={showLog} />}
+            {tab === 'browser' && <BrowserPanel snap={snap} events={events} />}
+            {tab === 'deploy' && <DeployPanel snap={snap} events={events} />}
+            {tab === 'desktop' && <DesktopPanel snap={snap} events={events} />}
+            {tab === 'terminal' && <TerminalPanel snap={snap} />}
+            {log && (
+              <div className="lv-log lv-log--float">
+                <PanelHead label="Log" title={log.name}><Button size="sm" variant="ghost" onClick={() => setLog(null)}>Close</Button></PanelHead>
+                <pre className="lv-proc-body" style={{ maxHeight: 360 }}>{log.text}</pre>
+              </div>
+            )}
           </div>
           <aside className="lv-mside">
             <PanelHead label="Needs you" count={pending.length} />
             <div className="lv-needs" data-testid="needs-you">
               {pending.length === 0 ? <div className="at-subtle lv-small" style={{ padding: '10px 12px' }}>Nothing is waiting for you.</div> : pending.map((a) => <ApprovalCard key={a.id} a={a} />)}
             </div>
+            <PanelHead label="Budget" />
+            <BudgetMeter snap={snap} />
             <PanelHead label="Tasks" count={snap.tasks.length} />
             <div className="lv-tasks">{snap.tasks.map((t) => <TaskRow key={t.id} t={t} attempts={snap.attempts.filter((a) => a.taskId === t.id).length} />)}</div>
             <ProcessPane events={events} />
@@ -108,7 +141,7 @@ function PlanReview({ snap, busy, onApprove }: { snap: NonNullable<ReturnType<ty
         {p.tasks.map((t) => (
           <div key={t.key} className="lv-plan-task">
             <div className="at-row" style={{ gap: 8 }}>
-              <RoleMark mark={t.role === 'coder' ? 'CO' : t.role.slice(0, 2).toUpperCase()} size="sm" />
+              <RoleMark mark={roleMark(t.role)} size="sm" />
               <span className="body-strong">{t.title}</span>
               <span className="at-subtle lv-small">{roleName(t.role)} · {t.risk} risk{t.dependsOn.length ? ` · after ${t.dependsOn.join(', ')}` : ''}</span>
             </div>
@@ -121,8 +154,12 @@ function PlanReview({ snap, busy, onApprove }: { snap: NonNullable<ReturnType<ty
         <div className="lv-callout">
           <Icon as={IShield} />
           <div>
-            <b>What will ask you first.</b> Installing packages, network access, deleting or moving files, git writes and any program not on the safe list wait for your approval ({modeWord(snap.mission.approvalMode)}). Credentials, deploys and desktop control are disabled in this release.
+            <b>What will ask you first.</b> Installing packages, network access, deleting or moving files, git writes and any program not on the safe list wait for your approval ({modeWord(snap.mission.approvalMode)}). {snap.mission.targetEnvironment ? `Deploying to ${snap.mission.targetEnvironment} needs its own approval. ` : 'Nothing is deployed (no target environment). '}A desktop session needs desktop control enabled in Settings and its own approval. Production deploys and credentials are never available to agents.
           </div>
+        </div>
+        <div className="lv-callout">
+          <Icon as={IClock} />
+          <div><b>Budget.</b> Up to {snap.mission.budget.maxConcurrentAgents} agents at once, {snap.mission.budget.maxTasks} tasks, delegation depth {snap.mission.budget.maxDelegationDepth}, {snap.mission.budget.maxTokens.toLocaleString()} tokens and {snap.mission.budget.maxWallClockMinutes} minutes. The mission stops with a reason when any limit is reached.</div>
         </div>
         <div className="lv-callout">
           <Icon as={ITube} />

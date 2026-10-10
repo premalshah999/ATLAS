@@ -21,6 +21,7 @@ Read this before editing. The functional specification is `docs/spec/manual.md` 
 | `pnpm lint` | dependency-graph check + ESLint |
 | `pnpm test` | unit tests (no network, no credentials) |
 | `pnpm test:integration` | orchestrator missions against real git repos with the scripted runtime |
+| `pnpm eval` | golden mission corpus; writes `docs/eval/latest.{md,json}` |
 | `pnpm test:e2e` | builds, then drives the Electron app with Playwright (Linux needs `xvfb-run`) |
 | `pnpm package` | electron-builder (Linux AppImage is the tested target) |
 | `pnpm doctor` | checks local requirements without printing secrets |
@@ -41,9 +42,13 @@ packages/policy              capabilities, role grants, command classification, 
 packages/workspace           canonical path checks, git worktrees, checkpoints, diffs, leases
 packages/terminal            argument-array executor, env allowlist, process-tree kill, timeouts
 packages/orchestrator        state machines, plan validation, scheduler, ToolGate, verification, release gate, recovery
-packages/runtime-fake        deterministic scripted runtime (CI and the sample mission)
+packages/browser             Playwright browser sessions, app start in the sandbox, API checks, browser_action tool
+packages/deploy              staging providers (local, command), independent verification, rollback, reconcile
+packages/desktop-control     Xvfb virtual displays, xdotool input, controller lease, desktop_action tool
+packages/runtime-fake        deterministic scripted runtime (CI and the sample missions)
 packages/runtime-pi          Pi SDK adapter (pinned 0.87.1)
 fixtures/sample-app          sample project with a real bug and real tests
 tests/integration            end-to-end orchestration against temp git repos
 tests/e2e-electron           Playwright drives the built Electron app
+evals                        golden mission corpus, hidden oracles, metrics (`pnpm eval` → docs/eval)
 ```

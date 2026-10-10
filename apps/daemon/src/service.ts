@@ -4,8 +4,9 @@ import path from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { AtlasError, InternalRequests, parseRequest, PROVIDER_ENV, registerSecret, type AtlasEvent, type Method } from '@atlas/contracts';
 import { ArtifactStore, openDb, Repo, schemaVersion, type Db } from '@atlas/storage';
-import { Orchestrator, replay } from '@atlas/orchestrator';
-import { FakeRuntime, sampleSlugifyScript } from '@atlas/runtime-fake';
+import { Orchestrator, replay, ROLES } from '@atlas/orchestrator';
+import { ROLE_GRANTS } from '@atlas/policy';
+import { FakeRuntime, sampleDesktopScript, samplePlanner, sampleSlugifyScript } from '@atlas/runtime-fake';
 import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
 import { detectSandbox } from '@atlas/terminal';
 import { applicationStage, createBrowserTool, resolveBrowser } from '@atlas/browser';
@@ -23,7 +24,7 @@ export class DaemonService {
   readonly log: Logger;
   private readonly db: Db;
   private pi: PiRuntime;
-  private readonly fake = new FakeRuntime([sampleSlugifyScript], 350);
+  private readonly fake = new FakeRuntime([sampleSlugifyScript, sampleDesktopScript], 350, samplePlanner);
   private keys: Record<string, string>;
   private deploySecrets: Record<string, Record<string, string>>;
   readonly deploy: DeployManager;
@@ -159,6 +160,7 @@ export class DaemonService {
       case 'mission.cancel': return this.orch.cancelMission(p.missionId);
       case 'mission.decide': return this.orch.decide(p.missionId, p.decision);
       case 'task.cancel': return this.orch.cancelTask(p.taskId);
+      case 'roles.list': return Object.values(ROLES).map((r) => ({ id: r.id, version: r.version, title: r.title, tools: r.tools, writes: r.writes, modelPreference: r.modelPreference, budget: r.budget, capabilities: ROLE_GRANTS[r.id], instructions: r.instructions }));
       case 'desktop.list': return { support: desktopSupport(), enabled: this.repo.setting('desktop.enabled', false), sessions: this.desktop.list() };
       case 'desktop.control': {
         const info = await this.desktop.control(p.sessionId, p.op);
@@ -170,6 +172,12 @@ export class DaemonService {
       case 'approval.respond': return this.orch.respondApproval(p.approvalId, p.decision);
       case 'events.since': return this.repo.eventsSince(p.missionId, p.afterSeq);
       case 'artifact.read': {
+        const art = this.artifacts.get(p.artifactId);
+        if (art?.kind === 'screenshot') {
+          // Images go to the renderer as base64 and are shown with a data: URL, never interpreted as markup.
+          const b = this.artifacts.readBytes(p.artifactId);
+          return { artifact: b.artifact, intact: b.intact, truncated: false, text: '', base64: b.bytes.length <= 8_000_000 ? b.bytes.toString('base64') : null };
+        }
         const r = this.artifacts.read(p.artifactId);
         const max = 400_000;
         return { artifact: r.artifact, intact: r.intact, truncated: r.text.length > max, text: r.text.slice(0, max) };

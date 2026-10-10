@@ -1,6 +1,6 @@
 // Mission composer (manual §34): repository, objective, constraints, approval mode, runtime, preflight.
 import React, { useEffect, useState } from 'react';
-import type { ApprovalMode, RuntimeHealth, RuntimeKind } from '@atlas/contracts';
+import { DEFAULT_BUDGET, type ApprovalMode, type MissionBudget, type RuntimeHealth, type RuntimeKind } from '@atlas/contracts';
 import { Badge, Button, Field, Icon, Input, Seg, Select } from '../ui/primitives';
 import { IFolderOpen, IInfo, IWarn, IXCircle, ISpark } from '../lib/icons';
 import { call, type Preflight } from './api';
@@ -25,6 +25,10 @@ export function NewMission({ workspaceId }: { workspaceId?: string }) {
   const [health, setHealth] = useState<RuntimeHealth[]>([]);
   const [pre, setPre] = useState<Preflight | null>(null);
   const [busy, setBusy] = useState(false);
+  const [targets, setTargets] = useState<{ target: string; provider: string; allowed: boolean }[]>([]);
+  const [target, setTarget] = useState<string>('none');
+  const [budget, setBudget] = useState<MissionBudget>(DEFAULT_BUDGET);
+  const [showBudget, setShowBudget] = useState(false);
 
   useEffect(() => { if (!ws && workspaces[0]) setWs(workspaceId ?? workspaces[0].id); }, [workspaces, ws, workspaceId]);
   useEffect(() => { void call('runtime.health').then((h) => { setHealth(h); if (h.find((x) => x.runtime === 'pi')?.ok) setRuntime('pi'); }).catch(() => {}); }, []);
@@ -33,6 +37,7 @@ export function NewMission({ workspaceId }: { workspaceId?: string }) {
     setPre(null);
     void call('workspace.preflight', { workspaceId: ws, runtime }).then(setPre).catch((e) => setPre([{ level: 'block', message: (e as Error).message }]));
   }, [ws, runtime]);
+  useEffect(() => { setTarget('none'); setTargets([]); if (ws) void call('deploy.targets', { workspaceId: ws }).then(setTargets).catch(() => {}); }, [ws]);
 
   const blocked = !pre || pre.some((p) => p.level === 'block');
   const pi = health.find((h) => h.runtime === 'pi');
@@ -40,7 +45,7 @@ export function NewMission({ workspaceId }: { workspaceId?: string }) {
     if (!ws || !title.trim() || !goal.trim()) return;
     setBusy(true);
     try {
-      const m = await call('mission.create', { workspaceId: ws, title: title.trim(), goal: goal.trim(), constraints, approvalMode: mode, runtime });
+      const m = await call('mission.create', { workspaceId: ws, title: title.trim(), goal: goal.trim(), constraints, approvalMode: mode, runtime, budget, targetEnvironment: target === 'none' ? null : target });
       await call('mission.plan', { missionId: m.id });
       await refreshLists();
       go({ screen: 'mission', missionId: m.id });
@@ -83,6 +88,25 @@ export function NewMission({ workspaceId }: { workspaceId?: string }) {
             ? 'Scripted sample runtime: deterministic behavior for the bundled sample project, a read-only survey elsewhere. No model is called.'
             : pi?.detail ?? 'Checking Pi…'}>
             <Seg items={[{ id: 'fake' as const, label: 'Scripted (no model)' }, { id: 'pi' as const, label: `Pi${pi ? (pi.ok ? '' : ' · not configured') : ''}` }]} value={runtime} onChange={setRuntime} />
+          </Field>
+          <Field label="Target environment" help={targets.length === 0
+            ? 'No deploy target in atlas.config.json: the mission verifies the change locally and deploys nothing.'
+            : target === 'none' ? 'Verify locally only. Nothing is deployed.' : targets.find((t) => t.target === target)?.allowed
+              ? 'After every check passes, ATLAS asks you to approve one staging deployment, verifies the served revision independently and rolls back on failure.'
+              : 'This target is not on your allowlist (Settings → Deployments). The deploy stage will refuse it.'}>
+            <Seg items={[{ id: 'none', label: 'None (local only)' }, ...targets.map((t) => ({ id: t.target, label: `${t.target} · staging${t.allowed ? '' : ' · not allowed'}` }))]} value={target} onChange={setTarget} />
+          </Field>
+          <Field label="Budget" aside={<button type="button" className="lv-link" onClick={() => setShowBudget(!showBudget)}>{showBudget ? 'Hide' : 'Change'}</button>}
+            help={`${budget.maxConcurrentAgents} agents at once · ${budget.maxTasks} tasks · delegation depth ${budget.maxDelegationDepth} · ${budget.maxTokens.toLocaleString()} tokens · ${budget.maxWallClockMinutes} min. The mission stops with a reason at any limit.`}>
+            {showBudget && (
+              <div className="lv-budget-grid" data-testid="budget-fields">
+                {([['maxConcurrentAgents', 'Agents at once', 1, 8], ['maxTasks', 'Tasks', 1, 50], ['maxDelegationDepth', 'Delegation depth', 0, 4], ['maxTokens', 'Tokens', 1000, 50_000_000], ['maxWallClockMinutes', 'Minutes', 1, 1440]] as const).map(([k, label, min, max]) => (
+                  <label key={k} className="lv-budget-field"><span className="at-subtle lv-small">{label}</span>
+                    <Input type="number" min={min} max={max} value={budget[k]} onChange={(e) => { const v = Math.round(Number(e.target.value)); if (Number.isFinite(v)) setBudget((b) => ({ ...b, [k]: Math.max(min, Math.min(max, v)) })); }} />
+                  </label>
+                ))}
+              </div>
+            )}
           </Field>
 
           <div className="lv-preflight" data-testid="preflight" data-ready={pre ? 'true' : 'false'}>

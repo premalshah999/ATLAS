@@ -95,7 +95,8 @@ export class DesktopSession {
     this.lock = new Promise<void>((r) => (release = r));
     await prev;
     try {
-      const r = await this.perform(by, a);
+      let r: { ok: boolean; message: string };
+      try { r = await this.perform(by, a); } catch (e) { r = { ok: false, message: `Desktop action failed: ${(e as Error).message.split('\n')[0]}` }; }
       return { ...r, input: !['screenshot', 'windows', 'waitFor'].includes(a.action) && r.ok };
     } finally { release(); }
   }
@@ -117,7 +118,9 @@ export class DesktopSession {
       case 'windows': { const w = await this.windows(); return { ok: true, message: w.length ? w.map((x) => `${x.id}\t${x.title}`).join('\n') : '(no windows)' }; }
       case 'move': case 'click': {
         if (!inBounds(a.x, a.y)) return { ok: false, message: `(${a.x}, ${a.y}) is outside the ${this.width}×${this.height} display` };
-        await this.x('xdotool', ['mousemove', '--sync', String(Math.round(a.x)), String(Math.round(a.y))]);
+        // No --sync: it waits for a motion event and hangs when the pointer is already there. Verify instead.
+        await this.x('xdotool', ['mousemove', String(Math.round(a.x)), String(Math.round(a.y))]);
+        for (let i = 0; i < 20; i++) { const p = await this.pointer(); if (p.x === Math.round(a.x) && p.y === Math.round(a.y)) break; await new Promise((r) => setTimeout(r, 10)); }
         record(`move ${a.x},${a.y}`);
         if (a.action === 'click' && !this.holds(by)) return { ok: false, message: 'Control changed before the click; only the pointer moved.' };
         if (a.action === 'click') await this.x('xdotool', ['click', ...(a.double ? ['--repeat', '2'] : []), a.button === 'right' ? '3' : a.button === 'middle' ? '2' : '1']);

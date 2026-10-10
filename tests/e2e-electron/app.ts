@@ -6,10 +6,11 @@ const here = path.dirname(__f(import.meta.url));
 
 const desktop = path.resolve(here, '../../apps/desktop');
 
-export async function launch(opts: { userData?: string; openDir?: string } = {}): Promise<{ app: ElectronApplication; page: Page; userData: string }> {
+export async function launch(opts: { userData?: string; openDir?: string; env?: Record<string, string> } = {}): Promise<{ app: ElectronApplication; page: Page; userData: string }> {
   const userData = opts.userData ?? tmpDir('atlas-e2e-');
   const env: Record<string, string> = { ...(process.env as Record<string, string>), ATLAS_E2E: '1', ATLAS_USER_DATA: userData };
   if (opts.openDir) env.ATLAS_E2E_OPEN_DIR = opts.openDir;
+  Object.assign(env, opts.env ?? {});
   delete env.ANTHROPIC_API_KEY; delete env.OPENAI_API_KEY; delete env.GEMINI_API_KEY;
   // --no-sandbox only because CI containers run as root; the renderer still runs with sandbox: true.
   const app = await electron.launch({ args: ['--no-sandbox', desktop], cwd: desktop, env });

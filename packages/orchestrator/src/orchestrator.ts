@@ -242,10 +242,12 @@ export class Orchestrator {
       try {
         const req = {
           missionId, title: m.title, objective: m.goal, constraints: m.constraints, approvalMode: m.approvalMode, repoMap: await repoMap(w.root), excerpts: await this.excerpts(w.root),
-          roles: Object.values(ROLES).filter((r) => ['coder', 'reviewer', 'tester'].includes(r.id)).map((r) => ({ id: r.id, title: r.title, tools: r.tools })),
+          roles: Object.values(ROLES).filter((r) => r.id !== 'orchestrator').map((r) => ({ id: r.id, title: r.title, tools: r.tools })),
           verification, maxTasks: m.budget.maxTasks, signal: ac.signal,
         };
         let p = await rt.plan(req);
+        // A runtime may decline to plan (e.g. the scripted runtime outside its samples): use the deterministic plan.
+        if (p.plan == null) throw Object.assign(new Error('declined'), { declined: true });
         let v = validatePlan({ ...(p.plan as object), version }, { maxTasks: m.budget.maxTasks });
         if (!v.ok) {
           this.emit({ missionId, type: 'plan.rejected', actor: SYSTEM('plan-validator'), payload: { version, source: 'model', issues: v.issues, repair: true } });
@@ -256,7 +258,7 @@ export class Orchestrator {
         if (v.ok) { candidate = v.plan; source = 'model'; }
         else this.emit({ missionId, type: 'plan.rejected', actor: SYSTEM('plan-validator'), payload: { version, source: 'model', issues: v.issues, fallback: 'default' } });
       } catch (e) {
-        this.emit({ missionId, type: 'plan.rejected', actor: SYSTEM('planner'), payload: { version, source: 'model', issues: [{ code: 'planner_error', message: (e as Error).message }], fallback: 'default' } });
+        if (!(e as { declined?: boolean }).declined) this.emit({ missionId, type: 'plan.rejected', actor: SYSTEM('planner'), payload: { version, source: 'model', issues: [{ code: 'planner_error', message: (e as Error).message }], fallback: 'default' } });
       } finally { clearTimeout(timer); }
     }
     candidate ??= defaultPlan(m, version, hasTests);

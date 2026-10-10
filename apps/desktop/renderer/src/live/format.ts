@@ -4,9 +4,10 @@ import type { AtlasEvent } from '@atlas/contracts';
 export type Tone = 'muted' | 'accent' | 'success' | 'warning' | 'danger' | 'human';
 export interface Row { title: string; detail?: string; meta?: string; tone: Tone; kind: 'activity' | 'decision' | 'file' | 'error' | 'approval' | 'milestone' | 'test' | 'delegation'; who: string }
 
-const ROLE_MARK: Record<string, string> = { coder: 'CO', tester: 'TE', reviewer: 'RV', orchestrator: 'OR' };
+const ROLE_MARK: Record<string, string> = { coder: 'CO', tester: 'TE', reviewer: 'RV', orchestrator: 'OR', browser_qa: 'QA', desktop_operator: 'DK', deployment_verifier: 'DV' };
 export const markOf = (e: AtlasEvent) => e.actor.kind === 'operator' ? 'YOU' : e.actor.kind === 'agent' ? ROLE_MARK[e.actor.role] ?? 'AG' : 'AT';
-export const roleName = (r: string) => ({ coder: 'Coder', tester: 'Tester', reviewer: 'Reviewer', orchestrator: 'Orchestrator' } as Record<string, string>)[r] ?? r;
+export const roleName = (r: string) => ({ coder: 'Coder', tester: 'Tester', reviewer: 'Reviewer', orchestrator: 'Orchestrator', browser_qa: 'Browser QA', desktop_operator: 'Desktop operator', deployment_verifier: 'Deployment verifier' } as Record<string, string>)[r] ?? r;
+export const roleMark = (r: string) => ROLE_MARK[r] ?? r.slice(0, 2).toUpperCase();
 
 const STATE_WORD: Record<string, string> = {
   draft: 'Draft', planning: 'Planning', awaiting_approval: 'Awaiting plan approval', running: 'Running', verifying: 'Verifying', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled',
@@ -51,6 +52,25 @@ export function describeEvent(e: AtlasEvent): Row | null {
     case 'mission.decision': return { title: p.decision === 'accept' ? 'Changes accepted' : 'Changes rejected', detail: p.note, tone: 'human', kind: 'decision', who };
     case 'operator.action': return { title: p.action === 'cancel' ? 'You cancelled the mission' : `You cancelled task ${p.key}`, tone: 'human', kind: 'activity', who };
     case 'daemon.recovered': return { title: 'Recovered after a daemon restart', detail: `State was ${stateWord(p.state).toLowerCase()}. Lost attempts restart in fresh worktrees.`, tone: 'warning', kind: 'activity', who };
+    case 'plan.planner': return { title: p.valid ? 'Model proposed a valid plan' : 'Model plan failed validation', detail: p.rationale, meta: p.inputTokens != null ? `${p.inputTokens + (p.outputTokens ?? 0)} tokens` : undefined, tone: p.valid ? 'muted' : 'warning', kind: 'decision', who };
+    case 'integration.result': return p.ok
+      ? { title: `Integrated ${(p.merged ?? []).join(', ')}`, meta: `${String(p.commit).slice(0, 7)} on ${p.branch}`, tone: 'success', kind: 'milestone', who }
+      : { title: `Integration conflict in task ${p.task}`, detail: `${(p.conflicts ?? []).join('\n')}\n${p.message ?? ''}`.trim(), tone: 'danger', kind: 'error', who };
+    case 'finding.reported': return { title: `Finding (${p.kind}, ${p.severity}): ${p.title}`, meta: `${p.file}${p.line ? `:${p.line}` : ''}`, detail: p.downgraded ? 'Downgraded to suspected: no failing reproduction from this review was referenced.' : undefined, tone: p.kind === 'confirmed' ? 'danger' : 'warning', kind: 'decision', who };
+    case 'finding.updated': return { title: `You marked "${p.title}" ${p.to}`, tone: 'human', kind: 'decision', who };
+    case 'delegation.requested': return { title: `Delegated ${p.childKey}: ${p.title}`, detail: p.reason, meta: `${roleName(p.role)} · depth ${p.depth}`, tone: 'accent', kind: 'delegation', who };
+    case 'delegation.result': return { title: `Delegation ${p.childKey ?? p.title}: ${p.status}`, detail: p.reason ?? (p.conflicts ?? []).join('\n'), tone: ['done', 'merged'].includes(p.status) ? 'muted' : 'warning', kind: 'delegation', who };
+    case 'budget.exceeded': return { title: 'Budget exceeded — mission stopped', detail: p.reason, tone: 'danger', kind: 'error', who };
+    case 'context.built': return null;
+    case 'browser.step': return p.phase === 'app'
+      ? { title: `App started for browser checks`, meta: p.url, tone: 'muted', kind: 'activity', who }
+      : { title: `Browser ${p.flow ? `${p.flow} · ` : ''}${p.action}${p.ok ? '' : ' failed'}`, detail: p.ok ? undefined : p.message, meta: p.url, tone: p.ok ? 'muted' : 'danger', kind: 'test', who };
+    case 'deploy.event': return { title: p.phase === 'started' ? `Deploying ${String(p.revision).slice(0, 7)} to ${p.target}` : p.phase === 'live' ? `Live on ${p.target}` : `Deployment to ${p.target} failed`, detail: p.phase === 'failed' ? p.message : undefined, meta: p.url ?? p.provider, tone: p.phase === 'failed' ? 'danger' : p.phase === 'live' ? 'success' : 'accent', kind: 'milestone', who };
+    case 'staging.check': return { title: p.verified ? 'Staging verified independently' : 'Staging verification failed', meta: `manifest ${String(p.manifestSha256).slice(0, 12)}`, tone: p.verified ? 'success' : 'danger', kind: p.verified ? 'milestone' : 'error', who };
+    case 'rollback.result': return { title: p.attempted ? (p.ok ? `Rolled back to ${String(p.toRevision).slice(0, 7)}${p.revisionConfirmed ? ' (revision confirmed)' : ''}` : 'Rollback failed') : 'No rollback', detail: p.message ?? p.reason, tone: p.attempted && p.ok ? 'warning' : p.attempted ? 'danger' : 'muted', kind: 'activity', who };
+    case 'desktop.session': return { title: `Desktop ${p.change}`, meta: `${p.display} · ${p.controller}`, detail: p.change === 'started' ? p.environment : undefined, tone: e.actor.kind === 'operator' ? 'human' : 'muted', kind: 'activity', who };
+    case 'desktop.action': return { title: `Desktop ${p.action}${p.ok ? '' : ' refused'}`, detail: p.ok ? undefined : p.message, meta: p.args && Object.keys(p.args).length ? JSON.stringify(p.args) : undefined, tone: p.ok ? 'muted' : 'warning', kind: 'activity', who };
+    case 'operator.terminal': return { title: `Terminal ${p.action}`, meta: p.worktree, detail: p.action === 'opened' ? `${p.writable ? 'Writable' : 'Read-only (an agent holds the worktree)'} · ${p.sandboxed ? 'sandboxed' : 'unsandboxed'}` : undefined, tone: 'human', kind: 'activity', who };
     case 'error': return { title: 'Error', detail: p.message, tone: 'danger', kind: 'error', who };
     default: return null;
   }

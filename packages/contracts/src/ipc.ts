@@ -46,6 +46,7 @@ export const Requests = {
   'deploy.secrets.list': empty,
   'deploy.secrets.set': z.object({ target: z.string().min(1).max(100), name: z.string().regex(/^[A-Z_][A-Z0-9_]{0,63}$/), value: z.string().min(1).max(10_000) }).strict(),
   'deploy.secrets.remove': z.object({ target: z.string().min(1).max(100), name: z.string().regex(/^[A-Z_][A-Z0-9_]{0,63}$/) }).strict(),
+  'roles.list': empty,
   'desktop.list': empty,
   'desktop.control': z.object({ sessionId: Id, op: DesktopControl }).strict(),
   'desktop.input': z.object({ sessionId: Id, input: DesktopAction }).strict(),

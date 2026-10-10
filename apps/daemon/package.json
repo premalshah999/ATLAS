@@ -15,6 +15,7 @@
     "@atlas/deploy": "workspace:*",
     "@atlas/desktop-control": "workspace:*",
     "@atlas/orchestrator": "workspace:*",
+    "@atlas/policy": "workspace:*",
     "@atlas/runtime-fake": "workspace:*",
     "@atlas/runtime-pi": "workspace:*",
     "@atlas/storage": "workspace:*",

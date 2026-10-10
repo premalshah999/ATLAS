@@ -38,3 +38,38 @@ export const sampleSlugifyScript: FakeScript = {
         { claim: 'Plan-only: slugify() ignores case, punctuation and repeated separators. Recommended fix: normalize, lowercase, collapse non-alphanumerics.' },
       ],
 };
+
+/** Marker in a mission objective that selects the scripted desktop sample. */
+export const DESKTOP_SAMPLE_MARKER = '[desktop sample]';
+
+/**
+ * Scripted planner for the samples: plans a desktop operator task for the desktop sample and declines
+ * otherwise (the orchestrator then uses its deterministic plan).
+ */
+export function samplePlanner(req: { objective: string; verification: { name: string; required: boolean }[] }): unknown {
+  if (!req.objective.includes(DESKTOP_SAMPLE_MARKER)) return null;
+  return {
+    summary: 'Scripted desktop sample: a desktop operator works on an isolated virtual display.',
+    scope: 'A new virtual display; no files change.',
+    tasks: [{ key: 'desktop', title: 'Operate the virtual desktop', role: 'desktop_operator', dependsOn: [], acceptance: ['The desktop session is recorded with screenshots'], tools: ['desktop_action', 'read_file'], risk: 'elevated' }],
+    verification: req.verification,
+  };
+}
+
+/** Desktop operator sample: looks, clicks, pauses long enough for an operator to take over, types. */
+export const sampleDesktopScript: FakeScript = {
+  name: 'sample-desktop',
+  matches: (input) => input.roleId === 'desktop_operator',
+  steps: () => [
+    { say: 'Taking a screenshot of the virtual display before acting.' },
+    { tool: 'desktop_action', args: { action: 'screenshot' } },
+    { tool: 'desktop_action', args: { action: 'launch', app: 'xmessage', args: ['-center', '-title', 'ATLAS desktop sample', 'Hello from an app running in the ATLAS sandbox on a virtual display.'] } },
+    { tool: 'desktop_action', args: { action: 'waitFor', windowTitle: 'ATLAS desktop sample', timeoutMs: 10000 } },
+    { tool: 'desktop_action', args: { action: 'windows' } },
+    { tool: 'desktop_action', args: { action: 'click', x: 640, y: 400 } },
+    { wait: 8000 },
+    { tool: 'desktop_action', args: { action: 'type', text: 'hello from the agent' } },
+    { tool: 'desktop_action', args: { action: 'screenshot' } },
+    { claim: 'Operated the virtual desktop (scripted sample).' },
+  ],
+};

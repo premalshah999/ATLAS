@@ -34,6 +34,7 @@ export interface MissionSnapshot {
 
 export type Preflight = { level: 'block' | 'warn' | 'info'; message: string }[];
 export type MissionListItem = Mission & { tasks: { key: string; state: string }[]; pendingApprovals: number };
+export type RoleInfo = { id: string; version: string; title: string; tools: string[]; writes: boolean; modelPreference: string; budget: { maxToolCalls: number; maxTokens: number; wallClockMs: number }; capabilities: string[]; instructions: string };
 export type DesktopState = { support: { ok: boolean; detail: string }; enabled: boolean; sessions: DesktopSessionInfo[] };
 export type SettingsState = { values: { 'execution.allowUnsandboxed': boolean; 'retention.days': number; 'deploy.allowedTargets': string[]; 'deploy.autoRollback': boolean; 'desktop.enabled': boolean }; sandbox: { kind: 'bwrap' | 'sandbox-exec' | 'none'; detail: string; path: string | null } };
 export type Credentials = { available: boolean; providers: { provider: string; stored: boolean; fromEnvironment: boolean; env: string }[] };
@@ -69,13 +70,14 @@ type Results = {
   'deploy.secrets.list': { target: string; names: string[] }[];
   'deploy.secrets.set': { target: string; names: string[] }[];
   'deploy.secrets.remove': { target: string; names: string[] }[];
+  'roles.list': RoleInfo[];
   'desktop.list': DesktopState;
   'desktop.control': DesktopSessionInfo;
   'desktop.input': { ok: boolean; message: string; input: boolean };
   'desktop.frame': { png: string; info: DesktopSessionInfo };
   'approval.respond': Approval;
   'events.since': AtlasEvent[];
-  'artifact.read': { artifact: Artifact; intact: boolean; truncated: boolean; text: string };
+  'artifact.read': { artifact: Artifact; intact: boolean; truncated: boolean; text: string; base64?: string | null };
   'runtime.health': RuntimeHealth[];
   'settings.get': SettingsState;
   'settings.set': SettingsState;

@@ -78,3 +78,87 @@ test('capture README screenshots', async () => {
     await shot(page, '10-design-preview');
   } finally { await app.close(); }
 });
+
+test('capture M2–M5 screenshots', async () => {
+  test.setTimeout(300_000);
+  const repo = sampleRepo();
+  const { app, page } = await launch({ openDir: repo });
+  try {
+    await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.setContentSize(1440, 900); w.center(); });
+    await page.getByRole('button', { name: 'Open repository' }).first().click();
+    await expect(page.getByTestId('workspace-card')).toContainText('sample-app');
+    await page.locator('.at-toast, [class*="toast"]').first().waitFor({ state: 'detached', timeout: 10_000 }).catch(() => {});
+
+    await page.getByRole('button', { name: 'Settings' }).click();
+    await page.getByTestId('allow-target').fill('local-staging');
+    await page.getByRole('button', { name: 'Allow target' }).click();
+    const desk = page.getByTestId('desktop-settings');
+    await expect(desk).not.toContainText('Checking');
+    const desktopOk = !(await desk.innerText()).includes('Unavailable');
+    if (desktopOk) await desk.getByRole('switch').click();
+    await page.getByTestId('desktop-settings').scrollIntoViewIfNeeded();
+    await shot(page, '11-settings-desktop-deploy');
+    await page.getByTestId('roles').scrollIntoViewIfNeeded();
+    await shot(page, '12-agent-roles');
+
+    await page.getByRole('button', { name: 'New mission' }).first().click();
+    await page.getByTestId('mission-title').fill('Fix slugify and ship it to staging');
+    await page.getByTestId('mission-goal').fill('Fix slugify so the tests pass, then deploy to staging and verify it there.');
+    await page.getByRole('radio', { name: /local-staging · staging/ }).click();
+    await page.getByRole('button', { name: 'Change' }).click();
+    await expect(page.getByTestId('preflight')).toHaveAttribute('data-ready', 'true');
+    await page.getByTestId('budget-fields').scrollIntoViewIfNeeded();
+    await shot(page, '13-composer-target-budget');
+    await page.getByTestId('plan-mission').click();
+    await page.getByTestId('approve-plan').click();
+    const card = page.getByTestId('approval').first();
+    await expect(card).toContainText('local-staging', { timeout: 90_000 });
+    await shot(page, '14-deploy-approval');
+    await card.getByTestId('approve').click();
+    await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'completed', { timeout: 120_000 });
+
+    await page.getByRole('tab', { name: /Tasks/ }).click();
+    await shot(page, '15-task-graph');
+    await page.getByRole('tab', { name: /Browser/ }).click();
+    await page.getByRole('button', { name: 'Screenshot' }).last().click();
+    await page.locator('img.lv-shot').waitFor();
+    await shot(page, '16-browser-qa');
+    await page.getByRole('tab', { name: /Deploy/ }).click();
+    await expect(page.getByTestId('deployment-row').first()).toBeVisible();
+    await shot(page, '17-staging-deploy');
+    await page.getByRole('tab', { name: /Review/ }).click();
+    await shot(page, '18-review');
+    await page.getByRole('tab', { name: /Terminal/ }).click();
+    await page.getByTestId('open-terminal').click();
+    await page.locator('.lv-term').click();
+    await page.keyboard.type('git log --oneline -3 && ls\n');
+    await expect(page.locator('.lv-term')).toContainText('package.json', { timeout: 15_000 });
+    await shot(page, '19-operator-terminal');
+
+    if (desktopOk) {
+      await page.getByRole('button', { name: 'New mission' }).first().click();
+      await page.getByTestId('mission-title').fill('Desktop sample');
+      await page.getByTestId('mission-goal').fill('[desktop sample] Operate the virtual desktop.');
+      await expect(page.getByTestId('preflight')).toHaveAttribute('data-ready', 'true');
+      await page.getByTestId('plan-mission').click();
+      await page.getByTestId('approve-plan').click();
+      const dc = page.getByTestId('approval').first();
+      await expect(dc).toContainText('virtual desktop', { timeout: 30_000 });
+      await shot(page, '20-desktop-approval');
+      await dc.getByTestId('approve').click();
+      await page.getByRole('tab', { name: /Desktop/ }).click();
+      await expect(page.getByTestId('desktop-controller')).toHaveAttribute('data-controller', 'agent', { timeout: 15_000 });
+      // Let the agent launch its app and click before taking over.
+      await expect(page.getByTestId('desktop')).toContainText(/[2-9] inputs so far/, { timeout: 20_000 });
+      await page.waitForTimeout(1500);
+      await shot(page, '21a-desktop-agent');
+      await page.getByTestId('desktop-takeover').click();
+      await expect(page.getByTestId('desktop-controller')).toHaveAttribute('data-controller', 'operator');
+      await page.waitForTimeout(1500);
+      await shot(page, '21-desktop-takeover');
+      await expect(page.getByTestId('mission')).toHaveAttribute('data-state', /completed|failed/, { timeout: 60_000 });
+      await page.getByRole('tab', { name: /Activity/ }).click();
+      await shot(page, '22-desktop-audit');
+    }
+  } finally { await app.close(); }
+});
