@@ -41,7 +41,9 @@ jobs:
         run: ATLAS_EVAL_OUT=evals/out pnpm eval
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: eval-report-${{ matrix.os }}, path: evals/out }
+        with:
+          name: eval-report-${{ matrix.os }}
+          path: evals/out
       - if: success() || failure()
         name: Electron e2e
         run: ${{ runner.os == 'Linux' && 'xvfb-run -a ' || '' }}pnpm test:e2e
@@ -60,4 +62,6 @@ jobs:
           if-no-files-found: ignore
       - if: failure()
         uses: actions/upload-artifact@v4
-        with: { name: e2e-results-${{ matrix.os }}, path: test-results/ }
+        with:
+          name: e2e-results-${{ matrix.os }}
+          path: test-results/

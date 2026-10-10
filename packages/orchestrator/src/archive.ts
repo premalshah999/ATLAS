@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { AtlasError, newId, nowIso, redact, redactDeep, type Artifact, type AtlasEvent, type Mission } from '@atlas/contracts';
 import type { ArtifactStore, Repo } from '@atlas/storage';
-import { removeWorktree } from '@atlas/workspace';
+import { git, removeWorktree } from '@atlas/workspace';
 
 export const EXPORT_VERSION = 1;
 const TEXT_KINDS = new Set(['log', 'patch', 'transcript', 'test_report', 'plan', 'evidence', 'context', 'manifest']);
@@ -90,6 +90,7 @@ export async function deleteMission(repo: Repo, artifacts: ArtifactStore, missio
   if (w?.isGit && !m.archived) {
     for (const t of repo.tasks(missionId)) if (t.worktree) await removeWorktree(w.root, t.worktree, t.branch).catch(() => {});
     if (m.integrationBranch) await removeWorktree(w.root, `${worktreeDir}/${m.id}/integration`, m.decision === 'accepted' ? null : m.integrationBranch).catch(() => {});
+    await git(w.root, ['update-ref', '-d', `refs/atlas/rejected/${m.id}`]).catch(() => {});
   }
   artifacts.removeFiles(missionId);
   repo.deleteMission(missionId);

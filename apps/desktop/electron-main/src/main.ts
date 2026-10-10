@@ -166,6 +166,11 @@ if (!app.commandLine.hasSwitch('no-sandbox')) app.enableSandbox();
 app.whenReady().then(() => {
   // Deny every permission request (camera, notifications, …) from web content.
   session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+  // Manual §43: no unexplained outbound traffic. Chromium otherwise downloads Hunspell dictionaries from Google.
+  session.defaultSession.setSpellCheckerEnabled(false);
+  if (process.platform !== 'darwin') {
+    try { session.defaultSession.setSpellCheckerDictionaryDownloadURL('http://127.0.0.1:9/'); session.defaultSession.setSpellCheckerLanguages([]); } catch { /* platform spellchecker */ }
+  }
   daemon = new DaemonClient(
     path.join(__dirname, 'daemon.mjs'),
     daemonEnv,

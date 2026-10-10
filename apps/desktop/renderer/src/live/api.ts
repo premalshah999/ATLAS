@@ -58,6 +58,7 @@ type Results = {
   'mission.import': Mission | null;
   'mission.delete': { deleted: string };
   'mission.reverify': Mission;
+  'mission.restore': Mission;
   'finding.update': Finding;
   'workspace.facts.get': { text: string };
   'workspace.facts.set': { text: string };

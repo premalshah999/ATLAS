@@ -59,6 +59,7 @@ export function MissionView({ missionId }: { missionId: string }) {
               </>
             )}
             {m.decision && <Badge tone="human">{m.decision === 'accepted' ? 'Accepted by you' : 'Rejected by you'}</Badge>}
+            {m.decision === 'rejected' && m.integrationCommit && !m.archived && <Button variant="ghost" icon={IUndo} disabled={busy} data-testid="restore" onClick={() => void act('Could not restore', () => call('mission.restore', { missionId }))}>Restore change</Button>}
             {m.archived && <Badge tone="outline">imported archive · read-only</Badge>}
             <Menu align="right" width={260} trigger={(_o, toggle) => <Button variant="ghost" icon={IMore} onClick={toggle} aria-label="Mission actions" data-testid="mission-menu">More</Button>}>{(close) => (<>
               <MenuItem icon={IDisk} onClick={() => { close(); void act('Export failed', async () => { const r = await call('mission.export', { missionId }); if (r) toast({ tone: 'info', title: 'Audit log exported', body: `${r.records} records · SHA-256 ${r.sha256.slice(0, 16)}… → ${r.path}` }); }); }}>Export audit log (JSONL)…</MenuItem>

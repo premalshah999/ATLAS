@@ -81,6 +81,40 @@ describe('sample mission', () => {
     expect(sh(root, 'git', ['status', '--porcelain'])).toBe('');
   });
 
+  it('a rejected change can be restored exactly, once, and never from a tampered ref', async () => {
+    const root = sampleRepo();
+    const head = sh(root, 'git', ['rev-parse', 'HEAD']);
+    const h = makeOrchestrator();
+    const id = await startMission(h, root);
+    await h.orch.settle(id);
+    const m = h.repo.mission(id)!;
+    await h.orch.decide(id, 'reject');
+    expect(sh(root, 'git', ['branch', '--list', m.integrationBranch!])).toBe('');
+    // Kept under a private ref, not a branch.
+    expect(sh(root, 'git', ['rev-parse', `refs/atlas/rejected/${id}`])).toBe(m.integrationCommit);
+    await expect(h.orch.decide(id, 'accept')).rejects.toThrow(/already rejected/);
+
+    const restored = await h.orch.restore(id);
+    expect(restored.decision).toBe('accepted');
+    expect(sh(root, 'git', ['rev-parse', m.integrationBranch!])).toBe(m.integrationCommit);
+    expect(sh(root, 'git', ['show', `${m.integrationBranch}:src/slugify.js`])).toContain('.toLowerCase()');
+    expect(sh(root, 'git', ['rev-parse', 'HEAD'])).toBe(head);
+    expect(sh(root, 'git', ['status', '--porcelain'])).toBe('');
+    await expect(h.orch.restore(id)).rejects.toThrow(/Only a rejected change/);
+    expect(h.events.filter((e) => e.type === 'mission.decision').map((e) => e.payload.decision)).toEqual(['reject', 'restore']);
+
+    // A second mission whose kept ref was moved elsewhere is refused.
+    const id2 = await startMission(h, root);
+    await h.orch.settle(id2);
+    await h.orch.decide(id2, 'reject');
+    sh(root, 'git', ['update-ref', `refs/atlas/rejected/${id2}`, head]);
+    await expect(h.orch.restore(id2)).rejects.toThrow(/refusing to restore/);
+    expect(sh(root, 'git', ['branch', '--list', h.repo.mission(id2)!.integrationBranch!])).toBe('');
+    // Deleting the mission removes the kept ref.
+    await h.orch.deleteMission(id2);
+    expect(() => sh(root, 'git', ['rev-parse', '--verify', '--quiet', `refs/atlas/rejected/${id2}`])).toThrow();
+  });
+
   it('reports unverified when the project has no test command', async () => {
     const root = sampleRepo();
     sh(root, 'git', ['rm', '-q', 'package.json']);

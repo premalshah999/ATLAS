@@ -944,11 +944,37 @@ export class Orchestrator {
     const kept: string[] = [];
     if (m.integrationBranch) {
       if (decision === 'accept') { await removeWorktree(w.root, integDir, null); kept.push(m.integrationBranch); }
-      else await removeWorktree(w.root, integDir, m.integrationBranch);
+      else {
+        // Keep the rejected result reachable under a private ref (not a branch) so it can be restored later.
+        if (m.integrationCommit) await gitOk(w.root, ['update-ref', `refs/atlas/rejected/${m.id}`, m.integrationCommit]);
+        await removeWorktree(w.root, integDir, m.integrationBranch);
+      }
     }
     for (const st of this.o.stages ?? []) await (st as ReleaseStage & { onDecision?: (m: Mission, d: string) => Promise<void> }).onDecision?.(m, decision).catch(() => {});
     this.repo.updateMission(missionId, { decision: decision === 'accept' ? 'accepted' : 'rejected' });
     this.emit({ missionId, type: 'mission.decision', actor: OPERATOR, payload: { decision, branches: kept, commit: m.integrationCommit, note: decision === 'accept' ? `Changes kept on ${kept.join(', ')} at ${m.integrationCommit?.slice(0, 7)}; merge them when ready.` : 'Worktrees and branches removed. Your checkout was not modified.' } });
+    return this.mission(missionId);
+  }
+
+  /**
+   * Restore a rejected change (manual §19): recreate its branch from the private ref kept at rejection, after
+   * checking that the ref still points at the integrated commit that was verified. The checkout is never touched.
+   */
+  async restore(missionId: string): Promise<Mission> {
+    const m = this.mission(missionId);
+    if (m.decision !== 'rejected') throw new AtlasError('invalid_request', 'Only a rejected change can be restored');
+    if (!m.integrationCommit || !m.integrationBranch) throw new AtlasError('invalid_request', 'This mission produced no integrated change to restore');
+    const w = this.repo.workspace(m.workspaceId)!;
+    const ref = `refs/atlas/rejected/${m.id}`;
+    const at = await git(w.root, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+    if (at.code !== 0) throw new AtlasError('invalid_request', 'The rejected change is no longer in the repository');
+    if (at.out.trim() !== m.integrationCommit) throw new AtlasError('invalid_request', `The kept ref points at ${at.out.trim().slice(0, 12)}, not the recorded ${m.integrationCommit.slice(0, 12)}; refusing to restore`);
+    const exists = await git(w.root, ['rev-parse', '--verify', '--quiet', `refs/heads/${m.integrationBranch}`]);
+    if (exists.code === 0) throw new AtlasError('invalid_request', `Branch ${m.integrationBranch} already exists; nothing was changed`);
+    await gitOk(w.root, ['branch', m.integrationBranch, m.integrationCommit]);
+    await gitOk(w.root, ['update-ref', '-d', ref]);
+    this.repo.updateMission(missionId, { decision: 'accepted' });
+    this.emit({ missionId, type: 'mission.decision', actor: OPERATOR, payload: { decision: 'restore', branches: [m.integrationBranch], commit: m.integrationCommit, note: `Restored the rejected change on ${m.integrationBranch} at ${m.integrationCommit.slice(0, 7)}; merge it when ready.` } });
     return this.mission(missionId);
   }
 
