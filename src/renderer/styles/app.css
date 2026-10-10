@@ -1,0 +1,10 @@
+/* Desktop app shell: fills the window and defers window controls to the OS. */
+html, body, #root { height: 100%; margin: 0; background: var(--bg-void); overflow: hidden; }
+body { min-width: 1024px; min-height: 680px; }
+
+/* Native window controls replace the drawn traffic lights. */
+[data-runtime="desktop"] .at-traffic i { visibility: hidden; }
+[data-runtime="desktop"]:not([data-platform="darwin"]) .at-traffic { width: 8px; padding-left: 0; }
+[data-runtime="desktop"]:not([data-platform="darwin"]) .at-titlebar { padding-right: 148px; }
+[data-runtime="web"] .at-traffic { display: none; }
+[data-runtime="web"] .at-titlebar { padding-left: 8px; }

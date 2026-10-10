@@ -1,0 +1,62 @@
+{
+  "name": "atlas",
+  "productName": "ATLAS",
+  "version": "0.1.0",
+  "description": "Mission control for autonomous software engineering.",
+  "private": true,
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "concurrently -k -n web,app \"vite\" \"npm:dev:electron\"",
+    "dev:web": "vite",
+    "dev:electron": "tsc -p tsconfig.electron.json && wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
+    "build": "npm run typecheck && vite build && tsc -p tsconfig.electron.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
+    "start": "electron .",
+    "preview": "vite preview",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "highlight.js": "11.11.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-icons": "5.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "@types/react": "18.3.18",
+    "@types/react-dom": "18.3.5",
+    "@vitejs/plugin-react": "4.3.4",
+    "concurrently": "9.1.2",
+    "cross-env": "7.0.3",
+    "electron": "44.1.1",
+    "electron-builder": "25.1.8",
+    "typescript": "5.7.2",
+    "vite": "5.4.21",
+    "wait-on": "8.0.1"
+  },
+  "build": {
+    "appId": "dev.atlas.app",
+    "productName": "ATLAS",
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ]
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
+  }
+}
