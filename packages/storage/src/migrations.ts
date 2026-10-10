@@ -89,4 +89,19 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       CREATE INDEX deployments_target ON deployments(target, created_at);
     `,
   },
+  {
+    version: 5,
+    sql: `
+      -- The gate verdict, so "unverified" is never displayed as plain "completed". Backfilled from the log.
+      ALTER TABLE missions ADD COLUMN verdict TEXT;
+      UPDATE missions SET verdict = (
+        SELECT json_extract(e.payload, '$.verdict') FROM events e WHERE e.mission_id = missions.id AND e.type = 'gate.result' ORDER BY e.seq DESC LIMIT 1
+      );
+      -- Every process ATLAS starts is journaled until it exits, so a crashed daemon's orphans can be reaped.
+      CREATE TABLE process_journal (
+        pid INTEGER NOT NULL, identity TEXT NOT NULL, kind TEXT NOT NULL, command TEXT NOT NULL, started_at TEXT NOT NULL,
+        PRIMARY KEY (pid, identity)
+      );
+    `,
+  },
 ];

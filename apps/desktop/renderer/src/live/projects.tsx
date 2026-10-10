@@ -6,7 +6,7 @@ import { toast } from './toast';
 import { refreshLists } from './store';
 import { go, useLive } from './store';
 import { openRepository, dotFor } from './shell';
-import { ago, stateWord } from './format';
+import { ago, missionStatus } from './format';
 
 export function Projects() {
   const workspaces = useLive((s) => s.workspaces);
@@ -49,9 +49,9 @@ export function Projects() {
                       {ms.slice(0, 6).map((m) => (
                         <li key={m.id}>
                           <button type="button" className="lv-row" onClick={() => go({ screen: 'mission', missionId: m.id })}>
-                            <Dot s={dotFor(m.state)} />
+                            <Dot s={dotFor(m)} />
                             <span className="at-trunc" style={{ fontWeight: 500 }}>{m.title}</span>
-                            <span className="at-subtle lv-small">{stateWord(m.state)}{m.outcome ? ` · ${m.outcome.split(':')[0]}` : ''}</span>
+                            <span className="at-subtle lv-small" data-testid="mission-status">{missionStatus(m).word}</span>
                             <span style={{ flex: 1 }} />
                             <span className="at-subtle lv-small">{ago(m.updatedAt)}</span>
                           </button>
@@ -67,7 +67,7 @@ export function Projects() {
         {archived.length > 0 && (
           <section className="lv-card" style={{ margin: '0 24px 24px' }} data-testid="archives">
             <div className="lv-card-head"><Icon as={IHistory} className="at-subtle" /><span className="heading">Imported audit logs</span></div>
-            <ul className="lv-list">{archived.map((m) => <li key={m.id}><button type="button" className="lv-row" onClick={() => go({ screen: 'mission', missionId: m.id })}><Dot s={dotFor(m.state)} /><span className="at-trunc" style={{ fontWeight: 500 }}>{m.title}</span><span className="at-subtle lv-small">{stateWord(m.state)} · read-only</span></button></li>)}</ul>
+            <ul className="lv-list">{archived.map((m) => <li key={m.id}><button type="button" className="lv-row" onClick={() => go({ screen: 'mission', missionId: m.id })}><Dot s={dotFor(m)} /><span className="at-trunc" style={{ fontWeight: 500 }}>{m.title}</span><span className="at-subtle lv-small">{missionStatus(m).word} · read-only</span></button></li>)}</ul>
           </section>
         )}
       </div>

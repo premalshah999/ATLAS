@@ -13,16 +13,32 @@ function seed(repo: Repo) {
   const now = nowIso();
   const ws = repo.upsertWorkspace({ id: newId('ws'), name: 'w', root: '/tmp/w-' + Math.random(), isGit: true, branch: 'main', head: 'abc', dirty: 0, createdAt: now, updatedAt: now });
   const id = newId('msn');
-  repo.insertMission({ id, workspaceId: ws.id, title: 't', goal: 'g', constraints: '', approvalMode: 'ask_risky', runtime: 'fake', baseCommit: null, state: 'draft', planVersion: 0, policyId: 'p', outcome: null, decision: null, budget: DEFAULT_BUDGET, integrationBranch: null, integrationCommit: null, archived: false, targetEnvironment: null, createdAt: now, updatedAt: now });
+  repo.insertMission({ id, workspaceId: ws.id, title: 't', goal: 'g', constraints: '', approvalMode: 'ask_risky', runtime: 'fake', baseCommit: null, state: 'draft', planVersion: 0, policyId: 'p', outcome: null, decision: null, budget: DEFAULT_BUDGET, integrationBranch: null, integrationCommit: null, archived: false, targetEnvironment: null, verdict: null, createdAt: now, updatedAt: now });
   return id;
 }
 
 describe('storage', () => {
   it('applies migrations once with WAL and foreign keys', () => {
     const { db } = setup();
-    expect(schemaVersion(db)).toBe(4);
+    expect(schemaVersion(db)).toBe(5);
     expect((db.prepare('PRAGMA journal_mode').get() as any).journal_mode).toBe('wal');
     expect((db.prepare('PRAGMA foreign_keys').get() as any).foreign_keys).toBe(1);
+  });
+
+  it('v5 backfills the gate verdict for missions recorded before it existed', () => {
+    const dir = tmpDir();
+    let { db, repo } = setup(dir);
+    const id = seed(repo);
+    repo.append({ missionId: id, taskId: null, attemptId: null, type: 'gate.result', actor: { kind: 'system', component: 'release-gate' }, payload: { verdict: 'failed', summary: 'x' }, artifactIds: [] });
+    repo.append({ missionId: id, taskId: null, attemptId: null, type: 'gate.result', actor: { kind: 'system', component: 'release-gate' }, payload: { verdict: 'unverified', summary: 'y' }, artifactIds: [] });
+    // Roll the database back to v4, as an existing installation would be.
+    db.exec("DELETE FROM schema_migrations WHERE version = 5; ALTER TABLE missions DROP COLUMN verdict; DROP TABLE process_journal;");
+    db.close();
+    ({ db, repo } = setup(dir));
+    expect(schemaVersion(db)).toBe(5);
+    expect(repo.mission(id)!.verdict).toBe('unverified'); // the latest gate result wins
+    repo.updateMission(id, { verdict: 'verified' });
+    expect(repo.mission(id)!.verdict).toBe('verified');
   });
 
   it('assigns monotonic per-mission sequence numbers and redacts payloads', () => {

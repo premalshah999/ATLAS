@@ -57,6 +57,8 @@ export interface Mission {
   archived: boolean;
   /** Staging target the operator chose for this mission (manual §34); null = no deployment. */
   targetEnvironment: string | null;
+  /** Release-gate verdict once verification ran: only `verified` means a required check actually passed. */
+  verdict: 'verified' | 'unverified' | 'failed' | null;
   createdAt: string;
   updatedAt: string;
 }

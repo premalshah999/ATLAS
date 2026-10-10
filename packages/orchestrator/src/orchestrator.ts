@@ -181,7 +181,7 @@ export class Orchestrator {
     const budget = MissionBudget.parse({ ...DEFAULT_BUDGET, ...(input.budget ?? {}) });
     const m: Mission = {
       id: newId('msn'), workspaceId: input.workspaceId, title: input.title, goal: input.goal, constraints: input.constraints, approvalMode: input.approvalMode, runtime: input.runtime,
-      baseCommit: null, state: 'draft', planVersion: 0, policyId: 'default@2', outcome: null, decision: null, budget, integrationBranch: null, integrationCommit: null, archived: false, targetEnvironment: input.targetEnvironment ?? null, createdAt: now, updatedAt: now,
+      baseCommit: null, state: 'draft', planVersion: 0, policyId: 'default@2', outcome: null, decision: null, budget, integrationBranch: null, integrationCommit: null, archived: false, targetEnvironment: input.targetEnvironment ?? null, verdict: null, createdAt: now, updatedAt: now,
     };
     this.repo.insertMission(m);
     this.emit({ missionId: m.id, type: 'mission.created', actor: OPERATOR, payload: { title: m.title, goal: m.goal, constraints: m.constraints, approvalMode: m.approvalMode, runtime: m.runtime, workspace: w.name, budget, targetEnvironment: m.targetEnvironment } });
@@ -775,7 +775,7 @@ export class Orchestrator {
     const current = this.repo.mission(m.id)!;
     if (current.state !== 'verifying' || signal.aborted) return;
     this.emit({ missionId: m.id, type: 'gate.result', actor: SYSTEM('release-gate'), payload: { verdict, summary, commit: current.integrationCommit, checks: checks.map((c) => ({ name: c.name, required: c.required, result: c.result, commit: c.commit })) } });
-    this.repo.updateMission(m.id, { outcome: summary });
+    this.repo.updateMission(m.id, { outcome: summary, verdict });
     this.setMission(current, verdict === 'failed' ? 'failed' : 'completed', { verdict });
   }
 

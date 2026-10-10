@@ -15,6 +15,18 @@ const STATE_WORD: Record<string, string> = {
 };
 export const stateWord = (s: string) => STATE_WORD[s] ?? s;
 
+const DOT: Record<string, string> = { running: 'running', verifying: 'running', planning: 'running', awaiting_approval: 'waiting', completed: 'done', failed: 'failed', cancelled: 'idle', draft: 'idle' };
+/**
+ * How a mission's status is shown everywhere. A finished mission is described by its gate verdict, so an
+ * unverified result is never presented like a verified one.
+ */
+export function missionStatus(m: { state: string; verdict?: string | null }): { dot: string; word: string } {
+  if (m.state === 'completed' && m.verdict === 'verified') return { dot: 'done', word: 'Verified' };
+  if (m.state === 'completed' && m.verdict === 'unverified') return { dot: 'warning', word: 'Unverified' };
+  if (m.state === 'failed' && m.verdict === 'failed') return { dot: 'failed', word: 'Failed verification' };
+  return { dot: DOT[m.state] ?? 'idle', word: stateWord(m.state) };
+}
+
 function argText(tool: string, a: Record<string, unknown>) {
   if (tool === 'shell_exec') return [a.command, ...((a.args as string[]) ?? [])].join(' ');
   if (typeof a.path === 'string') return a.path;

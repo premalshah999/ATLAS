@@ -126,6 +126,7 @@ describe('sample mission', () => {
     const id = await startMission(h, root);
     await h.orch.settle(id);
     expect(h.repo.mission(id)!.outcome).toMatch(/^Unverified/);
+    expect(h.repo.mission(id)!.verdict).toBe('unverified'); // never displayed as plain "completed"
   });
 });
 

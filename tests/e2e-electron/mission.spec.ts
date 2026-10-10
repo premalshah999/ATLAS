@@ -33,6 +33,8 @@ test('sample mission end to end, with daemon crash and app restart recovery', as
     await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'completed', { timeout: 60_000 });
     await expect(page.getByTestId('outcome')).toContainText(/Verified: tests, api:slug-endpoint, api:health, browser:make-a-slug/);
     await expect(page.getByTestId('check-row').first()).toHaveAttribute('data-result', 'pass');
+    await expect(page.getByTestId('mission-state')).toHaveAttribute('data-verdict', 'verified');
+    await expect(page.getByTestId('mission-state')).toContainText('Verified');
 
     // Timeline integrity: each event appears once, and every filter shows exactly what its chip counts.
     await page.getByRole('tab', { name: /Activity/ }).click();

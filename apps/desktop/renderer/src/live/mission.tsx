@@ -8,7 +8,7 @@ import { BrowserPanel, BudgetMeter, DeployPanel, DesktopPanel, Findings, TaskGra
 import { go, refreshLists } from './store';
 import { call } from './api';
 import { useMission } from './useMission';
-import { describeEvent, fmtMs, markOf, resultWord, roleMark, roleName, stateWord, time, type Row } from './format';
+import { describeEvent, fmtMs, markOf, missionStatus, resultWord, roleMark, roleName, stateWord, time, type Row } from './format';
 import { toast } from './toast';
 
 const ACTIVE = new Set(['planning', 'running', 'verifying']);
@@ -31,7 +31,7 @@ export function MissionView({ missionId }: { missionId: string }) {
   const m = snap.mission;
   const pending = snap.approvals.filter((a) => a.status === 'pending');
   const gate = [...events].reverse().find((e) => e.type === 'gate.result');
-  const verdict = gate?.payload.verdict as string | undefined;
+  const verdict = (m.verdict ?? gate?.payload.verdict) as string | undefined;
   const finished = m.state === 'completed' || m.state === 'failed';
   const patchCount = snap.artifacts.filter((a) => a.kind === 'patch').length;
   const hasBrowser = events.some((e) => e.type === 'browser.step') || snap.checks.some((c) => /^(api|browser):/.test(c.name));
@@ -44,7 +44,7 @@ export function MissionView({ missionId }: { missionId: string }) {
           <div className="at-row" style={{ gap: 10 }}>
             <span className="at-mid">{m.id}</span>
             <h1 className="display at-trunc" style={{ margin: 0 }}>{m.title}</h1>
-            <span data-testid="mission-state"><Status s={statusKey(m.state)} label={stateWord(m.state)} /></span>
+            <span data-testid="mission-state" data-verdict={m.verdict ?? ''}><Status s={missionStatus(m).dot} label={missionStatus(m).word} /></span>
             {m.runtime === 'fake' && <Tip label="Scripted sample runtime: no model is called. Tool calls, commands and checks are real."><span><Badge tone="sample">scripted runtime</Badge></span></Tip>}
           </div>
           <div className="at-muted at-trunc" style={{ maxWidth: 900 }}>{m.goal}</div>

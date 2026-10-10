@@ -56,11 +56,11 @@ export class Repo {
 
   /* ---------- missions ---------- */
   insertMission(m: Mission) {
-    this.db.prepare(`INSERT INTO missions (id, workspace_id, title, goal, constraints, approval_mode, runtime, base_commit, state, plan_version, policy_id, outcome, decision, budget, integration_branch, integration_commit, archived, target_environment, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(m.id, m.workspaceId, m.title, m.goal, m.constraints, m.approvalMode, m.runtime, m.baseCommit, m.state, m.planVersion, m.policyId, m.outcome, m.decision, j(m.budget), m.integrationBranch, m.integrationCommit, m.archived ? 1 : 0, m.targetEnvironment ?? null, m.createdAt, m.updatedAt);
+    this.db.prepare(`INSERT INTO missions (id, workspace_id, title, goal, constraints, approval_mode, runtime, base_commit, state, plan_version, policy_id, outcome, decision, budget, integration_branch, integration_commit, archived, target_environment, verdict, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(m.id, m.workspaceId, m.title, m.goal, m.constraints, m.approvalMode, m.runtime, m.baseCommit, m.state, m.planVersion, m.policyId, m.outcome, m.decision, j(m.budget), m.integrationBranch, m.integrationCommit, m.archived ? 1 : 0, m.targetEnvironment ?? null, m.verdict ?? null, m.createdAt, m.updatedAt);
   }
-  updateMission(id: string, patch: Partial<Pick<Mission, 'state' | 'planVersion' | 'baseCommit' | 'outcome' | 'decision' | 'integrationBranch' | 'integrationCommit'>>) {
-    const cols: Record<string, string> = { state: 'state', planVersion: 'plan_version', baseCommit: 'base_commit', outcome: 'outcome', decision: 'decision', integrationBranch: 'integration_branch', integrationCommit: 'integration_commit' };
+  updateMission(id: string, patch: Partial<Pick<Mission, 'state' | 'planVersion' | 'baseCommit' | 'outcome' | 'decision' | 'integrationBranch' | 'integrationCommit' | 'verdict'>>) {
+    const cols: Record<string, string> = { state: 'state', planVersion: 'plan_version', baseCommit: 'base_commit', outcome: 'outcome', decision: 'decision', integrationBranch: 'integration_branch', integrationCommit: 'integration_commit', verdict: 'verdict' };
     const keys = Object.keys(patch) as (keyof typeof patch)[];
     if (!keys.length) return;
     const sql = `UPDATE missions SET ${keys.map((k) => `${cols[k]} = ?`).join(', ')}, updated_at = ? WHERE id = ?`;
@@ -212,7 +212,7 @@ const toMission = (r: Row): Mission => ({
   id: r.id, workspaceId: r.workspace_id, title: r.title, goal: r.goal, constraints: r.constraints, approvalMode: r.approval_mode, runtime: r.runtime, baseCommit: r.base_commit,
   state: r.state, planVersion: r.plan_version, policyId: r.policy_id, outcome: r.outcome, decision: r.decision,
   budget: { ...DEFAULT_BUDGET, ...p<object>(r.budget ?? '{}') }, integrationBranch: r.integration_branch ?? null, integrationCommit: r.integration_commit ?? null, archived: !!r.archived,
-  targetEnvironment: r.target_environment ?? null,
+  targetEnvironment: r.target_environment ?? null, verdict: r.verdict ?? null,
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const toTask = (r: Row): Task => ({ id: r.id, missionId: r.mission_id, key: r.key, title: r.title, role: r.role, dependencies: p(r.dependencies), state: r.state, retries: r.retries, acceptance: p(r.acceptance), resultRef: r.result_ref, worktree: r.worktree, branch: r.branch, checkpoint: r.checkpoint ?? null, parentTaskId: r.parent_task_id ?? null, depth: r.depth ?? 0 });

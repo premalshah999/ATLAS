@@ -4,7 +4,7 @@ export default defineWorkspace([
   {
     test: {
       name: 'unit',
-      include: ['packages/*/test/**/*.test.ts', 'apps/daemon/test/**/*.test.ts', 'evals/**/*.test.ts'],
+      include: ['packages/*/test/**/*.test.ts', 'apps/daemon/test/**/*.test.ts', 'apps/desktop/renderer/src/**/*.test.ts', 'evals/**/*.test.ts'],
       exclude: ['**/*.int.test.ts'],
       environment: 'node',
       testTimeout: 20_000,

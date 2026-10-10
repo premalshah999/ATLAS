@@ -21,7 +21,8 @@
     "pi:version": "node scripts/pi-version.mjs",
     "seed:sample": "node scripts/seed-sample.mjs",
     "screenshots": "pnpm build && playwright test -c tests/e2e-electron/screenshots.config.ts",
-    "eval": "vitest run --project eval"
+    "eval": "vitest run --project eval",
+    "metrics": "pnpm build && playwright test -c tests/e2e-electron/metrics.config.ts"
   },
   "devDependencies": {
     "@atlas/browser": "workspace:*",
