@@ -52,4 +52,10 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 2,
+    sql: `
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+    `,
+  },
 ];

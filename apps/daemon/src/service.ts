@@ -7,6 +7,7 @@ import { ArtifactStore, openDb, Repo, schemaVersion, type Db } from '@atlas/stor
 import { Orchestrator, replay } from '@atlas/orchestrator';
 import { FakeRuntime, sampleSlugifyScript } from '@atlas/runtime-fake';
 import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
+import { detectSandbox } from '@atlas/terminal';
 import { createLogger, type Logger } from './log';
 
 export interface ServiceOptions { dataDir: string; version: string; apiKeys?: Record<string, string>; model?: string }
@@ -76,6 +77,12 @@ export class DaemonService {
         return { artifact: r.artifact, intact: r.intact, truncated: r.text.length > max, text: r.text.slice(0, max) };
       }
       case 'runtime.health': return Promise.all([this.fake.health(), this.pi.health()]);
+      case 'settings.get': return { values: { 'execution.allowUnsandboxed': this.repo.setting('execution.allowUnsandboxed', false) }, sandbox: detectSandbox(true) };
+      case 'settings.set': {
+        this.repo.setSetting(p.key, p.value);
+        this.log.warn('setting changed', { key: p.key, value: p.value });
+        return { values: { 'execution.allowUnsandboxed': this.repo.setting('execution.allowUnsandboxed', false) }, sandbox: detectSandbox() };
+      }
       default: throw new AtlasError('invalid_request', `${method} is handled by the desktop shell`);
     }
   }

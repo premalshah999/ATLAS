@@ -5,7 +5,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { AtlasError, newId, redact, type AgentRole, type Approval, type ApprovalMode, type ToolInvoker, type ToolResult, type ToolSpec } from '@atlas/contracts';
 import { evaluate, approvalUsable } from '@atlas/policy';
-import { run, sanitizedEnv, type RunResult } from '@atlas/terminal';
+import { run, sanitizedEnv, type RunResult, type SandboxSpec } from '@atlas/terminal';
 import { git, resolveInside } from '@atlas/workspace';
 import type { Repo, ArtifactStore } from '@atlas/storage';
 import { detectRecipes } from './verification';
@@ -33,7 +33,7 @@ export interface Executors {
   readFile(abs: string): string;
   listDir(abs: string): string[];
   writeFile(abs: string, content: string): void;
-  exec(o: { command: string; args: string[]; cwd: string; timeoutMs: number; signal: AbortSignal; onStart(pid: number): void; onOutput(s: 'stdout' | 'stderr', t: string): void }): Promise<RunResult>;
+  exec(o: { command: string; args: string[]; cwd: string; timeoutMs: number; signal: AbortSignal; sandbox?: SandboxSpec; onStart(pid: number): void; onOutput(s: 'stdout' | 'stderr', t: string): void }): Promise<RunResult>;
 }
 
 export const realExecutors: Executors = {
@@ -48,7 +48,14 @@ export const realExecutors: Executors = {
   exec: (o) => run({ ...o, env: sanitizedEnv() }),
 };
 
+/** How untrusted commands are isolated for this task (manual §23, ADR 0007). */
+export type Isolation =
+  | { mode: 'sandbox'; readOnly: string[]; readWrite: string[] }
+  | { mode: 'unsandboxed' }
+  | { mode: 'unavailable'; detail: string };
+
 export interface GateContext {
+  isolation: Isolation;
   missionId: string;
   taskId: string;
   attemptId: string;
@@ -104,7 +111,7 @@ export class ToolGate implements ToolInvoker {
     }
 
     try {
-      return await this.execute(name, args, signal);
+      return await this.execute(name, args, signal, !!decision.network);
     } catch (e) {
       if (e instanceof AtlasError && e.kind === 'policy_deny') {
         this.emit('policy.decision', { tool: name, action, decision: 'deny', reason: e.message });
@@ -114,7 +121,7 @@ export class ToolGate implements ToolInvoker {
     }
   }
 
-  private async execute(name: string, a: Record<string, any>, signal: AbortSignal): Promise<ToolResult> {
+  private async execute(name: string, a: Record<string, any>, signal: AbortSignal, network: boolean): Promise<ToolResult> {
     const cwd = this.ctx.cwd;
     switch (name) {
       case 'read_file': return ok(this.ex.readFile(resolveInside(cwd, a.path)));
@@ -129,25 +136,33 @@ export class ToolGate implements ToolInvoker {
         const diff = await git(cwd, ['diff', '--stat']);
         return ok(`${st.out || '(clean)'}\n${diff.out}`.trim());
       }
-      case 'shell_exec': return this.process(a.command, a.args, (a.timeoutSec ?? 300) * 1000, signal, 'shell');
+      case 'shell_exec': return this.process(a.command, a.args, (a.timeoutSec ?? 300) * 1000, signal, 'shell', network);
       case 'run_tests': {
         const r = detectRecipes(cwd).find((x) => x.name === 'tests');
         if (!r) return { ok: false, output: 'No test command is configured for this project (package.json "test" script not found).', exitCode: null, artifactIds: [], error: null };
-        return this.process(r.command, r.args, r.timeoutMs, signal, 'tests');
+        return this.process(r.command, r.args, r.timeoutMs, signal, 'tests', false);
       }
     }
     return this.fail('unknown_tool', name);
   }
 
-  private async process(command: string, args: string[], timeoutMs: number, signal: AbortSignal, label: string): Promise<ToolResult> {
+  private async process(command: string, args: string[], timeoutMs: number, signal: AbortSignal, label: string, network: boolean): Promise<ToolResult> {
     const cmd = [command, ...args].join(' ');
+    const iso = this.ctx.isolation;
+    if (iso.mode === 'unavailable') {
+      this.emit('policy.decision', { tool: label, action: redact(cmd), decision: 'deny', reason: `No OS sandbox: ${iso.detail}` });
+      return { ok: false, output: `Not executed: no OS sandbox is available (${iso.detail}). The operator can install one or explicitly allow unsandboxed execution in Settings.`, exitCode: null, artifactIds: [], error: 'sandbox_unavailable' };
+    }
+    const sandbox: SandboxSpec | undefined = iso.mode === 'sandbox'
+      ? { root: this.ctx.cwd, writable: this.ctx.mode !== 'plan_only', network, readOnly: iso.readOnly, readWrite: iso.readWrite, limits: { cpuSeconds: 1800, fileSizeBytes: 1024 ** 3, openFiles: 4096 } }
+      : undefined;
     let pid = 0;
     let buf = '';
     let flushAt = 0;
     const flush = () => { if (buf) { this.emit('process.output', { pid, text: buf }); buf = ''; } };
     const r = await this.ex.exec({
-      command, args, cwd: this.ctx.cwd, timeoutMs, signal,
-      onStart: (p) => { pid = p; this.emit('process.started', { pid, command: redact(cmd), cwd: this.ctx.cwd, label }); },
+      command, args, cwd: this.ctx.cwd, timeoutMs, signal, sandbox,
+      onStart: (p) => { pid = p; this.emit('process.started', { pid, command: redact(cmd), cwd: this.ctx.cwd, label, sandboxed: !!sandbox, network: sandbox ? network : true }); },
       onOutput: (_s, t) => { buf += t; if (buf.length > 4000 || Date.now() - flushAt > 250) { flushAt = Date.now(); flush(); } },
     });
     flush();

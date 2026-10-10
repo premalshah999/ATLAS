@@ -31,6 +31,18 @@ export class Repo {
     }));
   }
 
+  /* ---------- settings (operator preferences, never secrets) ---------- */
+  setting<T>(key: string, fallback: T): T {
+    const r = this.db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
+    return r ? (JSON.parse(r.value) as T) : fallback;
+  }
+  setSetting(key: string, value: unknown) {
+    this.db.prepare('INSERT INTO settings (key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at').run(key, JSON.stringify(value), nowIso());
+  }
+  settings(): Record<string, unknown> {
+    return Object.fromEntries((this.db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[]).map((r) => [r.key, JSON.parse(r.value)]));
+  }
+
   /* ---------- workspaces ---------- */
   upsertWorkspace(w: Workspace): Workspace {
     this.db.prepare(`INSERT INTO workspaces (id, name, root, is_git, branch, head, dirty, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?)

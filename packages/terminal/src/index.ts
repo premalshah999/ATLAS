@@ -2,6 +2,9 @@
 // process group so cancellation and timeouts terminate the whole tree.
 import { spawn, execFileSync } from 'node:child_process';
 import { redact } from '@atlas/contracts';
+import { wrapCommand, type SandboxSpec } from './sandbox';
+
+export { detectSandbox, wrapCommand, toolchainPaths, SANDBOX_HOME, type SandboxSpec, type SandboxInfo, type SandboxKind } from './sandbox';
 
 /** Environment variables passed through to child processes. Everything else is dropped. */
 export const ENV_ALLOWLIST = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TEMP', 'TMP', 'SHELL', 'SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE'];
@@ -23,6 +26,8 @@ export interface RunOptions {
   maxOutput?: number;
   onStart?: (pid: number) => void;
   onOutput?: (stream: 'stdout' | 'stderr', text: string) => void;
+  /** Run inside the OS sandbox. When set and no sandbox exists, the run fails closed (spawnError). */
+  sandbox?: SandboxSpec;
 }
 
 export interface RunResult {
@@ -65,9 +70,17 @@ export function run(o: RunOptions): Promise<RunResult> {
       return;
     }
 
-    const child = spawn(o.command, o.args, {
+    let cmd = o.command, argv = o.args, env = o.env ?? sanitizedEnv();
+    if (o.sandbox) {
+      try { ({ command: cmd, args: argv, env } = wrapCommand(o.command, o.args, o.cwd, o.sandbox, env)); }
+      catch (e) {
+        resolve({ exitCode: null, signal: null, durationMs: 0, output: '', truncated: false, timedOut: false, cancelled: false, pid: null, spawnError: (e as Error).message });
+        return;
+      }
+    }
+    const child = spawn(cmd, argv, {
       cwd: o.cwd,
-      env: o.env ?? sanitizedEnv(),
+      env,
       detached: process.platform !== 'win32',
       shell: false,
       windowsHide: true,

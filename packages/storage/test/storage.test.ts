@@ -20,7 +20,7 @@ function seed(repo: Repo) {
 describe('storage', () => {
   it('applies migrations once with WAL and foreign keys', () => {
     const { db } = setup();
-    expect(schemaVersion(db)).toBe(1);
+    expect(schemaVersion(db)).toBe(2);
     expect((db.prepare('PRAGMA journal_mode').get() as any).journal_mode).toBe('wal');
     expect((db.prepare('PRAGMA foreign_keys').get() as any).foreign_keys).toBe(1);
   });

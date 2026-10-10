@@ -8,6 +8,8 @@ export interface PolicyDecision {
   capability: Capability | null;
   risk: Risk;
   reason: string;
+  /** The command needs network egress; the sandbox grants it only after an approval. */
+  network?: boolean;
 }
 
 /** Capabilities granted per role. Anything absent is denied. */
@@ -24,7 +26,7 @@ export const ROLE_GRANTS: Record<AgentRole, readonly Capability[]> = {
 /** Capabilities no agent may use in v0.1, whatever the role says. */
 const NEVER: ReadonlySet<Capability> = new Set(['deploy.production', 'secrets.use', 'desktop.input', 'deploy.staging']);
 
-export interface ShellClass { capability: 'shell.safe' | 'shell.privileged' | null; risk: Risk; reason: string }
+export interface ShellClass { capability: 'shell.safe' | 'shell.privileged' | null; risk: Risk; reason: string; /** Needs network egress inside the sandbox (granted only with approval). */ network?: boolean }
 
 const SAFE_EXEC = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find', 'echo', 'pwd', 'diff', 'sort', 'uniq', 'tsc', 'node', 'true', 'false', 'test']);
 const DENY_EXEC = new Set(['sudo', 'su', 'doas', 'mkfs', 'dd', 'shutdown', 'reboot', 'launchctl', 'systemctl', 'security', 'osascript']);
@@ -40,7 +42,7 @@ export function classifyCommand(command: string, args: readonly string[]): Shell
   if (!exe || /[;&|`$<>]/.test(command)) return { capability: null, risk: 'high', reason: 'Executable name contains shell metacharacters' };
   if (DENY_EXEC.has(exe)) return { capability: null, risk: 'high', reason: `${exe} is never permitted for agents` };
   if (SHELLS.has(exe)) return { capability: 'shell.privileged', risk: 'high', reason: 'Spawning a shell runs arbitrary code' };
-  if (NETWORK.has(exe)) return { capability: 'shell.privileged', risk: 'elevated', reason: 'Command reaches the network' };
+  if (NETWORK.has(exe)) return { capability: 'shell.privileged', risk: 'elevated', reason: 'Command reaches the network', network: true };
   if (exe === 'rm' || exe === 'mv' || exe === 'chmod' || exe === 'chown' || exe === 'ln') {
     const recursive = args.some((a) => /^-[a-zA-Z]*[rRf]/.test(a));
     return { capability: 'shell.privileged', risk: recursive ? 'high' : 'elevated', reason: 'Command deletes, moves or changes permissions of files' };
@@ -48,13 +50,13 @@ export function classifyCommand(command: string, args: readonly string[]): Shell
   if (exe === 'git') {
     const sub = args.find((a) => !a.startsWith('-')) ?? '';
     if (SAFE_GIT.has(sub)) return { capability: 'shell.safe', risk: 'low', reason: `git ${sub} is read-only` };
-    return { capability: 'shell.privileged', risk: sub === 'push' || sub === 'reset' || sub === 'clean' ? 'high' : 'elevated', reason: `git ${sub || '(none)'} changes repository state` };
+    return { capability: 'shell.privileged', risk: sub === 'push' || sub === 'reset' || sub === 'clean' ? 'high' : 'elevated', reason: `git ${sub || '(none)'} changes repository state`, network: ['push', 'fetch', 'pull', 'clone', 'ls-remote', 'submodule'].includes(sub) };
   }
   if (PKG.has(exe) || exe === 'npx') {
     const sub = args.find((a) => !a.startsWith('-')) ?? '';
     if (exe !== 'npx' && SAFE_PKG.has(sub)) return { capability: 'shell.safe', risk: 'low', reason: `${exe} ${sub} runs a project script` };
     if (exe === 'npx' && ['vitest', 'jest', 'tsc', 'eslint', 'prettier', 'mocha'].includes(sub)) return { capability: 'shell.safe', risk: 'low', reason: `npx ${sub} runs a local dev tool` };
-    return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} ${sub || ''} may install packages or run install scripts`.replace(/\s+/g, ' ') };
+    return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} ${sub || ''} may install packages or run install scripts`.replace(/\s+/g, ' '), network: true };
   }
   if (exe === 'node' && args.some((a) => a === '-e' || a === '--eval' || a === '-p' || a === '--print')) {
     return { capability: 'shell.privileged', risk: 'elevated', reason: 'Inline code evaluation' };
@@ -87,13 +89,14 @@ export function evaluate({ role, tool, args, mode }: EvaluateInput): PolicyDecis
   let capability: Capability;
   let risk: Risk = 'low';
   let why = '';
+  let network = false;
   if (mapped === 'shell') {
     const command = typeof args.command === 'string' ? args.command : '';
     const argv = Array.isArray(args.args) ? args.args.map(String) : [];
     if (!command) return { decision: 'deny', capability: null, risk: 'high', reason: 'shell_exec requires a command' };
     const c = classifyCommand(command, argv);
     if (!c.capability) return { decision: 'deny', capability: null, risk: c.risk, reason: c.reason };
-    capability = c.capability; risk = c.risk; why = c.reason;
+    capability = c.capability; risk = c.risk; why = c.reason; network = !!c.network;
   } else {
     capability = mapped;
     if (capability === 'fs.write') risk = 'low';
@@ -105,7 +108,7 @@ export function evaluate({ role, tool, args, mode }: EvaluateInput): PolicyDecis
   if (mode === 'plan_only' && (capability === 'fs.write' || capability === 'shell.privileged')) {
     return { decision: 'deny', capability, risk, reason: 'Mission runs in plan-only mode: no writes or privileged commands' };
   }
-  if (capability === 'shell.privileged') return { decision: 'ask', capability, risk, reason: why || 'Privileged command' };
+  if (capability === 'shell.privileged') return { decision: 'ask', capability, risk, reason: why || 'Privileged command', network };
   if (capability === 'fs.write' && mode === 'ask_all_writes') return { decision: 'ask', capability, risk, reason: 'Approval mode requires approval for every write' };
   return { decision: 'allow', capability, risk, reason: why || `${capability} granted to ${role}` };
 }

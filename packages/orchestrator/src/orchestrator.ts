@@ -7,11 +7,12 @@ import {
 } from '@atlas/contracts';
 import type { ArtifactStore, Repo } from '@atlas/storage';
 import { checkpoint, createWorktree, diffSince, inspectRepo, Leases, removeWorktree } from '@atlas/workspace';
-import { run, sanitizedEnv } from '@atlas/terminal';
+import { detectSandbox, run, sanitizedEnv, type SandboxSpec } from '@atlas/terminal';
+import { git } from '@atlas/workspace';
 import { assertMission, assertTask, TERMINAL_TASK } from './states';
 import { defaultPlan, validatePlan } from './plan';
 import { role } from './roles';
-import { ToolGate, realExecutors, type Executors } from './toolgate';
+import { ToolGate, realExecutors, type Executors, type Isolation } from './toolgate';
 import { detectRecipes, gate, type Verdict } from './verification';
 
 export interface OrchestratorOptions {
@@ -57,6 +58,25 @@ export class Orchestrator {
     return this.repo.append({ taskId: null, attemptId: null, artifactIds: [], ...e });
   }
 
+  /* ---------------- isolation ---------------- */
+
+  /** Sandbox for a worktree: its git admin dir is writable, the shared object store read-only. Fails closed. */
+  async isolationFor(worktree: string): Promise<Isolation> {
+    const sb = detectSandbox();
+    if (sb.kind === 'none') {
+      return this.repo.setting('execution.allowUnsandboxed', false) ? { mode: 'unsandboxed' } : { mode: 'unavailable', detail: sb.detail };
+    }
+    const r = await git(worktree, ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir']);
+    const [gitDir, common] = r.code === 0 ? r.out.split('\n') : [];
+    return { mode: 'sandbox', readOnly: common ? [common] : [], readWrite: gitDir ? [gitDir] : [] };
+  }
+
+  private sandboxSpec(iso: Isolation, worktree: string, network = false): SandboxSpec | undefined | null {
+    if (iso.mode === 'unavailable') return null;
+    if (iso.mode === 'unsandboxed') return undefined;
+    return { root: worktree, writable: true, network, readOnly: iso.readOnly, readWrite: iso.readWrite, limits: { cpuSeconds: 1800, fileSizeBytes: 1024 ** 3, openFiles: 4096 } };
+  }
+
   /* ---------------- workspaces ---------------- */
 
   async registerWorkspace(dir: string): Promise<Workspace> {
@@ -80,6 +100,11 @@ export class Orchestrator {
     else if (!w.head) out.push({ level: 'block', message: 'The repository has no commits yet. Commit once so ATLAS has a base to branch from.' });
     if (w.dirty) out.push({ level: 'warn', message: `${w.dirty} uncommitted change${w.dirty === 1 ? '' : 's'} in your checkout will not be visible to agents: worktrees start from HEAD ${w.head?.slice(0, 7)}.` });
     if (w.isGit && !detectRecipes(w.root).some((r) => r.name === 'tests')) out.push({ level: 'warn', message: 'No test command detected. Results will be reported as unverified.' });
+    const sb = detectSandbox();
+    if (sb.kind === 'none') {
+      if (this.repo.setting('execution.allowUnsandboxed', false)) out.push({ level: 'warn', message: `No OS sandbox (${sb.detail}). You allowed unsandboxed execution: repository scripts will run as your user.` });
+      else out.push({ level: 'block', message: `No OS sandbox: ${sb.detail} Agent commands and checks will not run until one is available, or until you allow unsandboxed execution in Settings.` });
+    }
     out.push({ level: 'info', message: 'No deployment target is configured. Staging deploys arrive in a later milestone.' });
     if (runtime) {
       const rt = this.o.runtimes[runtime];
@@ -258,7 +283,9 @@ export class Orchestrator {
     this.taskAborts.set(t.id, ac);
 
     const rt = this.o.runtimes[m.runtime]!;
+    const isolation = await this.isolationFor(dir);
     const gateCtx = {
+      isolation,
       missionId: m.id, taskId: t.id, attemptId: attempt.id, role: t.role, mode: m.approvalMode, cwd: dir, permitted: pt.tools,
       approvalTtlMs: this.approvalTtlMs, awaitApproval: (a: Approval, s: AbortSignal) => this.awaitApproval(a, s),
     };
@@ -352,7 +379,10 @@ export class Orchestrator {
       }
       for (const r of recipes) {
         const signal = this.aborts.get(m.id)?.signal;
-        const res = await run({ command: r.command, args: r.args, cwd: t.worktree!, timeoutMs: r.timeoutMs, signal, env: sanitizedEnv() });
+        const spec = this.sandboxSpec(await this.isolationFor(t.worktree!), t.worktree!);
+        const res = spec === null
+          ? { exitCode: null, signal: null, durationMs: 0, output: '', truncated: false, timedOut: false, cancelled: false, pid: null, spawnError: `No OS sandbox: ${detectSandbox().detail}` }
+          : await run({ command: r.command, args: r.args, cwd: t.worktree!, timeoutMs: r.timeoutMs, signal, env: sanitizedEnv(), sandbox: spec });
         const log = this.artifacts.put({ missionId: m.id, taskId: t.id, kind: 'test_report', name: `${r.name} @ ${head.slice(0, 7)}`, content: `$ ${[r.command, ...r.args].join(' ')}\n${res.output}\n[exit ${res.exitCode ?? 'none'} · ${res.durationMs} ms]` });
         const result = res.cancelled ? 'inconclusive' : res.timedOut ? 'inconclusive' : res.spawnError ? 'inconclusive' : res.exitCode === 0 ? 'pass' : 'fail';
         const c: CheckRecord = {

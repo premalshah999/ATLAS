@@ -1,6 +1,6 @@
 # ADR 0005 — What v0.1 isolation does and does not provide
 
-Status: accepted · 2026-10-10 · spec §18, §20, §23, §42
+Status: superseded in part by ADR 0007 (OS sandbox) · spec §18, §20, §23, §42
 
 Provided:
 - Agents act only through governed tools. Policy is code (`@atlas/policy`), evaluated before execution, default-deny for unknown tools and capabilities; role text cannot grant rights.

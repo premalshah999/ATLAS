@@ -31,6 +31,10 @@ export const Requests = {
   'events.since': z.object({ missionId: Id, afterSeq: z.number().int().min(0) }).strict(),
   'artifact.read': z.object({ artifactId: Id }).strict(),
   'runtime.health': empty,
+  'settings.get': empty,
+  'settings.set': z.discriminatedUnion('key', [
+    z.object({ key: z.literal('execution.allowUnsandboxed'), value: z.boolean() }).strict(),
+  ]),
   'credentials.list': empty,
   'credentials.set': z.object({ provider: z.enum(['anthropic', 'openai', 'google']), key: z.string().trim().min(8).max(500) }).strict(),
   'credentials.remove': z.object({ provider: z.enum(['anthropic', 'openai', 'google']) }).strict(),

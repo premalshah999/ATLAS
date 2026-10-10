@@ -26,5 +26,5 @@ export interface ToolResult {
   error: ToolErrorKind | null;
 }
 
-export const ToolErrorKind = z.enum(['policy_denied', 'approval_denied', 'approval_expired', 'invalid_args', 'path_escape', 'timeout', 'process_failed', 'cancelled', 'unknown_tool']);
+export const ToolErrorKind = z.enum(['policy_denied', 'approval_denied', 'approval_expired', 'invalid_args', 'path_escape', 'timeout', 'process_failed', 'cancelled', 'unknown_tool', 'sandbox_unavailable']);
 export type ToolErrorKind = z.infer<typeof ToolErrorKind>;

@@ -31,6 +31,7 @@ export interface MissionSnapshot {
 
 export type Preflight = { level: 'block' | 'warn' | 'info'; message: string }[];
 export type MissionListItem = Mission & { tasks: { key: string; state: string }[]; pendingApprovals: number };
+export type SettingsState = { values: { 'execution.allowUnsandboxed': boolean }; sandbox: { kind: 'bwrap' | 'sandbox-exec' | 'none'; detail: string; path: string | null } };
 export type Credentials = { available: boolean; providers: { provider: string; stored: boolean; fromEnvironment: boolean; env: string }[] };
 export type AppInfo = { version: string; schema: number; pi: { package: string; version: string; gitHead: string; license: string; repository: string }; platform: string; node: string; electron: string; chrome: string; daemon: DaemonStatus; credentialStore: boolean };
 
@@ -52,6 +53,8 @@ type Results = {
   'events.since': AtlasEvent[];
   'artifact.read': { artifact: Artifact; intact: boolean; truncated: boolean; text: string };
   'runtime.health': RuntimeHealth[];
+  'settings.get': SettingsState;
+  'settings.set': SettingsState;
   'credentials.list': Credentials;
   'credentials.set': Credentials;
   'credentials.remove': Credentials;

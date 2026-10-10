@@ -19,7 +19,17 @@ add(existsSync('node_modules/electron/dist'), 'Electron binary', existsSync('nod
 const keys = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY'].filter((k) => process.env[k]);
 add(true, 'Model credentials', keys.length ? `found in environment: ${keys.join(', ')} (values not shown)` : 'none in environment — the scripted runtime works without; add a key in Settings for Pi');
 add(true, 'Platform', `${process.platform} ${process.arch}${process.platform === 'linux' ? ' (tested)' : ' (not yet tested — see docs/adr/0004)'}`);
-add(true, 'OS sandbox for agent commands', 'not enforced in v0.1 — commands run as your user inside an isolated worktree (see docs/adr/0005)');
+let sandbox = { ok: false, detail: '' };
+if (process.platform === 'linux') {
+  const bwrap = ver('bwrap', ['--version']);
+  if (!bwrap) sandbox = { ok: false, detail: 'bubblewrap missing — apt install bubblewrap (agent commands will not run without it)' };
+  else {
+    try { execFileSync('bwrap', ['--ro-bind', '/', '/', '--unshare-all', 'true'], { stdio: 'ignore' }); sandbox = { ok: true, detail: `${bwrap} (namespaces working)` }; }
+    catch { sandbox = { ok: false, detail: `${bwrap} installed but user namespaces are blocked (Ubuntu 24.04: sysctl kernel.apparmor_restrict_unprivileged_userns=0 or an AppArmor profile for bwrap)` }; }
+  }
+} else if (process.platform === 'darwin') sandbox = { ok: existsSync('/usr/bin/sandbox-exec'), detail: 'macOS sandbox-exec (untested in CI)' };
+else sandbox = { ok: false, detail: `no supported sandbox on ${process.platform}; commands run only if you allow unsandboxed execution` };
+add(sandbox.ok, 'OS sandbox for agent commands', sandbox.detail);
 
 for (const c of checks) console.log(`${c.ok ? '✓' : '✗'} ${c.name.padEnd(30)} ${c.detail}`);
 process.exit(checks.every((c) => c.ok) ? 0 : 1);
