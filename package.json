@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "pnpm --filter @atlas/desktop dev",
     "build": "pnpm --filter @atlas/desktop build",
-    "typecheck": "pnpm -r --workspace-concurrency=1 typecheck",
+    "typecheck": "pnpm -r --workspace-concurrency=1 typecheck && tsc -p tsconfig.tests.json",
     "lint": "node scripts/check-deps.mjs && eslint .",
     "test": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
@@ -20,7 +20,8 @@
     "doctor": "node scripts/doctor.mjs",
     "pi:version": "node scripts/pi-version.mjs",
     "seed:sample": "node scripts/seed-sample.mjs",
-    "screenshots": "pnpm build && playwright test -c tests/e2e-electron/screenshots.config.ts"
+    "screenshots": "pnpm build && playwright test -c tests/e2e-electron/screenshots.config.ts",
+    "eval": "vitest run --project eval"
   },
   "devDependencies": {
     "@atlas/browser": "workspace:*",
