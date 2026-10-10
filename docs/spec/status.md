@@ -10,9 +10,9 @@ Report date 2026-10-10. Platform tested: Linux x64 (Node 22.22, Electron 44.1.1)
 | `pnpm typecheck` | all workspaces pass |
 | `pnpm test` | 42 / 42 passed |
 | `pnpm test:integration` | 10 / 10 passed |
-| `xvfb-run -a pnpm test:e2e` | 4 / 4 passed (built Electron app) |
+| `xvfb-run -a pnpm test:e2e` | 5 / 5 passed (built Electron app) |
 | `pnpm pi:version` | installed Pi packages match pin 0.87.1, MIT |
-| `electron-builder --linux dir` | packaged app boots; daemon starts with Pi loaded from the asar |
+| `pnpm package` | `apps/desktop/release/ATLAS-0.1.0.AppImage` (151 MB); launched under xvfb, daemon reached ready |
 
 ## Acceptance tests from the manual
 
