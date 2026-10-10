@@ -120,3 +120,44 @@ export function run(o: RunOptions): Promise<RunResult> {
     child.on('close', (code, sig) => finish(code, sig, null));
   });
 }
+
+export interface ProcessHandle {
+  pid: number | null;
+  spawnError: string | null;
+  output(): string;
+  exited(): { code: number | null } | null;
+  stop(): Promise<void>;
+}
+
+/** Start a long-lived process (an app server under test, a local staging deployment). Same isolation rules as run(). */
+export function startProcess(o: { command: string; args: string[]; cwd: string; env?: Record<string, string>; sandbox?: SandboxSpec; maxOutput?: number; onOutput?: (text: string) => void }): ProcessHandle {
+  let cmd = o.command, argv = o.args, env = o.env ?? sanitizedEnv();
+  if (o.sandbox) {
+    try { ({ command: cmd, args: argv, env } = wrapCommand(o.command, o.args, o.cwd, o.sandbox, env)); }
+    catch (e) { return { pid: null, spawnError: (e as Error).message, output: () => '', exited: () => ({ code: null }), stop: async () => {} }; }
+  }
+  const max = o.maxOutput ?? 256 * 1024;
+  let buf = '';
+  let exit: { code: number | null } | null = null;
+  let spawnError: string | null = null;
+  const child = spawn(cmd, argv, { cwd: o.cwd, env, detached: process.platform !== 'win32', shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  const take = (b: Buffer) => { const t = redact(b.toString('utf8')); o.onOutput?.(t); buf = (buf + t).slice(-max); };
+  child.stdout!.on('data', take);
+  child.stderr!.on('data', take);
+  child.on('error', (e) => { spawnError = e.message; exit = { code: null }; });
+  const done = new Promise<void>((r) => child.on('close', (code) => { exit = { code }; r(); }));
+  return {
+    pid: child.pid ?? null,
+    get spawnError() { return spawnError; },
+    output: () => buf,
+    exited: () => exit,
+    stop: async () => {
+      if (exit || !child.pid) return;
+      killTree(child.pid, 'SIGTERM');
+      const t = setTimeout(() => { if (child.pid && isAlive(child.pid)) killTree(child.pid, 'SIGKILL'); }, 2000);
+      await done;
+      clearTimeout(t);
+    },
+  };
+}
+export { openPty, ptySupported, type PtyHandle } from './pty';

@@ -23,6 +23,7 @@ const api = {
   invoke,
   onEvent: (fn: (e: unknown) => void) => listen(IPC.event, fn),
   onStatus: (fn: (s: unknown) => void) => listen(IPC.status, fn),
+  onTerminal: (fn: (t: unknown) => void) => listen(IPC.terminal, fn),
   ...(process.env.ATLAS_E2E === '1' ? { e2e: { crashDaemon: () => ipcRenderer.invoke('atlas:e2e:crash-daemon') } } : {}),
 };
 

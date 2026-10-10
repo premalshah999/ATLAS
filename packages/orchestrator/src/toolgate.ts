@@ -9,6 +9,7 @@ import { run, sanitizedEnv, type RunResult, type SandboxSpec } from '@atlas/term
 import { git, resolveInside } from '@atlas/workspace';
 import type { Repo, ArtifactStore } from '@atlas/storage';
 import { detectRecipes } from './verification';
+import { FindingArgs } from './findings';
 
 export const TOOL_SPECS: ToolSpec[] = [
   { name: 'read_file', description: 'Read a UTF-8 text file in the worktree (max 200 KB).', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Path relative to the worktree root' } }, required: ['path'], additionalProperties: false } },
@@ -17,6 +18,28 @@ export const TOOL_SPECS: ToolSpec[] = [
   { name: 'shell_exec', description: 'Run one program with an argument array (no shell). Privileged commands need human approval.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Executable, e.g. "npm"' }, args: { type: 'array', items: { type: 'string' } }, timeoutSec: { type: 'number' } }, required: ['command', 'args'], additionalProperties: false } },
   { name: 'git_status', description: 'Show git status and the diff summary of the worktree.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'run_tests', description: "Run the project's configured test command and return its output and exit code.", parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'view_diff', description: 'Show the diff of the worktree (committed and uncommitted) against the mission base commit.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Optional: limit to one path' } }, additionalProperties: false } },
+  {
+    name: 'report_finding',
+    description: 'Record a review finding. Use kind "confirmed" only with reproducedBy set to the artifact id of a failing run_tests/shell_exec result from this review.',
+    parameters: {
+      type: 'object', additionalProperties: false, required: ['file', 'severity', 'kind', 'title', 'observation', 'evidence'],
+      properties: {
+        file: { type: 'string' }, line: { type: 'integer' }, endLine: { type: 'integer' },
+        severity: { type: 'string', enum: ['high', 'medium', 'low', 'info'] }, kind: { type: 'string', enum: ['confirmed', 'suspected', 'informational'] },
+        title: { type: 'string' }, observation: { type: 'string' }, evidence: { type: 'string' }, recommendation: { type: 'string' },
+        reproducedBy: { type: 'string', description: 'Artifact id (art_…) printed with a failing command result' }, confidence: { type: 'number' },
+      },
+    },
+  },
+  {
+    name: 'delegate',
+    description: 'Hand a well-scoped, independent piece of work to a subagent. Blocks until it finishes; its change is merged into your worktree and its summary returned. Subject to depth, count and token budgets.',
+    parameters: {
+      type: 'object', additionalProperties: false, required: ['role', 'title', 'reason', 'acceptance'],
+      properties: { role: { type: 'string', enum: ['coder', 'tester', 'reviewer'] }, title: { type: 'string' }, reason: { type: 'string' }, acceptance: { type: 'array', items: { type: 'string' } } },
+    },
+  },
 ];
 
 const ARGS: Record<string, z.ZodTypeAny> = {
@@ -26,6 +49,9 @@ const ARGS: Record<string, z.ZodTypeAny> = {
   shell_exec: z.object({ command: z.string().min(1).max(200), args: z.array(z.string().max(4000)).max(200), timeoutSec: z.number().int().min(1).max(1800).optional() }).strict(),
   git_status: z.object({}).strict(),
   run_tests: z.object({}).strict(),
+  view_diff: z.object({ path: z.string().min(1).optional() }).strict(),
+  report_finding: FindingArgs,
+  delegate: z.object({ role: z.enum(['coder', 'tester', 'reviewer']), title: z.string().min(3).max(200), reason: z.string().min(3).max(2000), acceptance: z.array(z.string().min(1).max(500)).min(1).max(10) }).strict(),
 };
 
 /** Executors are injectable so tests can prove a denied call never reaches one. */
@@ -66,10 +92,18 @@ export interface GateContext {
   approvalTtlMs: number;
   /** Resolves when the operator decides; the orchestrator owns the waiter registry. */
   awaitApproval(a: Approval, signal: AbortSignal): Promise<Approval>;
+  /** Mission base commit, for view_diff. */
+  base: string;
+  /** Record a finding; returns the text shown to the agent. */
+  onFinding?(args: FindingArgs, failingRuns: ReadonlySet<string>): string;
+  /** Run a delegated subtask to completion. */
+  delegate?(args: { role: 'coder' | 'tester' | 'reviewer'; title: string; reason: string; acceptance: string[] }, signal: AbortSignal): Promise<ToolResult>;
 }
 
 export class ToolGate implements ToolInvoker {
   readonly specs: ToolSpec[];
+  /** Artifacts of process runs in this attempt that exited non-zero: the only valid reproductions. */
+  private readonly failingRuns = new Set<string>();
   constructor(private readonly ctx: GateContext, private readonly repo: Repo, private readonly artifacts: ArtifactStore, private readonly ex: Executors = realExecutors) {
     this.specs = TOOL_SPECS.filter((s) => ctx.permitted.includes(s.name));
   }
@@ -137,6 +171,21 @@ export class ToolGate implements ToolInvoker {
         return ok(`${st.out || '(clean)'}\n${diff.out}`.trim());
       }
       case 'shell_exec': return this.process(a.command, a.args, (a.timeoutSec ?? 300) * 1000, signal, 'shell', network);
+      case 'view_diff': {
+        const args = ['diff', '--no-color', '--no-ext-diff', this.ctx.base, ...(a.path ? ['--', a.path] : [])];
+        const d = await git(cwd, args);
+        const untracked = await git(cwd, ['ls-files', '--others', '--exclude-standard']);
+        const text = d.out || '(no differences against the mission base)';
+        return ok(`${text.length > 60_000 ? `${text.slice(0, 60_000)}\n… [truncated]` : text}${untracked.out ? `\n\nUntracked files:\n${untracked.out}` : ''}`);
+      }
+      case 'report_finding': {
+        if (!this.ctx.onFinding) return this.fail('unknown_tool', 'Findings are not recorded for this task.');
+        return ok(this.ctx.onFinding(a as FindingArgs, this.failingRuns));
+      }
+      case 'delegate': {
+        if (!this.ctx.delegate) return this.fail('unknown_tool', 'Delegation is not available for this task.');
+        return this.ctx.delegate(a as { role: 'coder' | 'tester' | 'reviewer'; title: string; reason: string; acceptance: string[] }, signal);
+      }
       case 'run_tests': {
         const r = detectRecipes(cwd).find((x) => x.name === 'tests');
         if (!r) return { ok: false, output: 'No test command is configured for this project (package.json "test" script not found).', exitCode: null, artifactIds: [], error: null };
@@ -168,9 +217,10 @@ export class ToolGate implements ToolInvoker {
     flush();
     const log = this.artifacts.put({ missionId: this.ctx.missionId, taskId: this.ctx.taskId, kind: 'log', name: `${label}: ${cmd}`.slice(0, 120), content: `$ ${cmd}\n${r.output}\n[exit ${r.exitCode ?? 'none'}${r.timedOut ? ', timed out' : ''}${r.cancelled ? ', cancelled' : ''} · ${r.durationMs} ms]` });
     this.emit('process.exited', { pid, command: redact(cmd), exitCode: r.exitCode, signal: r.signal, durationMs: r.durationMs, timedOut: r.timedOut, cancelled: r.cancelled, spawnError: r.spawnError }, [log.id]);
+    if (r.exitCode !== 0 && !r.spawnError) this.failingRuns.add(log.id);
     const tail = r.output.length > 12_000 ? `… [${r.output.length - 12_000} earlier characters omitted]\n${r.output.slice(-12_000)}` : r.output;
     const status = r.spawnError ? `Failed to start: ${r.spawnError}` : r.timedOut ? 'Timed out' : r.cancelled ? 'Cancelled' : `Exit code ${r.exitCode}`;
-    return { ok: r.exitCode === 0, output: `${tail}\n${status}`, exitCode: r.exitCode, artifactIds: [log.id], error: r.timedOut ? 'timeout' : r.cancelled ? 'cancelled' : r.exitCode === 0 ? null : 'process_failed' };
+    return { ok: r.exitCode === 0, output: `${tail}\n${status} · log ${log.id}`, exitCode: r.exitCode, artifactIds: [log.id], error: r.timedOut ? 'timeout' : r.cancelled ? 'cancelled' : r.exitCode === 0 ? null : 'process_failed' };
   }
 }
 

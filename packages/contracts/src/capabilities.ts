@@ -3,11 +3,11 @@ import { z } from 'zod';
 
 export const Capability = z.enum([
   'fs.read', 'fs.write', 'shell.safe', 'shell.privileged', 'browser.navigate', 'desktop.input',
-  'deploy.staging', 'deploy.production', 'secrets.use',
+  'deploy.staging', 'deploy.production', 'secrets.use', 'agent.delegate',
 ]);
 export type Capability = z.infer<typeof Capability>;
 
-export const ToolName = z.enum(['read_file', 'list_files', 'write_file', 'shell_exec', 'git_status', 'run_tests']);
+export const ToolName = z.enum(['read_file', 'list_files', 'write_file', 'shell_exec', 'git_status', 'run_tests', 'view_diff', 'report_finding', 'delegate', 'browser_action', 'desktop_action', 'staging_deploy', 'inspect_logs']);
 export type ToolName = z.infer<typeof ToolName>;
 
 export type Risk = 'low' | 'elevated' | 'high';

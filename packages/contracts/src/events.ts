@@ -7,6 +7,8 @@ export const EventType = [
   'policy.decision', 'approval.requested', 'approval.decided',
   'process.started', 'process.output', 'process.exited',
   'workspace.worktree', 'artifact.created', 'check.result', 'gate.result',
+  'plan.planner', 'integration.result', 'finding.reported', 'finding.updated', 'delegation.requested', 'delegation.result', 'budget.exceeded', 'context.built',
+  'browser.step', 'deploy.event', 'staging.check', 'rollback.result', 'desktop.action', 'desktop.session', 'operator.terminal',
   'operator.action', 'daemon.recovered', 'error',
 ] as const;
 export type EventType = (typeof EventType)[number];

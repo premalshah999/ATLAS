@@ -53,9 +53,31 @@ export interface RuntimeHealth {
   detail: string;
 }
 
+/** Input for model planning (manual §14). The proposal is untrusted until it passes the plan validator. */
+export interface PlanRequest {
+  missionId: string;
+  title: string;
+  objective: string;
+  constraints: string;
+  approvalMode: string;
+  repoMap: string;
+  /** Selected file excerpts at the base commit (README, manifests), labeled as data. */
+  excerpts: { path: string; text: string }[];
+  roles: { id: string; title: string; tools: readonly string[] }[];
+  verification: { name: string; required: boolean }[];
+  maxTasks: number;
+  /** Issues from a previous attempt, for one repair round. */
+  previousIssues?: string[];
+  signal: AbortSignal;
+}
+
+export interface PlanProposal { plan: unknown; rationale: string; inputTokens: number; outputTokens: number }
+
 export interface AgentRuntime {
   readonly kind: RuntimeKind;
   health(): Promise<RuntimeHealth>;
+  /** Propose a plan. Optional: runtimes without planning fall back to the deterministic planner. */
+  plan?(req: PlanRequest): Promise<PlanProposal>;
   start(input: AgentInput): Promise<AgentHandle>;
   stream(handle: AgentHandle): AsyncIterable<AgentEvent>;
   interrupt(handle: AgentHandle): Promise<void>;

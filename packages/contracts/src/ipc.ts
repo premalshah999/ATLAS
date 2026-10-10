@@ -1,7 +1,7 @@
 // The renderer-facing API (manual E4). Each method is an intent with a validated request schema.
 // Preload exposes exactly these methods; main validates sender + payload; the daemon authorizes and acts.
 import { z } from 'zod';
-import { ApprovalMode, Id, RuntimeKind } from './domain';
+import { ApprovalMode, Id, MissionBudget, RuntimeKind } from './domain';
 
 const empty = z.object({}).strict();
 const missionRef = z.object({ missionId: Id }).strict();
@@ -19,6 +19,7 @@ export const Requests = {
     constraints: z.string().max(4000).default(''),
     approvalMode: ApprovalMode,
     runtime: RuntimeKind,
+    budget: MissionBudget.partial().optional(),
   }).strict(),
   'mission.list': z.object({ workspaceId: Id.optional() }).strict(),
   'mission.get': missionRef,
@@ -27,6 +28,16 @@ export const Requests = {
   'mission.cancel': missionRef,
   'mission.decide': z.object({ missionId: Id, decision: z.enum(['accept', 'reject']) }).strict(),
   'task.cancel': z.object({ taskId: Id }).strict(),
+  'mission.export': missionRef,
+  'mission.import': empty,
+  'mission.delete': missionRef,
+  'mission.reverify': missionRef,
+  'finding.update': z.object({ findingId: Id, status: z.enum(['open', 'accepted', 'dismissed', 'fixed']) }).strict(),
+  'workspace.facts.get': z.object({ workspaceId: Id }).strict(),
+  'workspace.facts.set': z.object({ workspaceId: Id, text: z.string().max(20_000) }).strict(),
+  'terminal.open': z.object({ missionId: Id, target: z.union([Id, z.literal('integration')]), cols: z.number().int().min(20).max(400), rows: z.number().int().min(5).max(200) }).strict(),
+  'terminal.input': z.object({ sessionId: Id, data: z.string().max(65_536) }).strict(),
+  'terminal.close': z.object({ sessionId: Id }).strict(),
   'approval.respond': z.object({ approvalId: Id, decision: z.enum(['approve', 'deny']) }).strict(),
   'events.since': z.object({ missionId: Id, afterSeq: z.number().int().min(0) }).strict(),
   'artifact.read': z.object({ artifactId: Id }).strict(),
@@ -34,6 +45,7 @@ export const Requests = {
   'settings.get': empty,
   'settings.set': z.discriminatedUnion('key', [
     z.object({ key: z.literal('execution.allowUnsandboxed'), value: z.boolean() }).strict(),
+    z.object({ key: z.literal('retention.days'), value: z.number().int().min(0).max(3650) }).strict(),
   ]),
   'credentials.list': empty,
   'credentials.set': z.object({ provider: z.enum(['anthropic', 'openai', 'google']), key: z.string().trim().min(8).max(500) }).strict(),
@@ -43,6 +55,8 @@ export const Requests = {
 /** Methods only the main process may send to the daemon (never exposed to the renderer). */
 export const InternalRequests = {
   'workspace.register': z.object({ path: z.string().min(1).max(4096) }).strict(),
+  'mission.exportTo': z.object({ missionId: Id, path: z.string().min(1).max(4096) }).strict(),
+  'mission.importFrom': z.object({ path: z.string().min(1).max(4096) }).strict(),
   'credentials.apply': z.object({ keys: z.record(z.string(), z.string()) }).strict(),
 } as const;
 export type InternalMethod = keyof typeof InternalRequests;
@@ -55,6 +69,7 @@ export type DaemonOutbound =
   | { kind: 'res'; id: number; ok: true; data: unknown }
   | { kind: 'res'; id: number; ok: false; error: { kind: string; message: string } }
   | { kind: 'event'; event: import('./events').AtlasEvent }
+  | { kind: 'terminal'; sessionId: string; data?: string; exit?: number | null }
   | { kind: 'ready'; pid: number; recovered: { missions: string[]; lostAttempts: number; expiredApprovals: number } };
 
 export type Method = keyof typeof Requests;
@@ -68,6 +83,8 @@ export const IPC = {
   event: 'atlas:event',
   /** Daemon connection status pushed to the renderer. */
   status: 'atlas:status',
+  /** Operator terminal output pushed to the renderer. */
+  terminal: 'atlas:terminal',
 } as const;
 
 export type Envelope<T> = { ok: true; data: T } | { ok: false; error: { kind: string; message: string } };

@@ -38,6 +38,10 @@ describe('release gate', () => {
       expect(gate([{ name: 'tests', required: true, result, reason: '' }]).verdict, result).toBe('failed');
     }
   });
+  it('a passing review alone never makes a result verified', () => {
+    expect(gate([{ name: 'review', required: true, result: 'pass', reason: '' }, { name: 'tests', required: false, result: 'not_configured', reason: '' }]).verdict).toBe('unverified');
+    expect(gate([{ name: 'review', required: true, result: 'fail', reason: '' }, { name: 'tests', required: true, result: 'pass', reason: '' }]).verdict).toBe('failed');
+  });
   it('missing checks never collapse into success', () => {
     expect(gate([]).verdict).toBe('unverified');
     expect(gate([{ name: 'tests', required: false, result: 'not_configured', reason: '' }]).verdict).toBe('unverified');

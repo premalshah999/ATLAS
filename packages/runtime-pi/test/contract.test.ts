@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { createFauxCore, fauxAssistantMessage, fauxText, fauxToolCall } from '@earendil-works/pi-ai';
 import type { AgentEvent, AgentInput, AgentRuntime, ToolInvoker, ToolResult } from '@atlas/contracts';
 import { FakeRuntime, type FakeScript } from '@atlas/runtime-fake';
-import { PiRuntime } from '../src';
+import { PiRuntime, extractJson } from '../src';
 import { tmpDir } from '../../../tests/helpers';
 
 interface Harness { runtime: AgentRuntime; active(): number }
@@ -102,6 +102,27 @@ for (const [name, make] of [['fake', fakeHarness], ['pi', piHarness]] as const) 
     });
   });
 }
+
+describe('Pi planner', () => {
+  it('returns the model plan as untrusted data with token usage', async () => {
+    const faux = createFauxCore({ provider: 'atlas-faux' });
+    const fm = faux.getModel();
+    const plan = { summary: 'Fix it', scope: 'src', rationale: 'small change', tasks: [{ key: 'implement', title: 'Fix', role: 'coder', dependsOn: [], acceptance: ['tests pass'], tools: ['read_file', 'write_file'], risk: 'low' }], verification: [{ name: 'tests', required: true }] };
+    faux.setResponses([fauxAssistantMessage(`Here is the plan:\n\`\`\`json\n${JSON.stringify(plan)}\n\`\`\``)]);
+    const rt = new PiRuntime({
+      agentDir: tmpDir('atlas-pi-'), model: `atlas-faux/${fm.id}`,
+      configure: (r) => r.registerProvider('atlas-faux', { name: 'Faux', baseUrl: 'http://faux.invalid', apiKey: 'test-only', api: faux.api, streamSimple: faux.streamSimple as any, models: [{ id: fm.id, name: 'Faux', reasoning: false, input: ['text'], cost: fm.cost, contextWindow: 100_000, maxTokens: 4096 }] }),
+    });
+    const out = await rt.plan({ missionId: 'msn_aaaaaaaa', title: 't', objective: 'o', constraints: '', approvalMode: 'ask_risky', repoMap: 'src/a.js', excerpts: [], roles: [{ id: 'coder', title: 'Coder', tools: ['read_file'] }], verification: [], maxTasks: 5, signal: new AbortController().signal });
+    expect(out.rationale).toBe('small change');
+    expect(out.plan).toMatchObject({ summary: 'Fix it', tasks: [{ key: 'implement' }] });
+    expect(out.inputTokens).toBeGreaterThan(0);
+  });
+  it('extracts JSON robustly', () => {
+    expect(extractJson('noise {"a": {"b": "}"}} tail')).toEqual({ a: { b: '}' } });
+    expect(extractJson('no json here')).toBeNull();
+  });
+});
 
 describe('Pi adapter isolation', () => {
   it('fails health when no model has credentials', async () => {

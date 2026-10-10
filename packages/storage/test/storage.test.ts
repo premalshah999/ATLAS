@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { cpSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { newId, nowIso } from '@atlas/contracts';
+import { DEFAULT_BUDGET, newId, nowIso } from '@atlas/contracts';
 import { ArtifactStore, openDb, Repo, schemaVersion } from '../src';
 import { tmpDir } from '../../../tests/helpers';
 
@@ -13,14 +13,14 @@ function seed(repo: Repo) {
   const now = nowIso();
   const ws = repo.upsertWorkspace({ id: newId('ws'), name: 'w', root: '/tmp/w-' + Math.random(), isGit: true, branch: 'main', head: 'abc', dirty: 0, createdAt: now, updatedAt: now });
   const id = newId('msn');
-  repo.insertMission({ id, workspaceId: ws.id, title: 't', goal: 'g', constraints: '', approvalMode: 'ask_risky', runtime: 'fake', baseCommit: null, state: 'draft', planVersion: 0, policyId: 'p', outcome: null, decision: null, createdAt: now, updatedAt: now });
+  repo.insertMission({ id, workspaceId: ws.id, title: 't', goal: 'g', constraints: '', approvalMode: 'ask_risky', runtime: 'fake', baseCommit: null, state: 'draft', planVersion: 0, policyId: 'p', outcome: null, decision: null, budget: DEFAULT_BUDGET, integrationBranch: null, integrationCommit: null, archived: false, createdAt: now, updatedAt: now });
   return id;
 }
 
 describe('storage', () => {
   it('applies migrations once with WAL and foreign keys', () => {
     const { db } = setup();
-    expect(schemaVersion(db)).toBe(2);
+    expect(schemaVersion(db)).toBe(3);
     expect((db.prepare('PRAGMA journal_mode').get() as any).journal_mode).toBe('wal');
     expect((db.prepare('PRAGMA foreign_keys').get() as any).foreign_keys).toBe(1);
   });
@@ -37,7 +37,7 @@ describe('storage', () => {
 
   it('enforces foreign keys', () => {
     const { repo } = setup();
-    expect(() => repo.insertTask({ id: newId('tsk'), missionId: newId('msn'), key: 'k', title: 't', role: 'coder', dependencies: [], state: 'queued', retries: 0, acceptance: [], resultRef: null, worktree: null, branch: null })).toThrow();
+    expect(() => repo.insertTask({ id: newId('tsk'), missionId: newId('msn'), key: 'k', title: 't', role: 'coder', dependencies: [], state: 'queued', retries: 0, acceptance: [], resultRef: null, worktree: null, branch: null, checkpoint: null, parentTaskId: null, depth: 0 })).toThrow();
   });
 
   it('approval decisions are single-use', () => {

@@ -1,6 +1,6 @@
 // Typed client over the preload bridge. The renderer holds no authority: every call is an intent the
 // main process validates and the daemon authorizes.
-import type { Approval, Artifact, Attempt, AtlasEvent, CheckRecord, Method, Mission, Plan, RequestOf, RuntimeHealth, Task, Workspace } from '@atlas/contracts';
+import type { Approval, Artifact, Attempt, AtlasEvent, CheckRecord, Finding, Method, Mission, MissionBudget, Plan, RequestOf, RuntimeHealth, Task, Workspace } from '@atlas/contracts';
 
 export type DaemonStatus = { state: 'starting' | 'ready' | 'restarting' | 'stopped'; pid: number | null; restarts: number; detail?: string };
 
@@ -9,6 +9,7 @@ interface Bridge {
   invoke(method: Method, params?: unknown): Promise<unknown>;
   onEvent(fn: (e: AtlasEvent) => void): () => void;
   onStatus(fn: (s: DaemonStatus) => void): () => void;
+  onTerminal(fn: (t: { sessionId: string; data?: string; exit?: number | null }) => void): () => void;
   e2e?: { crashDaemon(): Promise<void> };
 }
 
@@ -25,13 +26,15 @@ export interface MissionSnapshot {
   attempts: Attempt[];
   approvals: Approval[];
   checks: CheckRecord[];
+  findings: Finding[];
   artifacts: Artifact[];
+  budget: { budget: MissionBudget; tokens: number; toolCalls: number; tasks: number; agentsNow: number; elapsedMs: number };
   lastSeq: number;
 }
 
 export type Preflight = { level: 'block' | 'warn' | 'info'; message: string }[];
 export type MissionListItem = Mission & { tasks: { key: string; state: string }[]; pendingApprovals: number };
-export type SettingsState = { values: { 'execution.allowUnsandboxed': boolean }; sandbox: { kind: 'bwrap' | 'sandbox-exec' | 'none'; detail: string; path: string | null } };
+export type SettingsState = { values: { 'execution.allowUnsandboxed': boolean; 'retention.days': number }; sandbox: { kind: 'bwrap' | 'sandbox-exec' | 'none'; detail: string; path: string | null } };
 export type Credentials = { available: boolean; providers: { provider: string; stored: boolean; fromEnvironment: boolean; env: string }[] };
 export type AppInfo = { version: string; schema: number; pi: { package: string; version: string; gitHead: string; license: string; repository: string }; platform: string; node: string; electron: string; chrome: string; daemon: DaemonStatus; credentialStore: boolean };
 
@@ -49,6 +52,16 @@ type Results = {
   'mission.cancel': Mission;
   'mission.decide': Mission;
   'task.cancel': Task;
+  'mission.export': { path: string; records: number; sha256: string } | null;
+  'mission.import': Mission | null;
+  'mission.delete': { deleted: string };
+  'mission.reverify': Mission;
+  'finding.update': Finding;
+  'workspace.facts.get': { text: string };
+  'workspace.facts.set': { text: string };
+  'terminal.open': { sessionId: string; writable: boolean; worktree: string };
+  'terminal.input': null;
+  'terminal.close': null;
   'approval.respond': Approval;
   'events.since': AtlasEvent[];
   'artifact.read': { artifact: Artifact; intact: boolean; truncated: boolean; text: string };

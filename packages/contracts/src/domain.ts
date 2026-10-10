@@ -49,9 +49,26 @@ export interface Mission {
   /** Final outcome in words, computed by the release gate — never a model summary. */
   outcome: string | null;
   decision: 'accepted' | 'rejected' | null;
+  budget: MissionBudget;
+  /** Branch and commit produced by the controlled integration step. */
+  integrationBranch: string | null;
+  integrationCommit: string | null;
+  /** Imported from an export: read-only, never scheduled. */
+  archived: boolean;
   createdAt: string;
   updatedAt: string;
 }
+
+/** Resource governance per mission (manual §16, §41). */
+export const MissionBudget = z.object({
+  maxConcurrentAgents: z.number().int().min(1).max(8).default(2),
+  maxTasks: z.number().int().min(1).max(50).default(12),
+  maxDelegationDepth: z.number().int().min(0).max(4).default(2),
+  maxTokens: z.number().int().min(1000).max(50_000_000).default(2_000_000),
+  maxWallClockMinutes: z.number().int().min(1).max(24 * 60).default(120),
+});
+export type MissionBudget = z.infer<typeof MissionBudget>;
+export const DEFAULT_BUDGET: MissionBudget = MissionBudget.parse({});
 
 export interface Task {
   id: string;
@@ -66,6 +83,36 @@ export interface Task {
   resultRef: string | null;
   worktree: string | null;
   branch: string | null;
+  /** Checkpoint commit produced by this task, the base for its dependents. */
+  checkpoint: string | null;
+  /** Set for subtasks created by delegation. */
+  parentTaskId: string | null;
+  depth: number;
+}
+
+export const FindingSeverity = z.enum(['high', 'medium', 'low', 'info']);
+export const FindingKind = z.enum(['confirmed', 'suspected', 'informational']);
+
+/** A structured review finding (manual §29). `confirmed` requires a reproduction ATLAS itself observed. */
+export interface Finding {
+  id: string;
+  missionId: string;
+  taskId: string;
+  file: string;
+  line: number | null;
+  endLine: number | null;
+  severity: z.infer<typeof FindingSeverity>;
+  kind: z.infer<typeof FindingKind>;
+  title: string;
+  observation: string;
+  recommendation: string | null;
+  evidence: string;
+  /** Artifact of the failing command run ATLAS recorded, when the finding is confirmed. */
+  reproductionArtifactId: string | null;
+  confidence: number;
+  status: 'open' | 'accepted' | 'dismissed' | 'fixed';
+  fingerprint: string;
+  createdAt: string;
 }
 
 export interface Attempt {
@@ -82,7 +129,7 @@ export interface Attempt {
   tokens: number;
 }
 
-export const ArtifactKind = z.enum(['log', 'patch', 'transcript', 'test_report', 'plan', 'evidence', 'screenshot']);
+export const ArtifactKind = z.enum(['log', 'patch', 'transcript', 'test_report', 'plan', 'evidence', 'screenshot', 'context', 'trace', 'manifest', 'export']);
 export type ArtifactKind = z.infer<typeof ArtifactKind>;
 
 export interface Artifact {
@@ -147,6 +194,8 @@ export const PlanTask = z.object({
   tools: z.array(z.string()).min(1),
   risk: z.enum(['low', 'elevated', 'high']),
   rollback: z.string().optional(),
+  /** Paths the task expects to touch; informs scheduling of writers. */
+  files: z.array(z.string()).max(200).optional(),
 });
 export type PlanTask = z.infer<typeof PlanTask>;
 

@@ -58,4 +58,23 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
     `,
   },
+  {
+    version: 3,
+    sql: `
+      ALTER TABLE tasks ADD COLUMN checkpoint TEXT;
+      ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id);
+      ALTER TABLE tasks ADD COLUMN depth INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE missions ADD COLUMN budget TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE missions ADD COLUMN integration_branch TEXT;
+      ALTER TABLE missions ADD COLUMN integration_commit TEXT;
+      ALTER TABLE missions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0;
+      CREATE TABLE findings (
+        id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), task_id TEXT NOT NULL REFERENCES tasks(id),
+        file TEXT NOT NULL, line INTEGER, end_line INTEGER, severity TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL,
+        observation TEXT NOT NULL, recommendation TEXT, evidence TEXT NOT NULL, reproduction_artifact_id TEXT, confidence REAL NOT NULL,
+        status TEXT NOT NULL, fingerprint TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE (mission_id, fingerprint)
+      );
+      CREATE INDEX findings_mission ON findings(mission_id);
+    `,
+  },
 ];

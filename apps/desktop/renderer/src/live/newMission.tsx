@@ -85,9 +85,9 @@ export function NewMission({ workspaceId }: { workspaceId?: string }) {
             <Seg items={[{ id: 'fake' as const, label: 'Scripted (no model)' }, { id: 'pi' as const, label: `Pi${pi ? (pi.ok ? '' : ' · not configured') : ''}` }]} value={runtime} onChange={setRuntime} />
           </Field>
 
-          <div className="lv-preflight" data-testid="preflight">
+          <div className="lv-preflight" data-testid="preflight" data-ready={pre ? 'true' : 'false'}>
             <div className="at-label">Preflight</div>
-            {!pre ? <div className="at-subtle lv-small">Checking the repository…</div> : pre.map((p, i) => (
+            {!pre ? <div className="at-subtle lv-small">Checking the repository…</div> : pre.length === 0 ? <div className="at-subtle lv-small">No issues found.</div> : pre.map((p, i) => (
               <div key={i} className="lv-pf" data-level={p.level}>
                 <Icon as={p.level === 'block' ? IXCircle : p.level === 'warn' ? IWarn : IInfo} size="sm" />
                 <span>{p.message}</span>

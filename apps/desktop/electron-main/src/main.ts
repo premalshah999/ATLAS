@@ -58,6 +58,28 @@ async function route(method: Method, params: any): Promise<unknown> {
       // The path came from an OS dialog in main, never from renderer input.
       return daemon.request('workspace.register', { path: dir });
     }
+    case 'mission.export': {
+      let file: string | undefined;
+      if (e2e && process.env.ATLAS_E2E_SAVE_PATH) file = process.env.ATLAS_E2E_SAVE_PATH;
+      else {
+        const opts = { title: 'Export mission', defaultPath: `${params.missionId}.atlas.jsonl`, filters: [{ name: 'ATLAS export', extensions: ['jsonl'] }] };
+        const res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts);
+        file = res.canceled ? undefined : res.filePath;
+      }
+      if (!file) return null;
+      return { path: file, ...(await daemon.request<object>('mission.exportTo', { missionId: params.missionId, path: file })) };
+    }
+    case 'mission.import': {
+      let file: string | undefined;
+      if (e2e && process.env.ATLAS_E2E_IMPORT_PATH) file = process.env.ATLAS_E2E_IMPORT_PATH;
+      else {
+        const opts = { title: 'Import mission', properties: ['openFile' as const], filters: [{ name: 'ATLAS export', extensions: ['jsonl'] }] };
+        const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts);
+        file = res.canceled ? undefined : res.filePaths[0];
+      }
+      if (!file) return null;
+      return daemon.request('mission.importFrom', { path: file });
+    }
     case 'app.info': {
       const info = await daemon.request<Record<string, unknown>>('app.info', {});
       return { ...info, electron: process.versions.electron, chrome: process.versions.chrome, daemon: daemon.status, credentialStore: credentials.available() };
@@ -134,6 +156,7 @@ app.whenReady().then(() => {
     daemonEnv,
     (event) => win?.webContents.send(IPC.event, event),
     (status: DaemonStatus) => { log(`daemon ${status.state} pid=${status.pid}`); win?.webContents.send(IPC.status, status); },
+    (t) => win?.webContents.send(IPC.terminal, t),
     log,
   );
   daemon.start();

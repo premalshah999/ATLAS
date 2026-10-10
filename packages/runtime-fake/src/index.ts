@@ -1,6 +1,6 @@
 // Deterministic fake runtime (manual §44). It drives the same governed tools as a real model, from a script,
 // so orchestration, policy and evidence paths are testable without model credentials.
-import type { AgentEvent, AgentHandle, AgentInput, AgentRuntime, RuntimeHealth } from '@atlas/contracts';
+import type { AgentEvent, AgentHandle, AgentInput, AgentRuntime, PlanProposal, PlanRequest, RuntimeHealth } from '@atlas/contracts';
 import { EventQueue } from './queue';
 
 export { EventQueue } from './queue';
@@ -10,13 +10,34 @@ export type FakeStep =
   | { say: string }
   | { tool: string; args: Record<string, unknown> }
   /** The agent's own claim. It is recorded as a claim and never treated as evidence. */
-  | { claim: string };
+  | { claim: string }
+  /** Simulated model usage, for budget tests. */
+  | { usage: number }
+  /** Pause, for concurrency tests. */
+  | { wait: number };
 
 export interface FakeScript {
   name: string;
   matches(input: AgentInput): boolean | Promise<boolean>;
   steps(input: AgentInput): FakeStep[] | Promise<FakeStep[]>;
 }
+
+/** Script for one task of a multi-task plan, matched by the task key in the prompt. */
+export function forTask(key: string, steps: FakeStep[], role = 'coder'): FakeScript {
+  return { name: `task:${key}`, matches: (input) => input.roleId === role && input.prompt.includes(`Work on task ${key} now.`), steps: () => steps };
+}
+
+/** Default review: read the change and run the tests; report nothing it cannot back. */
+export const reviewSurveyScript: FakeScript = {
+  name: 'review-survey',
+  matches: (input) => input.roleId === 'reviewer',
+  steps: () => [
+    { say: 'Reviewing the change against the acceptance criteria.' },
+    { tool: 'view_diff', args: {} },
+    { tool: 'run_tests', args: {} },
+    { claim: 'Review complete. No findings reported (scripted reviewer).' },
+  ],
+};
 
 /** Default behavior for repositories without a matching script: a read-only survey. */
 export const surveyScript: FakeScript = {
@@ -36,7 +57,12 @@ export class FakeRuntime implements AgentRuntime {
   readonly kind = 'fake' as const;
   private runs = new Map<string, Run>();
   private seq = 0;
-  constructor(private readonly scripts: FakeScript[] = [], private readonly stepDelayMs = 0) {}
+  /** Optional scripted planner. Without one, the orchestrator uses its deterministic plan. */
+  plan?: (req: PlanRequest) => Promise<PlanProposal>;
+
+  constructor(private readonly scripts: FakeScript[] = [], private readonly stepDelayMs = 0, planner?: (req: PlanRequest) => unknown) {
+    if (planner) this.plan = async (req) => ({ plan: planner(req), rationale: 'Scripted plan (fake runtime).', inputTokens: 0, outputTokens: 0 });
+  }
 
   async health(): Promise<RuntimeHealth> {
     return { ok: true, runtime: 'fake', version: 'fake-1', models: ['scripted'], detail: 'Deterministic scripted runtime. Output is sample behavior, not a model.' };
@@ -54,8 +80,9 @@ export class FakeRuntime implements AgentRuntime {
   }
 
   private async drive(input: AgentInput, q: EventQueue<AgentEvent>, signal: AbortSignal) {
-    let script = surveyScript;
+    let script: FakeScript | null = null;
     for (const s of this.scripts) if (await s.matches(input)) { script = s; break; }
+    script ??= (await reviewSurveyScript.matches(input)) ? reviewSurveyScript : surveyScript;
     const steps = await script.steps(input);
     let calls = 0;
     let summary = '';
@@ -64,6 +91,8 @@ export class FakeRuntime implements AgentRuntime {
       if (this.stepDelayMs) await new Promise((r) => setTimeout(r, this.stepDelayMs));
       if ('say' in step) q.push({ type: 'message', text: step.say });
       else if ('claim' in step) summary = step.claim;
+      else if ('usage' in step) q.push({ type: 'usage', inputTokens: step.usage, outputTokens: 0 });
+      else if ('wait' in step) await new Promise((r) => { const t = setTimeout(r, step.wait); signal.addEventListener('abort', () => { clearTimeout(t); r(undefined); }, { once: true }); });
       else {
         if (++calls > input.budget.maxToolCalls) { q.push({ type: 'error', kind: 'budget_exceeded', message: `Tool-call budget of ${input.budget.maxToolCalls} exhausted` }); return; }
         const callId = `call-${calls}`;

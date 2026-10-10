@@ -18,6 +18,7 @@ export class DaemonClient {
     private readonly env: () => Record<string, string>,
     private readonly onEvent: (e: AtlasEvent) => void,
     private readonly onStatus: (s: DaemonStatus) => void,
+    private readonly onTerminal: (m: { sessionId: string; data?: string; exit?: number | null }) => void,
     private readonly log: (msg: string) => void,
   ) {}
 
@@ -47,6 +48,7 @@ export class DaemonClient {
     if (!m || typeof m !== 'object') return;
     if (m.kind === 'ready') { this.setStatus({ state: 'ready', pid: m.pid, restarts: this.status.restarts, detail: m.recovered.missions.length ? `Recovered ${m.recovered.missions.length} mission(s) after restart` : undefined }); this.markReady(); return; }
     if (m.kind === 'event') { this.onEvent(m.event); return; }
+    if (m.kind === 'terminal') { this.onTerminal({ sessionId: m.sessionId, data: m.data, exit: m.exit }); return; }
     if (m.kind === 'res') {
       const p = this.pending.get(m.id);
       if (!p) return;

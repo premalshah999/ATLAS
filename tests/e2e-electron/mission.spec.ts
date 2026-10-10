@@ -24,7 +24,7 @@ test('sample mission end to end, with daemon crash and app restart recovery', as
     await page.getByRole('button', { name: 'New mission' }).first().click();
     await page.getByTestId('mission-title').fill('Fix slug generation');
     await page.getByTestId('mission-goal').fill('slugify() should lowercase, drop punctuation and collapse separators so the tests pass.');
-    await expect(page.getByTestId('preflight')).toContainText('No deployment target');
+    await expect(page.getByTestId('preflight')).toHaveAttribute('data-ready', 'true');
     await page.getByTestId('plan-mission').click();
 
     await expect(page.getByTestId('plan')).toContainText('Acceptance criteria');

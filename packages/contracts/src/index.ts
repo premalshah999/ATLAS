@@ -6,3 +6,4 @@ export * from './runtime';
 export * from './ipc';
 export * from './ids';
 export * from './redact';
+export * from './release';

@@ -1,7 +1,11 @@
 export { Orchestrator, type OrchestratorOptions } from './orchestrator';
-export { ToolGate, TOOL_SPECS, realExecutors, describe, type Executors, type GateContext } from './toolgate';
+export { ToolGate, TOOL_SPECS, realExecutors, describe, type Executors, type GateContext, type Isolation } from './toolgate';
 export { validatePlan, defaultPlan, findCycle } from './plan';
 export { detectRecipes, gate, type Recipe, type Verdict } from './verification';
 export { canMission, canTask, assertMission, assertTask, TERMINAL_MISSION, TERMINAL_TASK } from './states';
 export { replay } from './replay';
-export { ROLES, role } from './roles';
+export { ROLES, role, type RoleDefinition } from './roles';
+export { buildContext, repoMap } from './context';
+export { mergeInto, topoOrder, worktreeFromBases } from './integration';
+export { FindingArgs, makeFinding, blockingFindings, fingerprint } from './findings';
+export { exportMission, importMission, deleteMission, EXPORT_VERSION } from './archive';

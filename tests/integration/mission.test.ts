@@ -19,15 +19,17 @@ describe('sample mission', () => {
     expect(m.state).toBe('completed');
     expect(m.outcome).toMatch(/^Verified: tests passed/);
 
-    // Evidence: a real check record on the checkpointed commit, plus a patch artifact.
+    // Evidence: real check records on the integrated commit, a review gate, and patch artifacts.
     const checks = h.repo.checks(id);
-    expect(checks).toHaveLength(1);
-    expect(checks[0]).toMatchObject({ name: 'tests', required: true, result: 'pass', exitCode: 0 });
-    const t = h.repo.tasks(id)[0];
-    expect(checks[0].commit).toBe(sh(t.worktree!, 'git', ['rev-parse', 'HEAD']));
+    expect(checks.map((c) => [c.name, c.result])).toEqual([['tests', 'pass'], ['review', 'pass']]);
+    expect(checks[0]).toMatchObject({ required: true, exitCode: 0 });
+    expect(m.integrationBranch).toBe(`atlas/${id}/integration`);
+    expect(checks[0].commit).toBe(m.integrationCommit);
+    const t = h.repo.tasks(id).find((x) => x.key === 'implement')!;
     const patch = h.artifacts.read(t.resultRef!);
     expect(patch.intact).toBe(true);
     expect(patch.text).toContain('+    .toLowerCase()');
+    expect(sh(root, 'git', ['merge-base', '--is-ancestor', t.checkpoint!, m.integrationCommit!])).toBe('');
 
     // The user's checkout was never written.
     expect(sh(root, 'git', ['rev-parse', 'HEAD'])).toBe(head);
@@ -45,10 +47,11 @@ describe('sample mission', () => {
     expect(r.mission).toBe('completed');
     expect(r.tasks[t.id]).toBe('done');
 
-    // Accept keeps the branch for the operator; the checkout is still untouched.
+    // Accept keeps the integration branch for the operator; task worktrees are cleaned; the checkout is untouched.
     await h.orch.decide(id, 'accept');
-    expect(sh(root, 'git', ['branch', '--list', t.branch!])).toContain(t.branch!);
+    expect(sh(root, 'git', ['rev-parse', m.integrationBranch!])).toBe(m.integrationCommit);
     expect(existsSync(t.worktree!)).toBe(false);
+    expect(sh(root, 'git', ['branch', '--list', t.branch!])).toBe('');
     expect(sh(root, 'git', ['rev-parse', 'HEAD'])).toBe(head);
   });
 
@@ -70,7 +73,9 @@ describe('sample mission', () => {
     const id = await startMission(h, root);
     await h.orch.settle(id);
     const t = h.repo.tasks(id)[0];
+    const m = h.repo.mission(id)!;
     await h.orch.decide(id, 'reject');
+    expect(sh(root, 'git', ['branch', '--list', m.integrationBranch!])).toBe('');
     expect(existsSync(t.worktree!)).toBe(false);
     expect(sh(root, 'git', ['branch', '--list', t.branch!])).toBe('');
     expect(sh(root, 'git', ['status', '--porcelain'])).toBe('');
@@ -200,7 +205,7 @@ describe('cancellation and recovery', () => {
     expect(r).toMatchObject({ missions: [id], lostAttempts: 1 });
     await second.orch.settle(id);
     const attempts = second.repo.attempts(id);
-    expect(attempts.map((x) => x.state)).toEqual(['lost', 'succeeded']);
+    expect(attempts.map((x) => x.state)).toEqual(['lost', 'succeeded', 'succeeded']); // coder (lost, then fresh), reviewer
     expect(second.repo.mission(id)!.state).toBe('completed');
     expect(replay(second.repo.eventsSince(id, 0)).mission).toBe('completed');
   });

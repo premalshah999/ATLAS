@@ -15,7 +15,7 @@ test('boots a branded ATLAS window with a hardened renderer', async () => {
       bridgeKeys: Object.keys((window as any).atlas).sort(),
       frozen: Object.isFrozen((window as any).atlas),
     }));
-    expect(probe).toEqual({ require: 'undefined', process: 'undefined', module: 'undefined', bridgeKeys: ['e2e', 'invoke', 'onEvent', 'onStatus', 'platform'], frozen: true });
+    expect(probe).toEqual({ require: 'undefined', process: 'undefined', module: 'undefined', bridgeKeys: ['e2e', 'invoke', 'onEvent', 'onStatus', 'onTerminal', 'platform'], frozen: true });
 
     const webPrefs = await app.evaluate(({ BrowserWindow }) => {
       const w = BrowserWindow.getAllWindows()[0];

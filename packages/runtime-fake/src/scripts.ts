@@ -17,6 +17,7 @@ export function slugify(title) {
 export const sampleSlugifyScript: FakeScript = {
   name: 'sample-slugify',
   matches: (input) => {
+    if (input.roleId !== 'coder') return false;
     const f = path.join(input.cwd, 'src', 'slugify.js');
     return existsSync(f) && readFileSync(f, 'utf8').includes('ATLAS-SAMPLE');
   },

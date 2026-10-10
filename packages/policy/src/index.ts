@@ -14,8 +14,8 @@ export interface PolicyDecision {
 
 /** Capabilities granted per role. Anything absent is denied. */
 export const ROLE_GRANTS: Record<AgentRole, readonly Capability[]> = {
-  orchestrator: ['fs.read'],
-  coder: ['fs.read', 'fs.write', 'shell.safe', 'shell.privileged'],
+  orchestrator: ['fs.read', 'agent.delegate'],
+  coder: ['fs.read', 'fs.write', 'shell.safe', 'shell.privileged', 'agent.delegate'],
   reviewer: ['fs.read', 'shell.safe'],
   tester: ['fs.read', 'shell.safe'],
   browser_qa: ['fs.read', 'browser.navigate'],
@@ -72,6 +72,13 @@ export const TOOL_CAPABILITY: Record<string, Capability | 'shell'> = {
   write_file: 'fs.write',
   shell_exec: 'shell',
   run_tests: 'shell.safe',
+  view_diff: 'fs.read',
+  report_finding: 'fs.read',
+  delegate: 'agent.delegate',
+  browser_action: 'browser.navigate',
+  desktop_action: 'desktop.input',
+  staging_deploy: 'deploy.staging',
+  inspect_logs: 'fs.read',
 };
 
 export interface EvaluateInput {

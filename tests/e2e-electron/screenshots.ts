@@ -35,7 +35,7 @@ test('capture README screenshots', async () => {
     await page.getByTestId('mission-goal').fill('slugify() should lowercase, drop punctuation and collapse separators so the tests in test/slugify.test.js pass.');
     await page.locator('textarea').nth(1).fill('Do not change the public function signature.');
     await page.getByRole('radio', { name: 'Ask for every write' }).click();
-    await expect(page.getByTestId('preflight')).toContainText('No deployment target');
+    await expect(page.getByTestId('preflight')).toHaveAttribute('data-ready', 'true');
     await top(page);
     await shot(page, '03-new-mission');
 

@@ -27,6 +27,12 @@ export function detectRecipes(root: string): Recipe[] {
 
 export type Verdict = 'verified' | 'unverified' | 'failed';
 
+/**
+ * Checks that gate release but are not evidence the software works: a clean review, an approval.
+ * They can block; they can never on their own make a result "verified".
+ */
+export const GATE_ONLY = new Set(['review']);
+
 /** Aggregate checks. Only `pass` satisfies a required check; missing checks never count as success. */
 export function gate(checks: Pick<CheckRecord, 'name' | 'required' | 'result' | 'reason'>[]): { verdict: Verdict; summary: string } {
   const required = checks.filter((c) => c.required);
@@ -34,12 +40,15 @@ export function gate(checks: Pick<CheckRecord, 'name' | 'required' | 'result' | 
   if (failedReq.length) {
     return { verdict: 'failed', summary: `Blocked: ${failedReq.map((c) => `${c.name} ${label(c.result)}`).join(', ')}` };
   }
-  const passed = checks.filter((c) => c.result === 'pass');
+  const evidence = checks.filter((c) => c.result === 'pass' && !GATE_ONLY.has(c.name));
+  const gates = checks.filter((c) => c.result === 'pass' && GATE_ONLY.has(c.name));
   const other = checks.filter((c) => !c.required && c.result !== 'pass');
-  if (!passed.length) {
-    return { verdict: 'unverified', summary: `Unverified: no check ran to a pass${checks.length ? ` (${checks.map((c) => `${c.name} ${label(c.result)}`).join(', ')})` : ' — no test command configured'}` };
+  const tail = [...gates.map((c) => `${c.name} passed`), ...other.map((c) => `${c.name} ${label(c.result)}`)];
+  if (!evidence.length) {
+    const what = checks.filter((c) => !GATE_ONLY.has(c.name));
+    return { verdict: 'unverified', summary: `Unverified: no check ran to a pass${what.length ? ` (${what.map((c) => `${c.name} ${label(c.result)}`).join(', ')})` : ' — no test command configured'}${gates.length ? `; ${gates.map((c) => `${c.name} passed`).join(', ')}` : ''}` };
   }
-  return { verdict: 'verified', summary: `Verified: ${passed.map((c) => c.name).join(', ')} passed${other.length ? `; ${other.map((c) => `${c.name} ${label(c.result)}`).join(', ')}` : ''}` };
+  return { verdict: 'verified', summary: `Verified: ${evidence.map((c) => c.name).join(', ')} passed${tail.length ? `; ${tail.join(', ')}` : ''}` };
 }
 
 export function label(r: CheckResult): string {
