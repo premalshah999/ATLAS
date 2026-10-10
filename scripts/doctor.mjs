@@ -1,0 +1,25 @@
+// `pnpm doctor` (manual §46): checks local requirements without printing secrets.
+import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+
+const checks = [];
+const add = (ok, name, detail) => checks.push({ ok, name, detail });
+const ver = (cmd, args) => { try { return execFileSync(cmd, args, { encoding: 'utf8' }).trim().split('\n')[0]; } catch { return null; } };
+
+const [maj, min] = process.versions.node.split('.').map(Number);
+add(maj > 22 || (maj === 22 && min >= 19), 'Node.js ≥ 22.19', process.versions.node);
+let sqlite = false;
+try { await import('node:sqlite'); sqlite = true; } catch {}
+add(sqlite, 'node:sqlite available', sqlite ? 'yes' : 'upgrade Node');
+const git = ver('git', ['--version']);
+add(!!git, 'git', git ?? 'not found — required for worktrees');
+const pnpm = ver('pnpm', ['--version']);
+add(!!pnpm, 'pnpm', pnpm ?? 'not found — run `corepack enable`');
+add(existsSync('node_modules/electron/dist'), 'Electron binary', existsSync('node_modules/electron/dist') ? 'installed' : 'downloaded on first launch, or now with `npx install-electron`');
+const keys = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY'].filter((k) => process.env[k]);
+add(true, 'Model credentials', keys.length ? `found in environment: ${keys.join(', ')} (values not shown)` : 'none in environment — the scripted runtime works without; add a key in Settings for Pi');
+add(true, 'Platform', `${process.platform} ${process.arch}${process.platform === 'linux' ? ' (tested)' : ' (not yet tested — see docs/adr/0004)'}`);
+add(true, 'OS sandbox for agent commands', 'not enforced in v0.1 — commands run as your user inside an isolated worktree (see docs/adr/0005)');
+
+for (const c of checks) console.log(`${c.ok ? '✓' : '✗'} ${c.name.padEnd(30)} ${c.detail}`);
+process.exit(checks.every((c) => c.ok) ? 0 : 1);

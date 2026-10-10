@@ -1,0 +1,8 @@
+{
+  "name": "atlas-sample-app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "ATLAS sample project: a slug helper with a real bug and real tests.",
+  "scripts": { "test": "node --test" }
+}

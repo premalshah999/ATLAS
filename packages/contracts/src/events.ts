@@ -1,0 +1,29 @@
+// Append-only domain events (manual §38). Payloads are redacted before they are persisted.
+export const EventType = [
+  'mission.created', 'mission.state', 'mission.decision',
+  'plan.proposed', 'plan.rejected', 'plan.approved',
+  'task.state', 'attempt.started', 'attempt.ended',
+  'agent.message', 'agent.tool_call', 'agent.tool_result', 'agent.usage',
+  'policy.decision', 'approval.requested', 'approval.decided',
+  'process.started', 'process.output', 'process.exited',
+  'workspace.worktree', 'artifact.created', 'check.result', 'gate.result',
+  'operator.action', 'daemon.recovered', 'error',
+] as const;
+export type EventType = (typeof EventType)[number];
+
+export type Actor = { kind: 'operator' } | { kind: 'agent'; role: string; taskId: string } | { kind: 'system'; component: string };
+
+export interface AtlasEvent {
+  missionId: string;
+  /** Monotonic per mission, starting at 1. */
+  seq: number;
+  type: EventType;
+  ts: string;
+  actor: Actor;
+  taskId: string | null;
+  attemptId: string | null;
+  payload: Record<string, unknown>;
+  artifactIds: string[];
+}
+
+export type NewEvent = Omit<AtlasEvent, 'seq' | 'ts'> & { ts?: string };

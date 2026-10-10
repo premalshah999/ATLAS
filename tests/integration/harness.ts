@@ -1,0 +1,36 @@
+import path from 'node:path';
+import type { AgentRuntime, AtlasEvent, Mission } from '@atlas/contracts';
+import { ArtifactStore, openDb, Repo } from '@atlas/storage';
+import { Orchestrator, type Executors } from '@atlas/orchestrator';
+import { FakeRuntime, sampleSlugifyScript, type FakeScript } from '@atlas/runtime-fake';
+import { tmpDir } from '../helpers';
+
+export function makeOrchestrator(opts: { scripts?: FakeScript[]; runtime?: AgentRuntime; executors?: Executors; dataDir?: string; approvalTtlMs?: number } = {}) {
+  const dataDir = opts.dataDir ?? tmpDir('atlas-data-');
+  const db = openDb(path.join(dataDir, 'atlas.db'));
+  const repo = new Repo(db);
+  const artifacts = new ArtifactStore(db, path.join(dataDir, 'artifacts'));
+  const runtime = opts.runtime ?? new FakeRuntime(opts.scripts ?? [sampleSlugifyScript]);
+  const orch = new Orchestrator({ repo, artifacts, runtimes: { fake: runtime }, worktreeDir: path.join(dataDir, 'worktrees'), executors: opts.executors, approvalTtlMs: opts.approvalTtlMs });
+  const events: AtlasEvent[] = [];
+  repo.onEvent((e) => events.push(e));
+  return { orch, repo, artifacts, db, dataDir, events };
+}
+
+export async function waitFor<T>(fn: () => T | undefined | null | false, ms = 20_000): Promise<T> {
+  const end = Date.now() + ms;
+  for (;;) {
+    const v = fn();
+    if (v) return v;
+    if (Date.now() > end) throw new Error('waitFor timed out');
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}
+
+export async function startMission(h: ReturnType<typeof makeOrchestrator>, root: string, over: Partial<Pick<Mission, 'approvalMode' | 'goal'>> = {}) {
+  const ws = await h.orch.registerWorkspace(root);
+  const m = h.orch.createMission({ workspaceId: ws.id, title: 'Fix slugify', goal: over.goal ?? 'Make slugify produce valid URL slugs.', constraints: '', approvalMode: over.approvalMode ?? 'ask_risky', runtime: 'fake' });
+  await h.orch.plan(m.id);
+  await h.orch.approvePlan(m.id);
+  return m.id;
+}

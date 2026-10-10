@@ -1,0 +1,114 @@
+// The control plane (manual §5, E1): storage, orchestration and runtimes in one supervised process.
+// It receives already-validated intents from Electron main and re-validates them before acting.
+import path from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { AtlasError, InternalRequests, parseRequest, PROVIDER_ENV, registerSecret, type AtlasEvent, type Method } from '@atlas/contracts';
+import { ArtifactStore, openDb, Repo, schemaVersion, type Db } from '@atlas/storage';
+import { Orchestrator, replay } from '@atlas/orchestrator';
+import { FakeRuntime, sampleSlugifyScript } from '@atlas/runtime-fake';
+import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
+import { createLogger, type Logger } from './log';
+
+export interface ServiceOptions { dataDir: string; version: string; apiKeys?: Record<string, string>; model?: string }
+
+export class DaemonService {
+  readonly repo: Repo;
+  readonly artifacts: ArtifactStore;
+  readonly orch: Orchestrator;
+  readonly log: Logger;
+  private readonly db: Db;
+  private pi: PiRuntime;
+  private readonly fake = new FakeRuntime([sampleSlugifyScript], 350);
+  private keys: Record<string, string>;
+
+  constructor(private readonly o: ServiceOptions) {
+    mkdirSync(o.dataDir, { recursive: true });
+    this.log = createLogger(path.join(o.dataDir, 'logs'));
+    this.db = openDb(path.join(o.dataDir, 'atlas.db'));
+    this.repo = new Repo(this.db);
+    this.artifacts = new ArtifactStore(this.db, path.join(o.dataDir, 'artifacts'));
+    this.keys = { ...(o.apiKeys ?? {}) };
+    for (const k of Object.values(this.keys)) registerSecret(k);
+    this.pi = this.makePi();
+    this.orch = new Orchestrator({ repo: this.repo, artifacts: this.artifacts, runtimes: { fake: this.fake, pi: this.pi }, worktreeDir: path.join(o.dataDir, 'worktrees') });
+  }
+
+  private makePi() {
+    return new PiRuntime({ agentDir: path.join(this.o.dataDir, 'pi'), apiKeys: this.keys, model: this.o.model });
+  }
+
+  onEvent(fn: (e: AtlasEvent) => void) { return this.repo.onEvent(fn); }
+
+  async start() {
+    const recovered = await this.orch.recover();
+    this.log.info('daemon started', { schema: schemaVersion(this.db), ...recovered });
+    return recovered;
+  }
+
+  async stop() {
+    await this.orch.shutdown();
+    this.db.close();
+  }
+
+  /** Internal methods come only from Electron main; renderer methods are re-validated here. */
+  async handle(method: string, payload: unknown): Promise<unknown> {
+    if (method in InternalRequests) return this.internal(method as keyof typeof InternalRequests, payload);
+    const { params } = parseRequest(method, payload);
+    const p = params as any;
+    switch (method as Method) {
+      case 'app.info': return { version: this.o.version, schema: schemaVersion(this.db), pi: PI_PINNED, platform: process.platform, node: process.versions.node };
+      case 'workspace.list': return this.repo.workspaces();
+      case 'workspace.refresh': return this.orch.refreshWorkspace(p.workspaceId);
+      case 'workspace.preflight': return this.orch.preflight(p.workspaceId, p.runtime);
+      case 'mission.create': return this.orch.createMission(p);
+      case 'mission.list': return this.repo.missions(p.workspaceId).map((m) => ({ ...m, tasks: this.repo.tasks(m.id).map((t) => ({ key: t.key, state: t.state })) }));
+      case 'mission.get': return this.snapshot(p.missionId);
+      case 'mission.plan': return this.orch.plan(p.missionId);
+      case 'mission.approvePlan': return this.orch.approvePlan(p.missionId);
+      case 'mission.cancel': return this.orch.cancelMission(p.missionId);
+      case 'mission.decide': return this.orch.decide(p.missionId, p.decision);
+      case 'task.cancel': return this.orch.cancelTask(p.taskId);
+      case 'approval.respond': return this.orch.respondApproval(p.approvalId, p.decision);
+      case 'events.since': return this.repo.eventsSince(p.missionId, p.afterSeq);
+      case 'artifact.read': {
+        const r = this.artifacts.read(p.artifactId);
+        const max = 400_000;
+        return { artifact: r.artifact, intact: r.intact, truncated: r.text.length > max, text: r.text.slice(0, max) };
+      }
+      case 'runtime.health': return Promise.all([this.fake.health(), this.pi.health()]);
+      default: throw new AtlasError('invalid_request', `${method} is handled by the desktop shell`);
+    }
+  }
+
+  private async internal(method: keyof typeof InternalRequests, payload: unknown) {
+    const params = InternalRequests[method].parse(payload) as any;
+    if (method === 'workspace.register') return this.orch.registerWorkspace(params.path);
+    if (method === 'credentials.apply') {
+      this.keys = {};
+      for (const [provider, key] of Object.entries(params.keys as Record<string, string>)) if (PROVIDER_ENV[provider]) { this.keys[provider] = key; registerSecret(key); }
+      this.pi = this.makePi();
+      this.orch.setRuntime('pi', this.pi);
+      return { providers: Object.keys(this.keys) };
+    }
+    throw new AtlasError('invalid_request', 'unknown internal method');
+  }
+
+  snapshot(missionId: string) {
+    const mission = this.repo.mission(missionId);
+    if (!mission) throw new AtlasError('invalid_request', 'Unknown mission');
+    const events = this.repo.eventsSince(missionId, 0, 1);
+    const all = this.repo.eventsSince(missionId, 0, 100_000);
+    return {
+      mission,
+      workspace: this.repo.workspace(mission.workspaceId),
+      plan: this.repo.plan(missionId),
+      tasks: this.repo.tasks(missionId),
+      attempts: this.repo.attempts(missionId),
+      approvals: this.repo.approvals(missionId),
+      checks: this.repo.checks(missionId),
+      artifacts: this.artifacts.list(missionId),
+      lastSeq: all.length ? all[all.length - 1].seq : 0,
+      replayed: events.length ? replay(all).mission : null,
+    };
+  }
+}

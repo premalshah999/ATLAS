@@ -1,0 +1,304 @@
+import React, { useState } from 'react';
+import { actions } from '../lib/store';
+import { openRepository } from '../lib/workspace';
+import { missions, workspaces, workspace, agents, agentById, activity, deployments, checkpoints } from '../data/sample';
+import { cx, Icon, Button, IconButton, Badge, Status, PanelHead, Kbd, RoleMark, Input, Field, Select, Seg, Meter, Tip, SampleTag, Check, Dot, EmptyState } from '../ui/primitives';
+import { Composer } from '../ui/composer';
+import { ApprovalCard } from '../ui/overlays';
+import {
+  IFolder, IPlus, ILink, ICheck, IKey, IShield, IPlay, IArrowRight, IRepo, IBranch, ICommit, IReviews, IDeploy, IHistory, IMissions, IXCircle,
+  ISpark, IChevronRight, ISearch, IClose, IServer, ICpu, ILock, IMore,
+} from '../lib/icons';
+
+/* ---------- 1. Welcome / first launch ---------- */
+const presets = [
+  { id: 'ask', title: 'Ask first', body: 'Every write, command and network call waits for you. Slow; good for an unfamiliar repo.' },
+  { id: 'balanced', title: 'Balanced', body: 'Agents edit and test freely inside isolated worktrees. Schema changes, network, deploys and anything outside the repo ask.', rec: true },
+  { id: 'sandbox', title: 'Autonomous in sandbox', body: 'Full autonomy inside a disposable container. Nothing leaves it until you merge.' },
+];
+
+export function Welcome() {
+  const [step, setStep] = useState(1);
+  const [ws, setWs] = useState(false);
+  const [key, setKey] = useState('');
+  const [connected, setConnected] = useState(false);
+  const [preset, setPreset] = useState('balanced');
+  const [permsDone, setPermsDone] = useState(false);
+  const A = actions();
+  const stepState = (n: number) => (n === 1 ? ws : n === 2 ? connected : n === 3 ? permsDone : false);
+  const Step = ({ n, title, summary, children }: { n: number; title: string; summary: React.ReactNode; children: React.ReactNode }) => (
+    <div className={cx('at-wstep', step === n && 'at-wstep--open', stepState(n) && 'at-wstep--done')}>
+      <button type="button" className="at-wstep-head" onClick={() => setStep(n)} aria-expanded={step === n}>
+        <span className="at-wstep-n">{stepState(n) ? <Icon as={ICheck} size="sm" /> : n}</span>
+        <span className="at-wstep-title">{title}</span>
+        <span className="at-wstep-sum at-trunc">{summary}</span>
+      </button>
+      {step === n && <div className="at-wstep-body">{children}</div>}
+    </div>
+  );
+  return (
+    <div className="at-welcome">
+      <div className="at-welcome-l">
+        <div className="at-wordmark">ATLAS</div>
+        <h1 className="display-xl" style={{ margin: '28px 0 14px' }}>Engineering,<br />under command.</h1>
+        <p className="at-welcome-lede">Give Atlas a goal. It becomes a mission: a plan, a team of agents working in isolated worktrees, and evidence that the work actually runs. Nothing executes outside the permissions you set.</p>
+        <div className="at-row" style={{ gap: 8, marginTop: 28 }}>
+          <Button variant="primary" icon={IFolder} kbd="⌘ O" onClick={() => { setWs(true); setStep(2); }}>Open repository</Button>
+          <Button icon={IPlus}>New workspace</Button>
+          <Button variant="ghost" icon={ILink}>Clone from URL</Button>
+        </div>
+        <div className="at-label" style={{ marginTop: 44, marginBottom: 6 }}>Recent</div>
+        <div className="at-col">
+          {workspaces.slice(0, 3).map((w) => (
+            <button key={w.id} type="button" className="at-recent-ws" onClick={() => { setWs(true); setStep(2); }}>
+              <Icon as={IRepo} className="at-subtle" /><span>{w.name}</span><span className="at-mono at-subtle at-trunc">{w.path}</span><span className="at-subtle" style={{ marginLeft: 'auto', fontSize: 12 }}>{w.updated}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="at-welcome-r">
+        <div className="at-row" style={{ justifyContent: 'space-between', marginBottom: 12 }}>
+          <span className="at-label">Set up · about 2 minutes</span>
+          <button type="button" className="at-link" onClick={() => A.go('home')}>Skip — I know my way around</button>
+        </div>
+        <div className="at-wsteps">
+          <Step n={1} title="Workspace" summary={ws ? <span className="at-mono">~/code/acme/storefront</span> : 'Choose a repository'}>
+            <p className="at-wstep-p">Atlas reads the repository and creates agent worktrees under <span className="at-mono">.atlas/wt/</span>. Your working tree is never edited directly.</p>
+            <div className="at-row" style={{ gap: 8 }}><Input icon={IFolder} defaultValue="~/code/acme/storefront" style={{ flex: 1 }} /><Button onClick={() => { setWs(true); setStep(2); }}>Use folder</Button></div>
+          </Step>
+          <Step n={2} title="Model provider" summary={connected ? 'Anthropic · 3 models' : 'Not connected'}>
+            <p className="at-wstep-p">Keys are stored in the system keychain and only sent to the provider.</p>
+            <Field label="Anthropic API key" help={connected ? 'Connected · Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 available.' : 'Or run models locally with Ollama.'}>
+              <div className="at-row" style={{ gap: 8 }}>
+                <Input icon={IKey} type="password" placeholder="sk-ant-…" value={key || (connected ? 'sk-ant-api03-•••••••••••' : '')} onChange={(e) => setKey(e.target.value)} style={{ flex: 1 }} />
+                {connected ? <Badge tone="success" icon={ICheck}>Connected</Badge> : <Button onClick={() => { setConnected(true); setStep(3); }}>Connect</Button>}
+              </div>
+            </Field>
+            <div className="at-row" style={{ gap: 8, marginTop: 10 }}><Button size="sm" variant="ghost" icon={IServer}>Use local models (Ollama)</Button><Button size="sm" variant="ghost">Bedrock / Vertex…</Button></div>
+          </Step>
+          <Step n={3} title="Execution permissions" summary={permsDone ? presets.find((p) => p.id === preset)!.title : 'What agents may do without asking'}>
+            <div className="at-col" style={{ gap: 6 }}>
+              {presets.map((p) => (
+                <button key={p.id} type="button" className="at-recopt" aria-pressed={preset === p.id} onClick={() => setPreset(p.id)}>
+                  <span className="at-recopt-radio" />
+                  <span className="at-col" style={{ gap: 3 }}><span className="at-row" style={{ gap: 8 }}><b>{p.title}</b>{p.rec && <Badge tone="accent">Recommended</Badge>}</span><span className="at-recopt-body">{p.body}</span></span>
+                </button>
+              ))}
+            </div>
+            <div className="at-permtable">
+              {[['Edit files in worktree', 'allow', 'ask', 'allow'], ['Run tests & linters', 'allow', 'ask', 'allow'], ['Schema / DB changes', 'ask', 'ask', 'allow'], ['Network outside localhost', 'ask', 'ask', 'deny'], ['Deploy to staging', 'ask', 'ask', 'deny'], ['Deploy to production', 'ask', 'ask', 'deny']].map((r) => {
+                const col = preset === 'ask' ? 2 : preset === 'balanced' ? 1 : 3;
+                return <div key={r[0]} className="at-perm" data-l={r[col]}><span className="at-perm-level">{r[col]}</span><span className="at-perm-scope">{r[0]}</span></div>;
+              })}
+            </div>
+            <div className="at-row" style={{ marginTop: 10 }}><span className="at-subtle" style={{ fontSize: 12, flex: 1 }}>Production deploys always need your authorization.</span><Button onClick={() => { setPermsDone(true); setStep(4); }}>Save</Button></div>
+          </Step>
+          <Step n={4} title="Try a sample mission" summary="Runs in a disposable worktree">
+            <p className="at-wstep-p">Watch Mission Control with real activity on a small, safe task. Nothing is merged.</p>
+            <div className="at-sample-mission">
+              <Icon as={IMissions} className="at-acc" />
+              <div className="at-col" style={{ gap: 2, flex: 1 }}><b>Add rate limiting to POST /api/login</b><span className="at-subtle" style={{ fontSize: 12 }}>3 agents · ~6 min · writes tests first · no network</span></div>
+              <Button variant="primary" icon={IPlay} onClick={() => A.go('mission')}>Start</Button>
+            </div>
+          </Step>
+        </div>
+        <div className="at-welcome-foot"><Kbd k="⌘ K" /> opens the command palette from anywhere</div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 2. Workspace home ---------- */
+const mStatus = (s: string) => (s === 'running' ? 'running' : s === 'verified' ? 'verified' : s === 'review' ? 'review' : s === 'failed' ? 'failed' : 'done');
+export function Home() {
+  const A = actions();
+  return (
+    <div className="at-screen at-home">
+      <div className="at-home-head">
+        <div className="at-col" style={{ gap: 4, minWidth: 0 }}>
+          <div className="at-row" style={{ gap: 10 }}><span className="display" style={{ fontSize: 20 }}>storefront</span><span className="at-subtle">acme</span></div>
+          <div className="at-row at-home-meta">
+            <span><Icon as={IFolder} size="sm" /><span className="at-mono">{workspace.path}</span></span>
+            <span><Icon as={IBranch} size="sm" /><span className="at-mono">{workspace.branch}</span></span>
+            <span><Icon as={ICommit} size="sm" /><span className="at-mono">{workspace.head}</span> auth: rotate refresh tokens per use</span>
+            <span className="at-ok">clean</span>
+          </div>
+        </div>
+      </div>
+      <div className="at-home-composer">
+        <Composer large running={false} mode="plan" placeholder="Describe a goal. Atlas plans it, staffs it, and shows you before anything runs." quick={['Fix the flaky checkout e2e test', 'Upgrade dependencies with security advisories', 'Add passkey sign-in and deploy to staging']} onSend={() => A.go('create')} />
+      </div>
+      <div className="at-home-grid">
+        <div className="at-col" style={{ gap: 24, minWidth: 0 }}>
+          <section>
+            <div className="at-home-sh"><span className="at-label">Missions</span><span style={{ flex: 1 }} /><Button size="sm" variant="ghost" icon={IPlus} kbd="⌘ N" onClick={() => A.go('create')}>New mission</Button></div>
+            <table className="at-table">
+              <thead><tr><th style={{ width: 110 }}>Status</th><th>Mission</th><th style={{ width: 120 }}>Progress</th><th style={{ width: 70 }}>Agents</th><th style={{ width: 90, textAlign: 'right' }}>Updated</th></tr></thead>
+              <tbody>
+                {missions.map((m) => (
+                  <tr key={m.id} onClick={() => A.go(m.status === 'verified' ? 'report' : m.status === 'review' ? 'review' : 'mission')} style={{ cursor: 'default' }}>
+                    <td><Status s={mStatus(m.status)} label={m.status === 'running' ? 'Running' : m.status === 'review' ? 'Needs review' : m.status === 'verified' ? 'Verified' : m.status === 'failed' ? 'Failed' : 'Done'} /></td>
+                    <td><span className="at-row" style={{ gap: 8 }}><span className="at-mono at-subtle">{m.id}</span><span className="at-trunc" style={{ fontWeight: 500 }}>{m.title}</span></span></td>
+                    <td><span className="at-row" style={{ gap: 8 }}><Meter value={m.tasksDone} max={m.tasksTotal} tone={m.status === 'running' ? 'accent' : undefined} style={{ flex: 1 }} /><span className="at-mono at-subtle at-tnum">{m.tasksDone}/{m.tasksTotal}</span></span></td>
+                    <td className="at-mono at-muted">{m.agents}</td>
+                    <td className="at-subtle" style={{ textAlign: 'right' }}>{m.updated}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </section>
+          <section>
+            <div className="at-home-sh"><span className="at-label">Recent activity</span><span style={{ flex: 1 }} /><Button size="sm" variant="ghost" onClick={() => A.go('activity')}>All activity</Button></div>
+            <div className="at-feed">
+              {activity.map((a, i) => (
+                <div key={i} className="at-feed-row">
+                  <span className="at-mono at-subtle">{a.time}</span>
+                  <Dot s={a.kind === 'error' ? 'failed' : a.kind === 'warn' ? 'warning' : a.kind === 'ok' ? 'done' : 'human'} />
+                  <span className={cx(a.kind === 'human' && 'at-human-c')} style={{ fontWeight: 500 }}>{a.who}</span>
+                  <span className="at-muted at-trunc">{a.text}</span>
+                  <span className="at-mono at-subtle" style={{ marginLeft: 'auto' }}>{a.mission}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
+        <div className="at-col" style={{ gap: 24, minWidth: 0 }}>
+          <section>
+            <div className="at-home-sh"><span className="at-label">Needs you</span><span className="at-mono at-subtle">3</span></div>
+            <div className="at-col" style={{ gap: 8 }}>
+              <div className="at-error"><Icon as={IXCircle} /><h5>MSN-0142 · T12 failed</h5><p>logout clears session — diagnostic ready</p><div className="at-row"><Button size="sm" onClick={() => A.go('mission', { recovery: true })}>Recover…</Button></div></div>
+              <ApprovalCard id="AP-31" compact />
+            </div>
+          </section>
+          <section>
+            <div className="at-home-sh"><span className="at-label">Ready for review</span></div>
+            <button type="button" className="at-home-card" onClick={() => A.go('review')}>
+              <Icon as={IReviews} className="at-subtle" />
+              <span className="at-col" style={{ gap: 2, flex: 1, minWidth: 0 }}><span style={{ fontWeight: 500 }}>MSN-0141 · Upgrade Next.js 14 → 15.3</span><span className="at-subtle" style={{ fontSize: 12 }}>9 files · Code Reviewer approved with 2 comments · CI green</span></span>
+              <Icon as={IChevronRight} size="sm" className="at-subtle" />
+            </button>
+          </section>
+          <section>
+            <div className="at-home-sh"><span className="at-label">Environments</span></div>
+            <div className="at-envs">
+              <div><Dot s="healthy" /><span>staging</span><span className="at-mono at-subtle">v214 · 3d0b9f4</span><Badge tone="warning">1 warning</Badge></div>
+              <div><Dot s="healthy" /><span>production</span><span className="at-mono at-subtle">v211 · 88a0c4d</span><Badge tone="outline">live</Badge></div>
+            </div>
+          </section>
+          <section>
+            <div className="at-home-sh"><span className="at-label">Checkpoints</span><span style={{ flex: 1 }} /><Button size="sm" variant="ghost" onClick={() => A.set({ drawer: 'checkpoints', screen: 'mission' })}>History</Button></div>
+            {checkpoints.slice(0, 3).map((c) => <div key={c.id} className="at-feed-row"><span className="at-mono at-acc">{c.id}</span><span className="at-trunc">{c.label}</span><span className="at-mono at-subtle" style={{ marginLeft: 'auto' }}>{c.time.slice(0, 5)}</span></div>)}
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Workspaces ---------- */
+export function Workspaces() {
+  const A = actions();
+  return (
+    <div className="at-screen">
+      <div className="at-pagehead"><span className="heading">Workspaces</span><span style={{ flex: 1 }} /><Input icon={ISearch} placeholder="Filter" style={{ width: 220 }} /><Button variant="primary" icon={IFolder} kbd="⌘ O" onClick={() => openRepository()}>Open repository</Button></div>
+      <div className="at-pbody" style={{ padding: '0 20px' }}>
+        <table className="at-table">
+          <thead><tr><th>Repository</th><th>Path</th><th>Branch</th><th>Active missions</th><th style={{ textAlign: 'right' }}>Last opened</th></tr></thead>
+          <tbody>{workspaces.map((w) => (
+            <tr key={w.id} aria-selected={w.id === 'storefront'} onClick={() => A.go('home')}>
+              <td><span className="at-row"><Icon as={IRepo} className="at-subtle" /><span style={{ fontWeight: 500 }}>{w.name}</span></span></td>
+              <td className="at-mono at-muted">{w.path}</td><td className="at-mono at-muted">{w.branch}</td>
+              <td>{w.missions ? <Badge tone="accent">{w.missions} running</Badge> : <span className="at-subtle">—</span>}</td>
+              <td className="at-subtle" style={{ textAlign: 'right' }}>{w.updated}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+        <div className="at-callout" style={{ marginTop: 20, maxWidth: 640 }}><Icon as={IHistory} /><div>Each workspace remembers its own panel layout, open terminals and inspector state. Switching restores exactly where you left off.</div></div>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- 3. Mission creation ---------- */
+const plan = [
+  { id: 'P1', agent: 'orch', title: 'Map current auth flows and session storage', deps: [], est: '1 min' },
+  { id: 'P2', agent: 'sec', title: 'Threat-model WebAuthn registration & assertion', deps: ['P1'], est: '3 min' },
+  { id: 'P3', agent: 'be', title: 'Credential table + /api/passkeys register & verify', deps: ['P1'], est: '9 min', perm: 'Schema change · asks' },
+  { id: 'P4', agent: 'fe', title: 'Passkey button, conditional UI, fallbacks', deps: ['P3'], est: '7 min' },
+  { id: 'P5', agent: 'qa', title: 'Virtual authenticator e2e: register, sign in, revoke', deps: ['P3', 'P4'], est: '5 min' },
+  { id: 'P6', agent: 'ops', title: 'Deploy to staging; verify flows on staging', deps: ['P2', 'P5'], est: '6 min', perm: 'Deploy staging · asks' },
+];
+export function MissionCreate() {
+  const A = actions();
+  const [included, setIncluded] = useState<Record<string, boolean>>(Object.fromEntries(plan.map((p) => [p.id, true])));
+  const [env, setEnv] = useState('staging');
+  const [constraints, setConstraints] = useState(['Keep password login working', 'No changes to db/migrations without approval', 'Public API stays backward compatible']);
+  return (
+    <div className="at-screen at-create">
+      <div className="at-create-l">
+        <div className="at-row" style={{ gap: 8, marginBottom: 14 }}><span className="at-mid">MSN-0143 · draft</span><span className="at-subtle" style={{ fontSize: 12 }}>acme/storefront · from feat/auth-refactor</span></div>
+        <div className="at-create-goal">
+          <div className="at-label" style={{ marginBottom: 8 }}>Goal</div>
+          <div className="at-goal-text">Add passkey (WebAuthn) sign-in alongside password login, test it with a virtual authenticator, deploy to staging, and verify the flows there.</div>
+        </div>
+        <div className="at-create-form">
+          <Field label="Constraints" help="Agents treat these as hard rules and cite them when declining.">
+            <div className="at-row" style={{ flexWrap: 'wrap', gap: 6 }}>
+              {constraints.map((c) => <span key={c} className="at-chip" style={{ color: 'var(--ink)' }}>{c}<button type="button" aria-label="Remove" onClick={() => setConstraints(constraints.filter((x) => x !== c))} style={{ display: 'inline-flex', color: 'var(--ink-subtle)' }}><Icon as={IClose} size="sm" /></button></span>)}
+              <button type="button" className="at-chip"><Icon as={IPlus} size="sm" />Add rule</button>
+            </div>
+          </Field>
+          <div className="at-create-row">
+            <Field label="Deploy target"><Select value={env} onChange={setEnv} options={[{ id: 'none', label: 'Don’t deploy' }, { id: 'staging', label: 'staging · fly.io' }, { id: 'preview', label: 'Preview per branch' }]} /></Field>
+            <Field label="Budget" help="Atlas pauses and asks when reached."><Select value="b2" onChange={() => {}} options={[{ id: 'b1', label: '$5 · 45 min' }, { id: 'b2', label: '$12 · 90 min' }, { id: 'b3', label: '$30 · 3 h' }]} /></Field>
+            <Field label="Mode"><Seg value="plan" onChange={() => {}} items={[{ id: 'plan', label: 'Plan, then ask' }, { id: 'run', label: 'Run' }]} /></Field>
+          </div>
+        </div>
+        <div className="at-create-perms">
+          <div className="at-label" style={{ marginBottom: 8 }}>This mission will ask for</div>
+          {[['Database schema change', 'db/migrations/0044_passkeys.sql', 'ask'], ['Deploy', 'storefront-staging (fly.io)', 'ask'], ['Network', 'staging.acme.dev from QA browser', 'ask'], ['Filesystem write', 'src/auth/**, app/(auth)/**, e2e/**', 'allow']].map(([s, d, l]) => (
+            <div key={s} className="at-perm" data-l={l} style={{ gridTemplateColumns: '40px 170px 1fr' }}><span className="at-perm-level">{l}</span><span className="at-perm-scope">{s}</span><span className="at-perm-detail at-mono at-trunc">{d}</span></div>
+          ))}
+        </div>
+      </div>
+      <div className="at-create-r">
+        <PanelHead label="Proposed plan" title={<span className="at-subtle" style={{ fontWeight: 400 }}>v1 · drafted by Atlas Orchestrator in 18s</span>}><Button size="sm" variant="ghost" icon={ISpark}>Refine</Button></PanelHead>
+        <div className="at-pbody">
+          <div className="at-plan">
+            {plan.map((p, i) => {
+              const a = agentById(p.agent);
+              return (
+                <div key={p.id} className={cx('at-plan-row', !included[p.id] && 'at-plan-row--off')} style={{ animationDelay: `${i * 40}ms` }}>
+                  <Check on={included[p.id]} onChange={(v) => setIncluded({ ...included, [p.id]: v })} label={`Include ${p.id}`} />
+                  <span className="at-mono at-subtle">{p.id}</span>
+                  <div className="at-col" style={{ gap: 3, minWidth: 0, flex: 1 }}>
+                    <span className="at-plan-title">{p.title}</span>
+                    <span className="at-row" style={{ gap: 6, fontSize: 11.5 }}>
+                      <RoleMark mark={a.mark} size="sm" /><span className="at-muted">{a.name}</span>
+                      {p.deps.length > 0 && <span className="at-subtle">after {p.deps.join(', ')}</span>}
+                      {p.perm && <Badge tone="warning" icon={IShield}>{p.perm}</Badge>}
+                    </span>
+                  </div>
+                  <span className="at-mono at-subtle">{p.est}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="at-label" style={{ padding: '16px 16px 8px' }}>Team</div>
+          <div style={{ padding: '0 16px' }}>
+            {['orch', 'be', 'fe', 'sec', 'qa', 'ops'].map((id) => { const a = agentById(id); return <div key={id} className="at-team-row"><RoleMark mark={a.mark} size="sm" /><span>{a.name}</span><span className="at-subtle" style={{ marginLeft: 'auto', fontSize: 12 }}>{a.model}</span></div>; })}
+          </div>
+          <div className="at-callout" style={{ margin: 16 }}><Icon as={ICpu} /><div>Estimated <b>~31 min</b> and <b>$6–9</b> at current prices. Estimates, not limits — the budget above is the limit.</div></div>
+        </div>
+        <div className="at-create-foot">
+          <Button variant="ghost" onClick={() => A.go('home')}>Discard</Button>
+          <span style={{ flex: 1 }} />
+          <Button icon={ILock}>Save as draft</Button>
+          <Button variant="primary" icon={IPlay} kbd="⌘ ↵" onClick={() => { A.go('mission'); A.toast({ tone: 'info', title: 'MSN-0143 launched', body: '6 agents staffed · checkpoint CP-1 created' }); }}>Launch mission</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export { IArrowRight, IMore, Tip, SampleTag, EmptyState, IconButton, agents, deployments, IDeploy };

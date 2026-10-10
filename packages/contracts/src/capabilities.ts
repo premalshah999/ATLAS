@@ -1,0 +1,30 @@
+// Capabilities and tools (manual §21–22). Unknown capabilities are denied by default.
+import { z } from 'zod';
+
+export const Capability = z.enum([
+  'fs.read', 'fs.write', 'shell.safe', 'shell.privileged', 'browser.navigate', 'desktop.input',
+  'deploy.staging', 'deploy.production', 'secrets.use',
+]);
+export type Capability = z.infer<typeof Capability>;
+
+export const ToolName = z.enum(['read_file', 'list_files', 'write_file', 'shell_exec', 'git_status', 'run_tests']);
+export type ToolName = z.infer<typeof ToolName>;
+
+export type Risk = 'low' | 'elevated' | 'high';
+
+export interface ToolCall {
+  tool: string;
+  args: Record<string, unknown>;
+}
+
+export interface ToolResult {
+  ok: boolean;
+  /** Text returned to the agent. */
+  output: string;
+  exitCode: number | null;
+  artifactIds: string[];
+  error: ToolErrorKind | null;
+}
+
+export const ToolErrorKind = z.enum(['policy_denied', 'approval_denied', 'approval_expired', 'invalid_args', 'path_escape', 'timeout', 'process_failed', 'cancelled', 'unknown_tool']);
+export type ToolErrorKind = z.infer<typeof ToolErrorKind>;

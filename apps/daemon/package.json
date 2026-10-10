@@ -1,0 +1,16 @@
+{
+  "name": "@atlas/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": {
+    "@atlas/contracts": "workspace:*",
+    "@atlas/orchestrator": "workspace:*",
+    "@atlas/runtime-fake": "workspace:*",
+    "@atlas/runtime-pi": "workspace:*",
+    "@atlas/storage": "workspace:*",
+    "@atlas/workspace": "workspace:*"
+  }
+}

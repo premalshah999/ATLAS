@@ -1,0 +1,138 @@
+// Live application shell: title bar, rail, canvas and status bar wired to the daemon.
+import React from 'react';
+import type { IconType } from 'react-icons';
+import { cx, Dot, Icon, IconButton, Kbd, Menu, MenuItem, Tip } from '../ui/primitives';
+import { IBranch, IChevronDown, IFolder, IFolderOpen, IHome, IMissions, IPlus, ISettings, IPalette } from '../lib/icons';
+import { call } from './api';
+import { go, refreshLists, useLive, type Route } from './store';
+import { stateWord } from './format';
+import { toast } from './toast';
+
+export async function openRepository(): Promise<string | null> {
+  try {
+    const w = await call('workspace.open');
+    if (!w) return null;
+    await refreshLists();
+    toast(w.isGit
+      ? { tone: 'info', title: `Opened ${w.name}`, body: `${w.branch ?? 'detached'} · ${w.head?.slice(0, 7) ?? 'no commits'}${w.dirty ? ` · ${w.dirty} uncommitted change${w.dirty === 1 ? '' : 's'}` : ' · clean'}` }
+      : { tone: 'warning', title: `Opened ${w.name}`, body: 'Not a git repository. Missions need git to create isolated worktrees.' });
+    return w.id;
+  } catch (e) {
+    toast({ tone: 'danger', title: 'Could not open the folder', body: (e as Error).message });
+    return null;
+  }
+}
+
+const NAV: { id: Route['screen']; label: string; icon: IconType; kbd?: string }[] = [
+  { id: 'projects', label: 'Projects', icon: IHome, kbd: '⌘ 1' },
+  { id: 'new', label: 'New mission', icon: IPlus, kbd: '⌘ N' },
+];
+
+export function LiveTitleBar() {
+  const route = useLive((s) => s.route);
+  const workspaces = useLive((s) => s.workspaces);
+  const missions = useLive((s) => s.missions);
+  const current = route.screen === 'mission' ? missions.find((m) => m.id === route.missionId) : undefined;
+  const ws = workspaces.find((w) => w.id === (current?.workspaceId ?? (route.screen === 'new' ? route.workspaceId : undefined))) ?? workspaces[0];
+  return (
+    <header className="at-titlebar">
+      <div className="at-traffic" aria-hidden><i /><i /><i /></div>
+      <Menu width={320} trigger={(open, t) => (
+        <button type="button" className="at-tb-ws" onClick={t} aria-expanded={open}>
+          <span className="at-tb-wsmark">{(ws?.name ?? 'A').charAt(0).toUpperCase()}</span>
+          <span className="at-tb-wsname">{ws?.name ?? 'No project'}</span><Icon as={IChevronDown} size="sm" className="at-subtle" />
+        </button>
+      )}>
+        {(close) => (
+          <>
+            <div className="at-label at-menu-label">Projects</div>
+            {workspaces.map((w) => <MenuItem key={w.id} icon={IFolder} active={w.id === ws?.id} hint={w.branch ?? ''} onClick={() => { close(); go({ screen: 'new', workspaceId: w.id }); }}>{w.name}</MenuItem>)}
+            {workspaces.length > 0 && <div className="at-menu-sep" />}
+            <MenuItem icon={IFolderOpen} kbd="⌘ O" onClick={() => { close(); void openRepository(); }}>Open repository…</MenuItem>
+          </>
+        )}
+      </Menu>
+      {ws?.isGit && <Tip label={`HEAD ${ws.head?.slice(0, 7)} · ${ws.dirty ? `${ws.dirty} uncommitted` : 'clean'} · ${ws.root}`}><span className="at-tb-branch"><Icon as={IBranch} size="sm" />{ws.branch}</span></Tip>}
+      {current && (
+        <>
+          <span className="at-sep-v" />
+          <button type="button" className="at-tb-mission" onClick={() => go({ screen: 'mission', missionId: current.id })}>
+            <Dot s={dotFor(current.state)} />
+            <span className="at-trunc">{current.title}</span>
+            <span className="at-subtle">{stateWord(current.state)}</span>
+          </button>
+        </>
+      )}
+      <span style={{ flex: 1 }} />
+    </header>
+  );
+}
+
+export const dotFor = (s: string) => ({ running: 'running', verifying: 'running', planning: 'running', awaiting_approval: 'waiting', completed: 'done', failed: 'failed', cancelled: 'idle', draft: 'idle' } as Record<string, string>)[s] ?? 'idle';
+
+export function LiveRail() {
+  const route = useLive((s) => s.route);
+  const missions = useLive((s) => s.missions);
+  const item = (n: (typeof NAV)[number]) => (
+    <Tip key={n.id} label={n.label} kbd={n.kbd} side="right" delay={250}>
+      <button type="button" className="at-rail-item" aria-current={route.screen === n.id ? 'page' : undefined} aria-label={n.label} onClick={() => go(n.id === 'new' ? { screen: 'new' } : { screen: n.id } as Route)}>
+        <Icon as={n.icon} size="lg" />
+      </button>
+    </Tip>
+  );
+  const active = missions.filter((m) => ['planning', 'awaiting_approval', 'running', 'verifying'].includes(m.state));
+  return (
+    <nav className="at-rail" aria-label="Primary">
+      <div className="at-rail-group">
+        {NAV.map(item)}
+        <Tip label={active.length ? `${active.length} active mission${active.length === 1 ? '' : 's'}` : 'Missions'} side="right" delay={250}>
+          <button type="button" className="at-rail-item" aria-label="Missions" aria-current={route.screen === 'mission' ? 'page' : undefined}
+            onClick={() => { const m = active[0] ?? missions[0]; if (m) go({ screen: 'mission', missionId: m.id }); else go({ screen: 'projects' }); }}>
+            <Icon as={IMissions} size="lg" />
+            {active.length > 0 && <span className="at-rail-badge">{active.length}</span>}
+          </button>
+        </Tip>
+      </div>
+      <div style={{ flex: 1 }} />
+      <div className="at-rail-group">
+        <Tip label="Design preview · sample data" side="right" delay={250}>
+          <button type="button" className="at-rail-item" aria-label="Design preview" onClick={() => go({ screen: 'preview' })}><Icon as={IPalette} size="lg" /></button>
+        </Tip>
+        <Tip label="Settings" kbd="⌘ ," side="right" delay={250}>
+          <button type="button" className="at-rail-item" aria-label="Settings" aria-current={route.screen === 'settings' ? 'page' : undefined} onClick={() => go({ screen: 'settings' })}><Icon as={ISettings} size="lg" /></button>
+        </Tip>
+      </div>
+    </nav>
+  );
+}
+
+export function LiveStatusBar() {
+  const status = useLive((s) => s.status);
+  const missions = useLive((s) => s.missions);
+  const running = missions.filter((m) => m.state === 'running' || m.state === 'verifying').length;
+  const waiting = missions.filter((m) => m.state === 'awaiting_approval').length;
+  const word = { starting: 'Daemon starting', ready: 'Daemon ready', restarting: 'Daemon restarting', stopped: 'Daemon stopped' }[status.state];
+  return (
+    <footer className="at-statusbar" data-testid="statusbar">
+      <Tip label={status.detail ?? `Control plane process${status.pid ? ` · pid ${status.pid}` : ''}`}>
+        <span className="at-sb-item" data-testid="daemon-status" data-state={status.state}><Dot s={status.state === 'ready' ? 'healthy' : status.state === 'restarting' ? 'waiting' : 'idle'} />{word}{status.restarts ? ` · ${status.restarts} restart${status.restarts === 1 ? '' : 's'}` : ''}</span>
+      </Tip>
+      <span className="at-sep-v" style={{ margin: '6px 2px' }} />
+      <span className="at-sb-item">{running} running</span>
+      <span className={cx('at-sb-item', waiting > 0 && 'at-warn')}>{waiting} awaiting approval</span>
+      <span style={{ flex: 1 }} />
+      <span className="at-sb-item at-subtle">Local-first · nothing leaves this machine except model requests you configure</span>
+      <span className="at-sb-item"><Kbd k="⌘ K" /></span>
+    </footer>
+  );
+}
+
+export function PreviewBanner({ onExit }: { onExit: () => void }) {
+  return (
+    <div className="lv-preview-banner" role="status">
+      <span>Design preview · every value on these screens is sample data, not your projects.</span>
+      <IconButton icon={IHome} label="Back to ATLAS" onClick={onExit} />
+      <button type="button" className="lv-link" onClick={onExit}>Back to ATLAS</button>
+    </div>
+  );
+}

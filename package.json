@@ -1,62 +1,41 @@
 {
-  "name": "atlas",
-  "productName": "ATLAS",
-  "version": "0.1.0",
-  "description": "Mission control for autonomous software engineering.",
+  "name": "atlas-monorepo",
   "private": true,
-  "main": "dist-electron/main.js",
-  "scripts": {
-    "dev": "concurrently -k -n web,app \"vite\" \"npm:dev:electron\"",
-    "dev:web": "vite",
-    "dev:electron": "tsc -p tsconfig.electron.json && wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
-    "build": "npm run typecheck && vite build && tsc -p tsconfig.electron.json",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
-    "start": "electron .",
-    "preview": "vite preview",
-    "dist": "npm run build && electron-builder"
+  "version": "0.1.0",
+  "description": "ATLAS: local-first mission control for autonomous software engineering.",
+  "type": "module",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22.19.0"
   },
-  "dependencies": {
-    "highlight.js": "11.11.1",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "react-icons": "5.5.0"
+  "scripts": {
+    "dev": "pnpm --filter @atlas/desktop dev",
+    "build": "pnpm --filter @atlas/desktop build",
+    "typecheck": "pnpm -r --workspace-concurrency=1 typecheck",
+    "lint": "node scripts/check-deps.mjs && eslint .",
+    "test": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:e2e": "pnpm build && playwright test -c tests/e2e-electron/playwright.config.ts",
+    "package": "pnpm --filter @atlas/desktop package",
+    "doctor": "node scripts/doctor.mjs",
+    "pi:version": "node scripts/pi-version.mjs",
+    "seed:sample": "node scripts/seed-sample.mjs"
   },
   "devDependencies": {
+    "@atlas/contracts": "workspace:*",
+    "@atlas/orchestrator": "workspace:*",
+    "@atlas/policy": "workspace:*",
+    "@atlas/runtime-fake": "workspace:*",
+    "@atlas/runtime-pi": "workspace:*",
+    "@atlas/storage": "workspace:*",
+    "@atlas/terminal": "workspace:*",
+    "@atlas/workspace": "workspace:*",
+    "@eslint/js": "9.17.0",
+    "@playwright/test": "1.56.1",
     "@types/node": "22.10.2",
-    "@types/react": "18.3.18",
-    "@types/react-dom": "18.3.5",
-    "@vitejs/plugin-react": "4.3.4",
-    "concurrently": "9.1.2",
-    "cross-env": "7.0.3",
-    "electron": "44.1.1",
-    "electron-builder": "25.1.8",
+    "eslint": "9.17.0",
     "typescript": "5.7.2",
-    "vite": "5.4.21",
-    "wait-on": "8.0.1"
-  },
-  "build": {
-    "appId": "dev.atlas.app",
-    "productName": "ATLAS",
-    "files": [
-      "dist/**",
-      "dist-electron/**",
-      "package.json"
-    ],
-    "directories": {
-      "output": "release"
-    },
-    "mac": {
-      "category": "public.app-category.developer-tools"
-    },
-    "linux": {
-      "target": [
-        "AppImage"
-      ]
-    },
-    "win": {
-      "target": [
-        "nsis"
-      ]
-    }
+    "typescript-eslint": "8.18.1",
+    "vitest": "2.1.8"
   }
 }

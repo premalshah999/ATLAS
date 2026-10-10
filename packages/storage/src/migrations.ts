@@ -1,0 +1,55 @@
+// Forward-only schema migrations (manual §39). Never edit a shipped migration; add a new one.
+export const MIGRATIONS: { version: number; sql: string }[] = [
+  {
+    version: 1,
+    sql: `
+      CREATE TABLE workspaces (
+        id TEXT PRIMARY KEY, name TEXT NOT NULL, root TEXT NOT NULL UNIQUE, is_git INTEGER NOT NULL,
+        branch TEXT, head TEXT, dirty INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE TABLE missions (
+        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), title TEXT NOT NULL, goal TEXT NOT NULL,
+        constraints TEXT NOT NULL, approval_mode TEXT NOT NULL, runtime TEXT NOT NULL, base_commit TEXT, state TEXT NOT NULL,
+        plan_version INTEGER NOT NULL DEFAULT 0, policy_id TEXT NOT NULL, outcome TEXT, decision TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX missions_ws ON missions(workspace_id, updated_at);
+      CREATE TABLE plans (
+        mission_id TEXT NOT NULL REFERENCES missions(id), version INTEGER NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL,
+        created_at TEXT NOT NULL, PRIMARY KEY (mission_id, version)
+      );
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), key TEXT NOT NULL, title TEXT NOT NULL, role TEXT NOT NULL,
+        dependencies TEXT NOT NULL, state TEXT NOT NULL, retries INTEGER NOT NULL DEFAULT 0, acceptance TEXT NOT NULL,
+        result_ref TEXT, worktree TEXT, branch TEXT, UNIQUE (mission_id, key)
+      );
+      CREATE INDEX tasks_mission ON tasks(mission_id);
+      CREATE TABLE attempts (
+        id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), mission_id TEXT NOT NULL REFERENCES missions(id),
+        number INTEGER NOT NULL, state TEXT NOT NULL, runtime TEXT NOT NULL, pid INTEGER, started_at TEXT NOT NULL,
+        ended_at TEXT, error TEXT, tokens INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX attempts_task ON attempts(task_id);
+      CREATE TABLE approvals (
+        id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), task_id TEXT, agent_role TEXT NOT NULL, tool TEXT NOT NULL,
+        capability TEXT NOT NULL, action TEXT NOT NULL, environment TEXT NOT NULL, resources TEXT NOT NULL, reason TEXT NOT NULL,
+        risk TEXT NOT NULL, scope TEXT NOT NULL, status TEXT NOT NULL, requested_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+        decided_at TEXT, decided_by TEXT
+      );
+      CREATE INDEX approvals_mission ON approvals(mission_id, status);
+      CREATE TABLE artifacts (
+        id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), task_id TEXT, kind TEXT NOT NULL, name TEXT NOT NULL,
+        size INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL
+      );
+      CREATE INDEX artifacts_mission ON artifacts(mission_id);
+      CREATE TABLE checks (
+        id TEXT PRIMARY KEY, mission_id TEXT NOT NULL REFERENCES missions(id), name TEXT NOT NULL, command TEXT, required INTEGER NOT NULL,
+        result TEXT NOT NULL, exit_code INTEGER, duration_ms INTEGER, reason TEXT NOT NULL, artifact_id TEXT, commit_sha TEXT
+      );
+      CREATE TABLE events (
+        mission_id TEXT NOT NULL, seq INTEGER NOT NULL, type TEXT NOT NULL, ts TEXT NOT NULL, actor TEXT NOT NULL,
+        task_id TEXT, attempt_id TEXT, payload TEXT NOT NULL, artifact_ids TEXT NOT NULL, PRIMARY KEY (mission_id, seq)
+      );
+    `,
+  },
+];

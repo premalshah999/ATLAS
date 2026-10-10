@@ -1,0 +1,67 @@
+{
+  "name": "@atlas/desktop",
+  "productName": "ATLAS",
+  "version": "0.1.0",
+  "private": true,
+  "description": "ATLAS desktop app: Electron main, preload and React renderer.",
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "vite build -c renderer/vite.config.ts && node scripts/build.mjs",
+    "start": "electron .",
+    "typecheck": "tsc -p tsconfig.json && tsc -p renderer/tsconfig.json",
+    "package": "pnpm build && electron-builder"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "typebox": "1.3.27"
+  },
+  "devDependencies": {
+    "@atlas/contracts": "workspace:*",
+    "@atlas/daemon": "workspace:*",
+    "@types/react": "18.3.18",
+    "@types/react-dom": "18.3.5",
+    "@vitejs/plugin-react": "4.3.4",
+    "electron": "44.1.1",
+    "electron-builder": "25.1.8",
+    "esbuild": "0.24.2",
+    "highlight.js": "11.11.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-icons": "5.5.0",
+    "vite": "5.4.21",
+    "zod": "3.24.1"
+  },
+  "build": {
+    "appId": "dev.atlas.app",
+    "productName": "ATLAS",
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development",
+      "executableName": "atlas"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "executableName": "atlas",
+    "publish": null
+  },
+  "author": "ATLAS"
+}
