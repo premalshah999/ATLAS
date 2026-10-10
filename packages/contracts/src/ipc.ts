@@ -2,6 +2,7 @@
 // Preload exposes exactly these methods; main validates sender + payload; the daemon authorizes and acts.
 import { z } from 'zod';
 import { ApprovalMode, Id, MissionBudget, RuntimeKind } from './domain';
+import { DesktopAction, DesktopControl } from './desktop';
 
 const empty = z.object({}).strict();
 const missionRef = z.object({ missionId: Id }).strict();
@@ -45,6 +46,10 @@ export const Requests = {
   'deploy.secrets.list': empty,
   'deploy.secrets.set': z.object({ target: z.string().min(1).max(100), name: z.string().regex(/^[A-Z_][A-Z0-9_]{0,63}$/), value: z.string().min(1).max(10_000) }).strict(),
   'deploy.secrets.remove': z.object({ target: z.string().min(1).max(100), name: z.string().regex(/^[A-Z_][A-Z0-9_]{0,63}$/) }).strict(),
+  'desktop.list': empty,
+  'desktop.control': z.object({ sessionId: Id, op: DesktopControl }).strict(),
+  'desktop.input': z.object({ sessionId: Id, input: DesktopAction }).strict(),
+  'desktop.frame': z.object({ sessionId: Id }).strict(),
   'approval.respond': z.object({ approvalId: Id, decision: z.enum(['approve', 'deny']) }).strict(),
   'events.since': z.object({ missionId: Id, afterSeq: z.number().int().min(0) }).strict(),
   'artifact.read': z.object({ artifactId: Id }).strict(),
@@ -55,6 +60,7 @@ export const Requests = {
     z.object({ key: z.literal('retention.days'), value: z.number().int().min(0).max(3650) }).strict(),
     z.object({ key: z.literal('deploy.allowedTargets'), value: z.array(z.string().min(1).max(100)).max(50) }).strict(),
     z.object({ key: z.literal('deploy.autoRollback'), value: z.boolean() }).strict(),
+    z.object({ key: z.literal('desktop.enabled'), value: z.boolean() }).strict(),
   ]),
   'credentials.list': empty,
   'credentials.set': z.object({ provider: z.enum(['anthropic', 'openai', 'google']), key: z.string().trim().min(8).max(500) }).strict(),

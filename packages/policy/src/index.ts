@@ -19,12 +19,16 @@ export const ROLE_GRANTS: Record<AgentRole, readonly Capability[]> = {
   reviewer: ['fs.read', 'shell.safe'],
   tester: ['fs.read', 'shell.safe'],
   browser_qa: ['fs.read', 'browser.navigate'],
-  desktop_operator: [],
+  desktop_operator: ['fs.read', 'desktop.input'],
   deployment_verifier: ['fs.read', 'browser.navigate'],
 };
 
-/** Capabilities no agent may use in v0.1, whatever the role says. */
-const NEVER: ReadonlySet<Capability> = new Set(['deploy.production', 'secrets.use', 'desktop.input', 'deploy.staging']);
+/**
+ * Capabilities no agent may hold, whatever the role says. Staging deploys run only as an operator-approved
+ * release stage; desktop input is granted to desktop_operator but the session itself needs the operator's
+ * opt-in setting plus a single-use approval (enforced by the desktop service).
+ */
+const NEVER: ReadonlySet<Capability> = new Set(['deploy.production', 'secrets.use', 'deploy.staging']);
 
 export interface ShellClass { capability: 'shell.safe' | 'shell.privileged' | null; risk: Risk; reason: string; /** Needs network egress inside the sandbox (granted only with approval). */ network?: boolean }
 

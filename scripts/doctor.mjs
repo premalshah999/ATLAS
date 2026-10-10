@@ -36,6 +36,11 @@ add(sandbox.ok, 'OS sandbox for agent commands', sandbox.detail);
   if (!found) { try { const { chromium } = await import('playwright-core'); const p = chromium.executablePath(); if (existsSync(p)) found = p; } catch {} }
   add(true, 'Browser for QA', found ? found : 'none found — browser flows will be inconclusive (install Chrome/Chromium or `npx playwright install chromium`)');
 }
+{
+  const onPath = (b) => (process.env.PATH ?? '').split(':').some((d) => d && existsSync(`${d}/${b}`));
+  const missing = ['Xvfb', 'xdotool', 'import'].filter((b) => !onPath(b));
+  add(true, 'Desktop control (optional)', process.platform !== 'linux' ? `not available on ${process.platform}` : missing.length ? `missing ${missing.join(', ')} — install xvfb xdotool imagemagick to enable` : 'Xvfb + xdotool + ImageMagick');
+}
 
 for (const c of checks) console.log(`${c.ok ? '✓' : '✗'} ${c.name.padEnd(30)} ${c.detail}`);
 process.exit(checks.every((c) => c.ok) ? 0 : 1);

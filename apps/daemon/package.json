@@ -13,6 +13,7 @@
     "@atlas/browser": "workspace:*",
     "@atlas/contracts": "workspace:*",
     "@atlas/deploy": "workspace:*",
+    "@atlas/desktop-control": "workspace:*",
     "@atlas/orchestrator": "workspace:*",
     "@atlas/runtime-fake": "workspace:*",
     "@atlas/runtime-pi": "workspace:*",

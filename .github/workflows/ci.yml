@@ -13,7 +13,7 @@ jobs:
       - name: OS sandbox and desktop tools
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q bubblewrap xdotool x11-utils imagemagick
+          sudo apt-get install -y -q bubblewrap xvfb xdotool x11-utils imagemagick
           # Ubuntu 24.04 restricts unprivileged user namespaces; bubblewrap needs them.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - run: pnpm install --frozen-lockfile

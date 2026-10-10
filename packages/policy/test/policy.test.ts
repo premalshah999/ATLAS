@@ -40,3 +40,20 @@ describe('approvals', () => {
     expect(approvalUsable({ status: 'expired', expiresAt: future }).ok).toBe(false);
   });
 });
+
+describe('desktop and deploy capabilities', () => {
+  it('desktop input belongs to desktop_operator only', () => {
+    expect(evaluate({ role: 'desktop_operator', tool: 'desktop_action', args: {}, mode: 'ask_risky' }).decision).toBe('allow');
+    for (const role of ['coder', 'reviewer', 'tester', 'browser_qa', 'orchestrator', 'deployment_verifier'] as const) {
+      expect(evaluate({ role, tool: 'desktop_action', args: {}, mode: 'ask_risky' }).decision).toBe('deny');
+    }
+  });
+  it('desktop_operator gets no shell, writes or deploys', () => {
+    for (const tool of ['shell_exec', 'write_file', 'staging_deploy']) {
+      expect(evaluate({ role: 'desktop_operator', tool, args: { command: 'ls' }, mode: 'ask_risky' }).decision).toBe('deny');
+    }
+  });
+  it('staging deploys are never an agent tool', () => {
+    expect(evaluate({ role: 'deployment_verifier', tool: 'staging_deploy', args: {}, mode: 'ask_risky' }).decision).toBe('deny');
+  });
+});

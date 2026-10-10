@@ -1,6 +1,6 @@
 // Typed client over the preload bridge. The renderer holds no authority: every call is an intent the
 // main process validates and the daemon authorizes.
-import type { Approval, Artifact, Attempt, AtlasEvent, CheckRecord, Deployment, Finding, Method, Mission, MissionBudget, Plan, RequestOf, RuntimeHealth, Task, Workspace } from '@atlas/contracts';
+import type { Approval, Artifact, Attempt, AtlasEvent, CheckRecord, Deployment, DesktopSessionInfo, Finding, Method, Mission, MissionBudget, Plan, RequestOf, RuntimeHealth, Task, Workspace } from '@atlas/contracts';
 
 export type DaemonStatus = { state: 'starting' | 'ready' | 'restarting' | 'stopped'; pid: number | null; restarts: number; detail?: string };
 
@@ -34,7 +34,8 @@ export interface MissionSnapshot {
 
 export type Preflight = { level: 'block' | 'warn' | 'info'; message: string }[];
 export type MissionListItem = Mission & { tasks: { key: string; state: string }[]; pendingApprovals: number };
-export type SettingsState = { values: { 'execution.allowUnsandboxed': boolean; 'retention.days': number; 'deploy.allowedTargets': string[]; 'deploy.autoRollback': boolean }; sandbox: { kind: 'bwrap' | 'sandbox-exec' | 'none'; detail: string; path: string | null } };
+export type DesktopState = { support: { ok: boolean; detail: string }; enabled: boolean; sessions: DesktopSessionInfo[] };
+export type SettingsState = { values: { 'execution.allowUnsandboxed': boolean; 'retention.days': number; 'deploy.allowedTargets': string[]; 'deploy.autoRollback': boolean; 'desktop.enabled': boolean }; sandbox: { kind: 'bwrap' | 'sandbox-exec' | 'none'; detail: string; path: string | null } };
 export type Credentials = { available: boolean; providers: { provider: string; stored: boolean; fromEnvironment: boolean; env: string }[] };
 export type AppInfo = { version: string; schema: number; pi: { package: string; version: string; gitHead: string; license: string; repository: string }; platform: string; node: string; electron: string; chrome: string; daemon: DaemonStatus; credentialStore: boolean };
 
@@ -68,6 +69,10 @@ type Results = {
   'deploy.secrets.list': { target: string; names: string[] }[];
   'deploy.secrets.set': { target: string; names: string[] }[];
   'deploy.secrets.remove': { target: string; names: string[] }[];
+  'desktop.list': DesktopState;
+  'desktop.control': DesktopSessionInfo;
+  'desktop.input': { ok: boolean; message: string; input: boolean };
+  'desktop.frame': { png: string; info: DesktopSessionInfo };
   'approval.respond': Approval;
   'events.since': AtlasEvent[];
   'artifact.read': { artifact: Artifact; intact: boolean; truncated: boolean; text: string };

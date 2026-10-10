@@ -10,6 +10,7 @@ import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
 import { detectSandbox } from '@atlas/terminal';
 import { applicationStage, createBrowserTool, resolveBrowser } from '@atlas/browser';
 import { DeployManager, stagingStage } from '@atlas/deploy';
+import { createDesktopTool, DesktopManager, desktopSupport } from '@atlas/desktop-control';
 import { loadConfig } from '@atlas/workspace';
 import { createLogger, type Logger } from './log';
 
@@ -26,6 +27,7 @@ export class DaemonService {
   private keys: Record<string, string>;
   private deploySecrets: Record<string, Record<string, string>>;
   readonly deploy: DeployManager;
+  readonly desktop: DesktopManager;
 
   constructor(private readonly o: ServiceOptions) {
     mkdirSync(o.dataDir, { recursive: true });
@@ -43,10 +45,21 @@ export class DaemonService {
       isolation: () => { const sb = detectSandbox(); return sb.kind !== 'none' ? { mode: 'sandbox', detail: sb.detail } : this.repo.setting('execution.allowUnsandboxed', false) ? { mode: 'unsandboxed', detail: sb.detail } : { mode: 'unavailable', detail: sb.detail }; },
       log: (m, d) => this.log.info(m, d),
     });
+    // Desktop sessions are recorded in the owning mission's event log (manual §27: every takeover is audited).
+    this.desktop = new DesktopManager({
+      session: (i, change, by) => this.record(i.missionId, i.taskId, 'desktop.session', by, { sessionId: i.id, change, controller: i.controller, display: i.display, environment: i.environment, size: `${i.width}x${i.height}`, inputs: i.inputs }),
+      operatorInput: (i, a, ok, message) => this.record(i.missionId, i.taskId, 'desktop.action', 'operator', { sessionId: i.id, action: a.action, args: a.action === 'type' ? { chars: a.text.length } : a, ok, message, controller: i.controller, by: 'operator' }),
+    });
     this.orch = new Orchestrator({ repo: this.repo, artifacts: this.artifacts, runtimes: { fake: this.fake, pi: this.pi }, worktreeDir: path.join(o.dataDir, 'worktrees'), factsDir: path.join(o.dataDir, 'facts'),
       stages: [applicationStage(), stagingStage(this.deploy)],
       toolFactories: {
         browser_action: (c) => createBrowserTool({ worktree: c.worktree, sandbox: c.sandbox, putScreenshot: (n, png) => c.putArtifact({ kind: 'screenshot', name: n, bytes: png }).id, emit: (p, ids) => c.emit('browser.step', p, ids) }),
+        desktop_action: (c) => createDesktopTool({
+          manager: this.desktop, missionId: c.missionId, taskId: c.taskId, worktree: c.worktree,
+          sandbox: detectSandbox().kind !== 'none' ? { root: c.worktree, writable: false, network: false } : this.repo.setting('execution.allowUnsandboxed', false) ? 'unsandboxed' : null,
+          enabled: () => this.repo.setting('desktop.enabled', false), requestApproval: c.requestApproval,
+          putScreenshot: (n, png) => c.putArtifact({ kind: 'screenshot', name: n, bytes: png }).id, emit: (t, p, ids) => c.emit(t, p, ids),
+        }),
         inspect_logs: (c) => ({
           invoke: async (args) => {
             const m = this.repo.mission(c.missionId);
@@ -89,10 +102,18 @@ export class DaemonService {
     return recovered;
   }
 
+  private record(missionId: string, taskId: string | null, type: 'desktop.session' | 'desktop.action', by: 'agent' | 'operator' | 'system', payload: Record<string, unknown>) {
+    if (!this.repo.mission(missionId)) return;
+    const task = taskId ? this.repo.task(taskId) : null;
+    const actor = by === 'operator' ? { kind: 'operator' as const } : by === 'agent' && task ? { kind: 'agent' as const, role: task.role, taskId: task.id } : { kind: 'system' as const, component: 'desktop' };
+    this.repo.append({ missionId, taskId, attemptId: null, type, actor, payload, artifactIds: [] });
+  }
+
   private configForDeployment(dir: string | null) { return dir ? loadConfig(dir).config : null; }
 
   async stop() {
     if (this.retentionTimer) clearInterval(this.retentionTimer);
+    await this.desktop.shutdown();
     await this.deploy.shutdown();
     await this.orch.shutdown();
     this.db.close();
@@ -138,6 +159,14 @@ export class DaemonService {
       case 'mission.cancel': return this.orch.cancelMission(p.missionId);
       case 'mission.decide': return this.orch.decide(p.missionId, p.decision);
       case 'task.cancel': return this.orch.cancelTask(p.taskId);
+      case 'desktop.list': return { support: desktopSupport(), enabled: this.repo.setting('desktop.enabled', false), sessions: this.desktop.list() };
+      case 'desktop.control': {
+        const info = await this.desktop.control(p.sessionId, p.op);
+        this.log.warn('desktop control', { session: p.sessionId, op: p.op });
+        return info;
+      }
+      case 'desktop.input': return this.desktop.operatorInput(p.sessionId, p.input);
+      case 'desktop.frame': return this.desktop.frame(p.sessionId);
       case 'approval.respond': return this.orch.respondApproval(p.approvalId, p.decision);
       case 'events.since': return this.repo.eventsSince(p.missionId, p.afterSeq);
       case 'artifact.read': {
@@ -160,6 +189,7 @@ export class DaemonService {
     return {
       'execution.allowUnsandboxed': this.repo.setting('execution.allowUnsandboxed', false), 'retention.days': this.repo.setting('retention.days', 0),
       'deploy.allowedTargets': this.repo.setting<string[]>('deploy.allowedTargets', []), 'deploy.autoRollback': this.repo.setting('deploy.autoRollback', true),
+      'desktop.enabled': this.repo.setting('desktop.enabled', false),
     };
   }
 

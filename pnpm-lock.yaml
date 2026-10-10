@@ -17,6 +17,9 @@ importers:
       '@atlas/deploy':
         specifier: workspace:*
         version: link:packages/deploy
+      '@atlas/desktop-control':
+        specifier: workspace:*
+        version: link:packages/desktop-control
       '@atlas/orchestrator':
         specifier: workspace:*
         version: link:packages/orchestrator
@@ -71,6 +74,9 @@ importers:
       '@atlas/deploy':
         specifier: workspace:*
         version: link:../../packages/deploy
+      '@atlas/desktop-control':
+        specifier: workspace:*
+        version: link:../../packages/desktop-control
       '@atlas/orchestrator':
         specifier: workspace:*
         version: link:../../packages/orchestrator
@@ -186,6 +192,21 @@ importers:
       '@atlas/workspace':
         specifier: workspace:*
         version: link:../workspace
+
+  packages/desktop-control:
+    dependencies:
+      '@atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@atlas/policy':
+        specifier: workspace:*
+        version: link:../policy
+      '@atlas/terminal':
+        specifier: workspace:*
+        version: link:../terminal
+      zod:
+        specifier: 3.24.1
+        version: 3.24.1
 
   packages/orchestrator:
     dependencies:
