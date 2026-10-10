@@ -3,11 +3,25 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { redact } from '@atlas/contracts';
 import { wrapCommand, type SandboxSpec } from './sandbox';
+import { windowsCommand } from './win/appcontainer';
+
+/**
+ * Windows cannot start .cmd/.bat shims (npm, pnpm…) without cmd.exe; resolve PATH/PATHEXT and escape safely.
+ * Elsewhere, and for the sandbox helper (an .exe), this is the identity.
+ */
+export function spawnPlan(command: string, args: string[], env: Record<string, string>): { file: string; args: string[]; verbatim: boolean } {
+  if (process.platform !== 'win32') return { file: command, args, verbatim: false };
+  const w = windowsCommand(command, args, env);
+  return { file: w.file, args: w.args, verbatim: w.verbatim };
+}
 
 export { detectSandbox, wrapCommand, toolchainPaths, SANDBOX_HOME, type SandboxSpec, type SandboxInfo, type SandboxKind } from './sandbox';
+export { quoteArg, resolveWindowsCommand, windowsCommand } from './win/appcontainer';
 
 /** Environment variables passed through to child processes. Everything else is dropped. */
-export const ENV_ALLOWLIST = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TEMP', 'TMP', 'SHELL', 'SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE'];
+export const ENV_ALLOWLIST = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TEMP', 'TMP', 'SHELL', 'SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE',
+  // Windows programs (node, git) expect these system locations.
+  'WINDIR', 'SYSTEMDRIVE', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'PROGRAMDATA', 'COMMONPROGRAMFILES', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE', 'OS', 'USERNAME'];
 
 export function sanitizedEnv(extra: Record<string, string> = {}, source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
@@ -78,12 +92,19 @@ export function run(o: RunOptions): Promise<RunResult> {
         return;
       }
     }
-    const child = spawn(cmd, argv, {
+    let plan: ReturnType<typeof spawnPlan>;
+    try { plan = spawnPlan(cmd, argv, env); }
+    catch (e) {
+      resolve({ exitCode: null, signal: null, durationMs: 0, output: '', truncated: false, timedOut: false, cancelled: false, pid: null, spawnError: (e as Error).message });
+      return;
+    }
+    const child = spawn(plan.file, plan.args, {
       cwd: o.cwd,
       env,
       detached: process.platform !== 'win32',
       shell: false,
       windowsHide: true,
+      windowsVerbatimArguments: plan.verbatim,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const pid = child.pid ?? null;
@@ -140,7 +161,10 @@ export function startProcess(o: { command: string; args: string[]; cwd: string; 
   let buf = '';
   let exit: { code: number | null } | null = null;
   let spawnError: string | null = null;
-  const child = spawn(cmd, argv, { cwd: o.cwd, env, detached: process.platform !== 'win32', shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+  let plan: ReturnType<typeof spawnPlan>;
+  try { plan = spawnPlan(cmd, argv, env); }
+  catch (e) { return { pid: null, spawnError: (e as Error).message, output: () => '', exited: () => ({ code: null }), stop: async () => {} }; }
+  const child = spawn(plan.file, plan.args, { cwd: o.cwd, env, detached: process.platform !== 'win32', shell: false, windowsHide: true, windowsVerbatimArguments: plan.verbatim, stdio: ['ignore', 'pipe', 'pipe'] });
   const take = (b: Buffer) => { const t = redact(b.toString('utf8')); o.onOutput?.(t); buf = (buf + t).slice(-max); };
   child.stdout!.on('data', take);
   child.stderr!.on('data', take);

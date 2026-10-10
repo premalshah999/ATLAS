@@ -99,6 +99,11 @@ describe.skipIf(!support.ok)('virtual desktop control', () => {
     expect((await s.act('agent', { action: 'launch', app: 'xmessage', args: ['-name', 'atlas-probe', '-title', 'atlas-probe', 'hello'] })).ok).toBe(true);
     const w = await s.act('agent', { action: 'waitFor', windowTitle: 'atlas-probe', timeoutMs: 10_000 });
     expect(w.ok, w.message).toBe(true);
+    // The framebuffer screenshot shows the window: some pixels are no longer the black root.
+    const { inflateSync } = await import('node:zlib');
+    const png = await s.screenshot();
+    const raw = inflateSync(png.subarray(png.indexOf('IDAT') + 4, png.indexOf('IEND') - 8));
+    expect(raw.some((b, i) => i % (640 * 3 + 1) !== 0 && b > 200)).toBe(true);
   });
 });
 

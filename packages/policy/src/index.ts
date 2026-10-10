@@ -33,16 +33,19 @@ const NEVER: ReadonlySet<Capability> = new Set(['deploy.production', 'secrets.us
 export interface ShellClass { capability: 'shell.safe' | 'shell.privileged' | null; risk: Risk; reason: string; /** Needs network egress inside the sandbox (granted only with approval). */ network?: boolean }
 
 const SAFE_EXEC = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find', 'echo', 'pwd', 'diff', 'sort', 'uniq', 'tsc', 'node', 'true', 'false', 'test']);
-const DENY_EXEC = new Set(['sudo', 'su', 'doas', 'mkfs', 'dd', 'shutdown', 'reboot', 'launchctl', 'systemctl', 'security', 'osascript']);
-const SHELLS = new Set(['sh', 'bash', 'zsh', 'fish', 'dash', 'pwsh', 'powershell', 'cmd', 'cmd.exe']);
-const NETWORK = new Set(['curl', 'wget', 'ssh', 'scp', 'rsync', 'nc', 'ncat', 'ftp', 'telnet']);
+const DENY_EXEC = new Set(['sudo', 'su', 'doas', 'mkfs', 'dd', 'shutdown', 'reboot', 'launchctl', 'systemctl', 'security', 'osascript',
+  // Windows privilege, credential and system tools.
+  'runas', 'reg', 'regedit', 'sc', 'schtasks', 'icacls', 'takeown', 'cmdkey', 'netsh', 'bcdedit', 'diskpart', 'format', 'wmic', 'vssadmin', 'checknetisolation']);
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'fish', 'dash', 'pwsh', 'powershell', 'cmd', 'wsl', 'wscript', 'cscript', 'mshta', 'rundll32']);
+const NETWORK = new Set(['curl', 'wget', 'ssh', 'scp', 'rsync', 'nc', 'ncat', 'ftp', 'telnet', 'bitsadmin', 'certutil', 'invoke-webrequest']);
 const SAFE_GIT = new Set(['status', 'diff', 'log', 'show', 'rev-parse', 'ls-files', 'branch', 'blame', 'grep']);
 const PKG = new Set(['npm', 'pnpm', 'yarn', 'bun']);
 const SAFE_PKG = new Set(['test', 't', 'run', 'exec', 'ls', 'list', 'why', 'outdated']);
 
 /** Classify a command given as an argument array. Never parses a shell string. */
 export function classifyCommand(command: string, args: readonly string[]): ShellClass {
-  const exe = command.split(/[\\/]/).pop()!.toLowerCase();
+  // Windows: `npm.cmd`, `git.exe` and `C:\\…\\node.exe` are classified like `npm`, `git` and `node`.
+  const exe = command.split(/[\\/]/).pop()!.toLowerCase().replace(/\.(exe|cmd|bat|com)$/, '');
   if (!exe || /[;&|`$<>]/.test(command)) return { capability: null, risk: 'high', reason: 'Executable name contains shell metacharacters' };
   if (DENY_EXEC.has(exe)) return { capability: null, risk: 'high', reason: `${exe} is never permitted for agents` };
   if (SHELLS.has(exe)) return { capability: 'shell.privileged', risk: 'high', reason: 'Spawning a shell runs arbitrary code' };

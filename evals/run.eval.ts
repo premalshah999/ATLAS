@@ -3,6 +3,7 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import { resolveBrowser } from '@atlas/browser';
 import { PiRuntime } from '@atlas/runtime-pi';
@@ -12,7 +13,7 @@ import { makeOrchestrator } from '../tests/integration/harness';
 import { CORPUS, ensureDir, type CaseRun } from './corpus';
 import { compare, renderMarkdown, summarize, type CaseResult, type RunMeta } from './metrics';
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 const outDir = ensureDir(process.env.ATLAS_EVAL_OUT ?? path.join(root, 'docs/eval'));
 const runtime = process.env.ATLAS_EVAL_RUNTIME === 'pi' ? 'pi' : 'fake';

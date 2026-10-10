@@ -1,0 +1,176 @@
+// Windows sandbox (ADR 0012): AppContainer + Job Object via atlas-sandbox.exe, file access by explicit ACL grants.
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { HELPER_SOURCE, HELPER_VERSION } from './helper';
+
+const real = (p: string) => { try { return realpathSync.native(p); } catch { return p; } };
+const sha = (s: string) => createHash('sha256').update(s).digest('hex');
+
+export function atlasLocalDir(): string {
+  return path.join(process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'), 'ATLAS', 'sandbox');
+}
+
+function csc(): string | null {
+  const win = process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows';
+  for (const fw of ['Framework64', 'Framework']) {
+    const p = path.join(win, 'Microsoft.NET', fw, 'v4.0.30319', 'csc.exe');
+    if (existsSync(p)) return p;
+  }
+  return null;
+}
+
+let helperPath: string | null = null;
+/** Compile atlas-sandbox.exe once per source version with the system C# compiler; cached under %LOCALAPPDATA%. */
+export function ensureHelper(): string {
+  if (helperPath && existsSync(helperPath)) return helperPath;
+  const dir = atlasLocalDir();
+  mkdirSync(dir, { recursive: true });
+  const exe = path.join(dir, `atlas-sandbox-${HELPER_VERSION}-${sha(HELPER_SOURCE).slice(0, 12)}.exe`);
+  if (!existsSync(exe)) {
+    const compiler = csc();
+    if (!compiler) throw new Error('The .NET Framework C# compiler (csc.exe) was not found; it ships with Windows 10 and 11.');
+    const src = `${exe}.cs`;
+    writeFileSync(src, HELPER_SOURCE);
+    try { execFileSync(compiler, ['/nologo', '/optimize+', '/target:exe', '/platform:anycpu', `/out:${exe}`, src], { stdio: 'pipe', windowsHide: true, timeout: 120_000 }); }
+    catch (e) { throw new Error(`Compiling the sandbox helper failed: ${String((e as { stdout?: Buffer }).stdout ?? (e as Error).message).slice(0, 600)}`); }
+  }
+  return (helperPath = exe);
+}
+
+const sids = new Map<string, string>();
+function helperOut(args: string[]): string { return execFileSync(ensureHelper(), args, { encoding: 'utf8', windowsHide: true, timeout: 30_000 }).trim(); }
+export function containerSid(name: string): string {
+  if (!sids.has(name)) sids.set(name, helperOut(['sid', name]));
+  return sids.get(name)!;
+}
+export function capabilitySid(name: string): string {
+  if (!sids.has(`cap:${name}`)) sids.set(`cap:${name}`, helperOut(['capsid', name]));
+  return sids.get(`cap:${name}`)!;
+}
+export const toolchainCapabilitySid = () => capabilitySid('atlasToolchain');
+
+/**
+ * Read-only paths shared across tasks (a repository's .git) are granted to a capability derived from the path,
+ * once per machine, instead of to each task's container: large object stores are not re-walked per task.
+ */
+export function readCapability(target: string): string {
+  const p = real(target);
+  const name = `atlasRead.${sha(p.toLowerCase()).slice(0, 24)}`;
+  persistentGrant(capabilitySid(name), p);
+  return name;
+}
+
+/** A container per sandbox root, so one task's container cannot read another task's grants. */
+export function containerName(root: string): string { return `atlas.${sha(real(root).toLowerCase()).slice(0, 24)}`; }
+
+const granted = new Set<string>();
+/**
+ * Grant a SID access with inheritance (OI)(CI) for directories. `/grant:r` replaces any earlier grant for the same
+ * SID, so repeated calls do not accumulate entries. Windows propagates inheritable entries to existing children.
+ */
+export function grant(sid: string, target: string, mode: 'rw' | 'rx'): void {
+  const p = real(target);
+  const key = `${sid}|${p.toLowerCase()}|${mode}`;
+  if (granted.has(key) || !existsSync(p)) return;
+  const dir = statSync(p).isDirectory();
+  const perm = mode === 'rw' ? 'M' : 'RX';
+  execFileSync('icacls', [p, '/grant:r', `*${sid}:${dir ? '(OI)(CI)' : ''}${perm}`, '/C', '/Q'], { stdio: 'ignore', windowsHide: true, timeout: 300_000 });
+  granted.add(key);
+}
+
+/** Directories that are readable by every AppContainer already (Windows, Program Files). */
+function alreadyReadable(p: string): boolean {
+  const l = p.toLowerCase();
+  const roots = [process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramW6432].filter(Boolean).map((r) => r!.toLowerCase());
+  return roots.some((r) => l === r || l.startsWith(r + '\\'));
+}
+
+/** Read grants to capability SIDs persist across runs; a marker file avoids re-walking large trees. */
+function persistentGrant(sid: string, p: string): void {
+  const marker = path.join(atlasLocalDir(), 'read-grants.json');
+  let done: string[] = [];
+  try { done = JSON.parse(readFileSync(marker, 'utf8')); } catch { /* first run */ }
+  const key = `${sid}|${p.toLowerCase()}`;
+  if (done.includes(key) || !existsSync(p)) return;
+  grant(sid, p, 'rx');
+  writeFileSync(marker, JSON.stringify([...done, key]));
+}
+
+/** Toolchain directories (node, git, npm…) get read access for the ATLAS toolchain capability, once per machine. */
+export function grantToolchain(dirs: string[]): void {
+  const cap = toolchainCapabilitySid();
+  for (const d of dirs) {
+    const p = real(d);
+    if (!existsSync(p) || alreadyReadable(p)) continue;
+    try { persistentGrant(cap, p); } catch { /* not ours to change; commands from it fail visibly with access denied */ }
+  }
+}
+
+/** Per-container home and temp directories (USERPROFILE, APPDATA, TEMP all point inside). */
+export function containerHome(name: string): string {
+  const home = path.join(atlasLocalDir(), 'homes', name);
+  for (const d of ['', 'AppData\\Roaming', 'AppData\\Local', 'Temp']) mkdirSync(path.join(home, d), { recursive: true });
+  return home;
+}
+
+/** Loopback is blocked for AppContainers unless exempted; the exemption needs elevation and is best effort. */
+const exempted = new Set<string>();
+export function tryLoopbackExemption(sid: string): boolean {
+  if (exempted.has(sid)) return true;
+  try { execFileSync('CheckNetIsolation.exe', ['LoopbackExempt', '-a', `-p=${sid}`], { stdio: 'ignore', windowsHide: true, timeout: 30_000 }); exempted.add(sid); return true; }
+  catch { return false; }
+}
+
+// ---------------------------------------------------------------------------- command lines
+
+/** Resolve a command name the way cmd.exe would (PATH + PATHEXT), so .cmd shims like npm are found. */
+export function resolveWindowsCommand(command: string, env: Record<string, string | undefined>): string | null {
+  const exts = (env.PATHEXT ?? process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean);
+  const candidates = (base: string) => (path.extname(base) ? [base, ...exts.map((e) => base + e)] : exts.map((e) => base + e));
+  if (path.isAbsolute(command) || command.includes('\\') || command.includes('/')) return candidates(command).find((c) => existsSync(c)) ?? null;
+  const dirs = (env.PATH ?? env.Path ?? process.env.PATH ?? '').split(';').filter(Boolean);
+  for (const d of dirs) for (const c of candidates(path.join(d, command))) if (existsSync(c)) return c;
+  return null;
+}
+
+/** Quote one argument for CommandLineToArgvW / the MSVC runtime. */
+export function quoteArg(a: string): string {
+  if (a.length && !/[\s"]/.test(a)) return a;
+  let out = '"';
+  for (let i = 0; i < a.length; i++) {
+    let bs = 0;
+    while (i < a.length && a[i] === '\\') { bs++; i++; }
+    if (i === a.length) { out += '\\'.repeat(bs * 2); break; }
+    if (a[i] === '"') out += '\\'.repeat(bs * 2 + 1) + '"';
+    else out += '\\'.repeat(bs) + a[i];
+  }
+  return out + '"';
+}
+
+// cmd.exe escaping for .cmd/.bat shims (the approach cross-spawn uses): quote for the program, then caret-escape
+// every cmd metacharacter; shims re-parse arguments once more, so they are escaped twice.
+const META = /([()\][%!^"`<>&|;, *?])/g;
+function cmdArg(a: string, twice: boolean) {
+  let s = a.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\*)$/, '$1$1');
+  s = `"${s}"`.replace(META, '^$1');
+  return twice ? s.replace(META, '^$1') : s;
+}
+
+/**
+ * How to start a command on Windows. `.exe` files are started directly (Node/libuv quote the arguments). Batch
+ * files go through `cmd.exe /d /s /c` with every argument caret-escaped, so an argument can never inject a second
+ * command; Node must pass that line verbatim. `line` is the full CreateProcess command line for the sandbox helper.
+ */
+export function windowsCommand(command: string, args: string[], env: Record<string, string | undefined>): { file: string; args: string[]; verbatim: boolean; line: string } {
+  const resolved = resolveWindowsCommand(command, env);
+  if (!resolved) throw Object.assign(new Error(`Command not found: ${command}`), { code: 'ENOENT' });
+  if (/\.(cmd|bat)$/i.test(resolved)) {
+    const comspec = env.ComSpec ?? env.COMSPEC ?? process.env.ComSpec ?? 'C:\\Windows\\System32\\cmd.exe';
+    const inner = `"${[resolved.replace(META, '^$1'), ...args.map((a) => cmdArg(a, true))].join(' ')}"`;
+    return { file: comspec, args: ['/d', '/s', '/c', inner], verbatim: true, line: `${quoteArg(comspec)} /d /s /c ${inner}` };
+  }
+  return { file: resolved, args, verbatim: false, line: [quoteArg(resolved), ...args.map(quoteArg)].join(' ') };
+}

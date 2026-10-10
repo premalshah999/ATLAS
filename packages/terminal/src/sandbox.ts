@@ -5,8 +5,9 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import * as win from './win/appcontainer';
 
-export type SandboxKind = 'bwrap' | 'sandbox-exec' | 'none';
+export type SandboxKind = 'bwrap' | 'sandbox-exec' | 'appcontainer' | 'none';
 
 export interface SandboxSpec {
   /** Directory the command may write (the task worktree). Mounted at the same path. */
@@ -48,7 +49,21 @@ export function detectSandbox(force = false): SandboxInfo {
       return (cached = { kind: 'none', detail: `bubblewrap is installed but cannot create namespaces (${(e as Error).message.slice(0, 120)}). Enable unprivileged user namespaces.`, path: null });
     }
   }
-  if (process.platform === 'darwin' && existsSync('/usr/bin/sandbox-exec')) return (cached = { kind: 'sandbox-exec', detail: 'macOS sandbox-exec (Seatbelt)', path: '/usr/bin/sandbox-exec' });
+  if (process.platform === 'darwin') {
+    if (!existsSync('/usr/bin/sandbox-exec')) return (cached = { kind: 'none', detail: '/usr/bin/sandbox-exec is missing', path: null });
+    try {
+      execFileSync('/usr/bin/sandbox-exec', ['-p', '(version 1)(allow default)', '/usr/bin/true'], { stdio: 'ignore', timeout: 5000 });
+      return (cached = { kind: 'sandbox-exec', detail: 'macOS Seatbelt (sandbox-exec)', path: '/usr/bin/sandbox-exec' });
+    } catch (e) { return (cached = { kind: 'none', detail: `sandbox-exec cannot run here (${(e as Error).message.slice(0, 120)})`, path: null }); }
+  }
+  if (process.platform === 'win32') {
+    try {
+      const helper = win.ensureHelper();
+      // Probe: a real contained process must start and exit cleanly.
+      execFileSync(helper, ['run', 'atlas.probe', '--cmdline', `${win.quoteArg(process.env.ComSpec ?? 'C:\\Windows\\System32\\cmd.exe')} /d /c exit 0`], { stdio: 'ignore', windowsHide: true, timeout: 60_000 });
+      return (cached = { kind: 'appcontainer', detail: 'Windows AppContainer + Job Object', path: helper });
+    } catch (e) { return (cached = { kind: 'none', detail: `Windows AppContainer sandbox unavailable (${(e as Error).message.slice(0, 200)})`, path: null }); }
+  }
   return (cached = { kind: 'none', detail: `No supported sandbox on ${process.platform}`, path: null });
 }
 
@@ -132,5 +147,33 @@ export function wrapCommand(command: string, args: string[], cwd: string, spec: 
     writeFileSync(file, profile);
     return { command: info.path!, args: ['-f', file, inner.command, ...inner.args], env: { ...envOut, HOME: real(os.tmpdir()) } };
   }
+  if (info.kind === 'appcontainer') return wrapWindows(command, args, spec, env, net);
   throw Object.assign(new Error(`No OS sandbox is available: ${info.detail}`), { kind: 'sandbox_unavailable' });
+}
+
+/**
+ * Windows (ADR 0012): one AppContainer per sandbox root. The container SID gets the root (and the worktree's git
+ * admin directory) by ACL; shared read-only paths and the toolchain are granted to capabilities the container
+ * holds; everything else in the user's profile is unreadable. Network capabilities only when approved.
+ */
+function wrapWindows(command: string, args: string[], spec: SandboxSpec, env: Record<string, string>, net: { env: Record<string, string>; files: string[] }): { command: string; args: string[]; env: Record<string, string> } {
+  const helper = win.ensureHelper();
+  const name = win.containerName(spec.root);
+  const sid = win.containerSid(name);
+  win.grant(sid, spec.root, spec.writable ? 'rw' : 'rx');
+  for (const p of spec.readWrite ?? []) win.grant(sid, p, 'rw');
+  const caps: string[] = [];
+  for (const p of [...(spec.readOnly ?? []), ...net.files]) { try { caps.push(win.readCapability(p)); } catch { /* path vanished */ } }
+  win.grantToolchain(toolchainPaths(env));
+  const home = win.containerHome(name);
+  win.grant(sid, home, 'rw');
+  // App servers under test listen on loopback for the browser; AppContainers need an exemption for that.
+  if (spec.network) win.tryLoopbackExemption(sid);
+  const envOut: Record<string, string> = {
+    ...env, ...net.env,
+    USERPROFILE: home, HOME: home, APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
+    TEMP: path.join(home, 'Temp'), TMP: path.join(home, 'Temp'), npm_config_cache: path.join(home, 'npm-cache'),
+  };
+  const cmd = win.windowsCommand(command, args, envOut);
+  return { command: helper, args: ['run', name, ...(spec.network ? ['--net'] : []), ...caps.flatMap((c) => ['--cap', c]), '--cmdline', cmd.line], env: envOut };
 }

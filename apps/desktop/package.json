@@ -64,7 +64,13 @@
       ]
     },
     "executableName": "atlas",
-    "publish": null
+    "publish": null,
+    "extraResources": [
+      {
+        "from": "../../licenses",
+        "to": "licenses"
+      }
+    ]
   },
   "author": "ATLAS"
 }

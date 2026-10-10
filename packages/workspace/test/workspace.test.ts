@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, symlinkSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, realpathSync, symlinkSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { checkpoint, createWorktree, diffSince, inspectRepo, Leases, removeWorktree, resolveInside } from '../src';
 import { sampleRepo, sh, tmpDir } from '../../../tests/helpers';
@@ -13,7 +13,7 @@ describe('resolveInside', () => {
   symlinkSync(path.join(outside, 'secret.txt'), path.join(root, 'src', 'link.txt'));
 
   it('accepts normal relative paths', () => {
-    expect(resolveInside(root, 'src/new.ts', { forWrite: true })).toMatch(/src\/new\.ts$/);
+    expect(resolveInside(root, 'src/new.ts', { forWrite: true })).toBe(path.join(realpathSync.native(root), 'src', 'new.ts'));
   });
   it('rejects traversal, absolute paths and .git', () => {
     expect(() => resolveInside(root, '../x')).toThrow(/escapes/);
@@ -63,5 +63,18 @@ describe('worktrees', () => {
   });
   it('reports non-git directories', async () => {
     expect((await inspectRepo(tmpDir())).isGit).toBe(false);
+  });
+});
+
+describe('resolveInside: cross-platform forms', () => {
+  const root = tmpDir();
+  it('refuses drive-qualified, UNC and case-variant .git paths', () => {
+    expect(() => resolveInside(root, 'C:\\Windows\\win.ini')).toThrow(/Absolute/);
+    expect(() => resolveInside(root, 'C:relative.txt')).toThrow(/Absolute/);
+    expect(() => resolveInside(root, '\\\\server\\share\\x')).toThrow(/Absolute|escapes/);
+    if (process.platform === 'win32' || process.platform === 'darwin') expect(() => resolveInside(root, '.GIT/config')).toThrow(/\.git/);
+  });
+  it.skipIf(process.platform !== 'win32')('refuses reserved device names and alternate data streams on Windows', () => {
+    for (const p of ['CON', 'nul.txt', 'src/aux', 'COM1', 'file.txt:secret']) expect(() => resolveInside(root, p), p).toThrow(/Reserved/);
   });
 });

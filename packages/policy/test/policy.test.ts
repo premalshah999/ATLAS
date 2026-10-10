@@ -57,3 +57,15 @@ describe('desktop and deploy capabilities', () => {
     expect(evaluate({ role: 'deployment_verifier', tool: 'staging_deploy', args: {}, mode: 'ask_risky' }).decision).toBe('deny');
   });
 });
+
+describe('Windows command names', () => {
+  it('classifies shims and executables by their base name', () => {
+    expect(classifyCommand('npm.cmd', ['test'])).toMatchObject({ capability: 'shell.safe' });
+    expect(classifyCommand('C:\\Program Files\\nodejs\\node.exe', ['x.js'])).toMatchObject({ capability: 'shell.safe' });
+    expect(classifyCommand('cmd.exe', ['/c', 'dir'])).toMatchObject({ capability: 'shell.privileged', risk: 'high' });
+    expect(classifyCommand('powershell.exe', ['-c', 'ls'])).toMatchObject({ capability: 'shell.privileged' });
+  });
+  it('denies Windows privilege and credential tools outright', () => {
+    for (const c of ['runas.exe', 'reg', 'icacls.exe', 'cmdkey', 'schtasks.exe', 'CheckNetIsolation.exe']) expect(classifyCommand(c, []).capability, c).toBeNull();
+  });
+});

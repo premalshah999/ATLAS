@@ -213,6 +213,36 @@ describe('delegation and budgets', () => {
     expect(order).toEqual(['attempt.started', 'attempt.ended', 'attempt.started', 'attempt.ended']);
   });
 
+  it('stress: 12 parallel writers never exceed the agent cap and the control plane stays responsive (manual §41)', async () => {
+    const { monitorEventLoopDelay } = await import('node:perf_hooks');
+    const root = sampleRepo();
+    const keys = Array.from({ length: 12 }, (_, i) => `w${i}`);
+    const scripts = keys.map((k) => forTask(k, [write(`notes/${k}.md`, `${k}\n`), { tool: 'run_tests', args: {} }, { wait: 150 }, { claim: k }]));
+    const h = makeOrchestrator({ scripts, planner: () => ({ ...plan(keys.map((k) => task(k, [], { files: [`notes/${k}.md`] }))), verification: [{ name: 'tests', required: false }] }) });
+    const lag = monitorEventLoopDelay({ resolution: 10 });
+    lag.enable();
+    // While it runs, the UI's queries keep getting answered quickly.
+    const queryTimes: number[] = [];
+    let running = true;
+    const poll = (async () => { while (running) { const t = performance.now(); h.repo.mission(h.repo.missions()[0]?.id ?? ''); h.repo.eventsSince(h.repo.missions()[0]?.id ?? '', 0, 2000); queryTimes.push(performance.now() - t); await new Promise((r) => setTimeout(r, 20)); } })();
+    const id = await startMission(h, root, { budget: { maxConcurrentAgents: 3, maxTasks: 20 } });
+    await h.orch.settle(id);
+    running = false; await poll; lag.disable();
+    let now = 0, peak = 0;
+    for (const e of h.events) {
+      if (e.type === 'attempt.started') peak = Math.max(peak, ++now);
+      if (e.type === 'attempt.ended') now--;
+    }
+    expect(peak).toBe(3);
+    expect(h.repo.attempts(id).filter((a) => a.state === 'succeeded').length).toBe(12);
+    expect(h.repo.mission(id)!.integrationCommit).toBeTruthy();
+    for (const k of keys) expect(sh(root, 'git', ['show', `${h.repo.mission(id)!.integrationCommit}:notes/${k}.md`])).toBe(k);
+    const p99 = lag.percentile(99) / 1e6;
+    queryTimes.sort((a, b) => a - b);
+    expect(p99, `event loop p99 ${p99.toFixed(1)} ms`).toBeLessThan(200);
+    expect(queryTimes[Math.floor(queryTimes.length * 0.99)], 'UI query p99 (ms)').toBeLessThan(100);
+  }, 120_000);
+
   it('context bundles record their sources and include project facts', async () => {
     const root = sampleRepo();
     const h = makeOrchestrator();
