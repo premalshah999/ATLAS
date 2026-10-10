@@ -30,6 +30,12 @@ if (process.platform === 'linux') {
 } else if (process.platform === 'darwin') sandbox = { ok: existsSync('/usr/bin/sandbox-exec'), detail: 'macOS sandbox-exec (untested in CI)' };
 else sandbox = { ok: false, detail: `no supported sandbox on ${process.platform}; commands run only if you allow unsandboxed execution` };
 add(sandbox.ok, 'OS sandbox for agent commands', sandbox.detail);
+{
+  const cands = [process.env.ATLAS_CHROMIUM_PATH, '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'].filter(Boolean);
+  let found = cands.find((p) => existsSync(p));
+  if (!found) { try { const { chromium } = await import('playwright-core'); const p = chromium.executablePath(); if (existsSync(p)) found = p; } catch {} }
+  add(true, 'Browser for QA', found ? found : 'none found — browser flows will be inconclusive (install Chrome/Chromium or `npx playwright install chromium`)');
+}
 
 for (const c of checks) console.log(`${c.ok ? '✓' : '✗'} ${c.name.padEnd(30)} ${c.detail}`);
 process.exit(checks.every((c) => c.ok) ? 0 : 1);

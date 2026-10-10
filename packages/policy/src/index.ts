@@ -20,7 +20,7 @@ export const ROLE_GRANTS: Record<AgentRole, readonly Capability[]> = {
   tester: ['fs.read', 'shell.safe'],
   browser_qa: ['fs.read', 'browser.navigate'],
   desktop_operator: [],
-  deployment_verifier: ['fs.read'],
+  deployment_verifier: ['fs.read', 'browser.navigate'],
 };
 
 /** Capabilities no agent may use in v0.1, whatever the role says. */

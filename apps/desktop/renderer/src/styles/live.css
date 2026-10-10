@@ -132,3 +132,5 @@
 .lv-preview-banner { font-family: var(--font-sans); }
 /* A closing overlay never intercepts input meant for what is underneath. */
 .at-scrim[data-closing="true"], .at-palette[data-closing="true"] { pointer-events: none; }
+
+.lv-check-reason { color: var(--ink-muted); font-size: 12px; line-height: 17px; margin-top: 2px; max-width: 420px; overflow-wrap: anywhere; }

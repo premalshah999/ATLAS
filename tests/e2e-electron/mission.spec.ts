@@ -31,7 +31,7 @@ test('sample mission end to end, with daemon crash and app restart recovery', as
     await page.getByTestId('approve-plan').click();
 
     await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'completed', { timeout: 60_000 });
-    await expect(page.getByTestId('outcome')).toContainText('Verified: tests passed');
+    await expect(page.getByTestId('outcome')).toContainText(/Verified: tests, api:slug-endpoint, api:health, browser:make-a-slug/);
     await expect(page.getByTestId('check-row').first()).toHaveAttribute('data-result', 'pass');
 
     // Timeline integrity: each event appears once, and every filter shows exactly what its chip counts.
@@ -73,7 +73,7 @@ test('sample mission end to end, with daemon crash and app restart recovery', as
     await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'completed');
     await expect(page.getByText('Accepted by you')).toBeVisible();
     await page.getByRole('tab', { name: /Evidence/ }).click();
-    await expect(page.getByTestId('evidence')).toContainText('Verified: tests passed');
+    await expect(page.getByTestId('evidence')).toContainText(/Verified: tests, api:slug-endpoint, api:health, browser:make-a-slug/);
   } finally { await app.close(); }
 });
 
@@ -100,7 +100,7 @@ test('approval card states who, what, where and scope; approve once continues th
     await card.getByTestId('approve').click();
     await expect(page.getByTestId('awaiting-count')).toHaveText('0 awaiting you');
     await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'completed', { timeout: 60_000 });
-    await expect(page.getByTestId('outcome')).toContainText('Verified');
+    await expect(page.getByTestId('outcome')).toContainText(/^Verified/);
   } finally { await app.close(); }
 });
 

@@ -4,5 +4,5 @@
   "private": true,
   "type": "module",
   "description": "ATLAS sample project: a slug helper with a real bug and real tests.",
-  "scripts": { "test": "node --test" }
+  "scripts": { "test": "node --test", "start": "node server.js" }
 }

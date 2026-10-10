@@ -36,6 +36,10 @@ function daemonEnv(): Record<string, string> {
   for (const k of ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TMPDIR', 'TEMP', 'TMP', 'SHELL', 'SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE']) {
     if (process.env[k]) env[k] = process.env[k]!;
   }
+  // Where to find a browser for QA; never credentials.
+  for (const k of ['PLAYWRIGHT_BROWSERS_PATH', 'ATLAS_CHROMIUM_PATH', 'DISPLAY', 'XAUTHORITY', 'WAYLAND_DISPLAY']) if (process.env[k]) env[k] = process.env[k]!;
+  // Proxy/CA settings, forwarded by the sandbox only to commands granted network access.
+  for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE']) if (process.env[k]) env[k] = process.env[k]!;
   env.ATLAS_DATA_DIR = dataDir();
   env.ATLAS_VERSION = app.getVersion();
   env.PI_TELEMETRY = '0';

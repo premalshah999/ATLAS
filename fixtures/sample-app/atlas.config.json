@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "app": { "start": ["node", "server.js"], "readyPath": "/healthz", "readyTimeoutSec": 30 },
+  "api": [
+    { "name": "slug-endpoint", "method": "GET", "path": "/api/slug?title=Hello%20World", "expectStatus": 200, "bodyIncludes": "\"hello-world\"", "maxLatencyMs": 2000 },
+    { "name": "health", "method": "GET", "path": "/healthz", "expectStatus": 200 }
+  ],
+  "browser": {
+    "failOnConsoleErrors": true,
+    "flows": [
+      {
+        "name": "make-a-slug",
+        "steps": [
+          { "action": "goto", "path": "/" },
+          { "action": "fill", "selector": "#title", "value": "What's new, ATLAS?" },
+          { "action": "click", "role": "button", "name": "Make slug" },
+          { "action": "expectText", "selector": "#slug", "text": "whats-new-atlas" },
+          { "action": "screenshot", "name": "result" }
+        ]
+      }
+    ]
+  },
+  "deploy": {
+    "target": "local-staging",
+    "provider": "local",
+    "versionPath": "/version",
+    "readyPath": "/healthz",
+    "syntheticRequests": 20,
+    "latencyP95Ms": 1500
+  }
+}

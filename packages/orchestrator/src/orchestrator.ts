@@ -34,6 +34,21 @@ export interface OrchestratorOptions {
   executors?: Executors;
   /** Release stages after build/test checks and review: browser QA, staging deploy, staging verification. */
   stages?: ReleaseStage[];
+  /** Factories for service-backed tools (browser_action, desktop_action, inspect_logs), one instance per attempt. */
+  toolFactories?: Record<string, (ctx: ToolFactoryContext) => ExtraTool>;
+}
+
+export interface ExtraTool { invoke(args: unknown, signal: AbortSignal): Promise<ToolResult>; dispose(): Promise<void> }
+export interface ToolFactoryContext {
+  missionId: string;
+  taskId: string;
+  attemptId: string;
+  worktree: string;
+  sandbox: StageContext['sandbox'];
+  putArtifact: StageContext['putArtifact'];
+  emit(type: NewEvent['type'], payload: Record<string, unknown>, artifactIds?: string[]): void;
+  requestApproval: StageContext['requestApproval'];
+  setting: StageContext['setting'];
 }
 
 const SYSTEM = (component: string) => ({ kind: 'system' as const, component });
@@ -476,7 +491,19 @@ export class Orchestrator {
     const rt = this.o.runtimes[m.runtime]!;
     const permitted = this.permittedTools(m, t);
     const isolation = await this.isolationFor(dir);
+    const extras: Record<string, ExtraTool> = {};
+    const stageLike = this.stageContext(m, dir, startCommit, isolation, ac.signal, [], { role: t.role, taskId: t.id });
+    for (const [name, make] of Object.entries(this.o.toolFactories ?? {})) {
+      if (!permitted.includes(name)) continue;
+      extras[name] = make({
+        missionId: m.id, taskId: t.id, attemptId: attempt.id, worktree: dir, sandbox: stageLike.sandbox,
+        putArtifact: (a) => (a.bytes ? this.artifacts.putBytes({ missionId: m.id, taskId: t.id, kind: a.kind, name: a.name, bytes: Buffer.from(a.bytes) }) : this.artifacts.put({ missionId: m.id, taskId: t.id, kind: a.kind, name: a.name, content: a.content ?? '' })),
+        emit: (type, payload, artifactIds = []) => { this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type, actor: { kind: 'agent', role: t.role, taskId: t.id }, payload, artifactIds }); },
+        requestApproval: stageLike.requestApproval, setting: stageLike.setting,
+      });
+    }
     const tools = new ToolGate({
+      extra: extras,
       isolation, missionId: m.id, taskId: t.id, attemptId: attempt.id, role: t.role, mode: m.approvalMode, cwd: dir, permitted, base: m.baseCommit!,
       approvalTtlMs: this.approvalTtlMs, awaitApproval: (a: Approval, s: AbortSignal) => this.awaitApproval(a, s),
       onFinding: (args, failing) => this.recordFinding(m, t, attempt.id, args, failing),
@@ -524,6 +551,7 @@ export class Orchestrator {
       outcome = { kind: 'error', errorKind: ac.signal.aborted ? 'cancelled' : 'internal', message: (e as Error).message };
     } finally {
       if (handle) await rt.dispose(handle).catch(() => {});
+      for (const x of Object.values(extras)) await x.dispose().catch(() => {});
       missionSignal.removeEventListener('abort', onMission);
       this.taskAborts.delete(t.id);
       this.leases.release(dir, attempt.id);
@@ -663,7 +691,7 @@ export class Orchestrator {
     return { ok: true, dir, commit };
   }
 
-  private stageContext(m: Mission, dir: string, commit: string, iso: Isolation, signal: AbortSignal, checks: CheckRecord[]): StageContext {
+  private stageContext(m: Mission, dir: string, commit: string, iso: Isolation, signal: AbortSignal, checks: CheckRecord[], who: { role: Task['role']; taskId: string | null } = { role: 'deployment_verifier', taskId: null }): StageContext {
     const spec = (network = false) => this.sandboxSpec(iso, dir, network);
     return {
       mission: m, worktree: dir, commit, signal,
@@ -694,11 +722,11 @@ export class Orchestrator {
       requestApproval: (a) => {
         const now = Date.now();
         const approval: Approval = {
-          id: newId('apr'), missionId: m.id, taskId: null, agentRole: 'deployment_verifier', ...a, scope: 'once', status: 'pending',
+          id: newId('apr'), missionId: m.id, taskId: who.taskId, agentRole: who.role, ...a, scope: 'once', status: 'pending',
           requestedAt: new Date(now).toISOString(), expiresAt: new Date(now + this.approvalTtlMs).toISOString(), decidedAt: null, decidedBy: null,
         };
         this.repo.insertApproval(approval);
-        this.emit({ missionId: m.id, type: 'approval.requested', actor: SYSTEM('release'), payload: { approvalId: approval.id, tool: a.tool, action: a.action, risk: a.risk, reason: a.reason, expiresAt: approval.expiresAt } });
+        this.emit({ missionId: m.id, taskId: who.taskId, type: 'approval.requested', actor: SYSTEM('release'), payload: { approvalId: approval.id, tool: a.tool, action: a.action, risk: a.risk, reason: a.reason, expiresAt: approval.expiresAt } });
         return this.awaitApproval(approval, signal);
       },
       setting: (key, fallback) => this.repo.setting(key, fallback),

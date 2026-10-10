@@ -1,4 +1,4 @@
-export { Orchestrator, type OrchestratorOptions } from './orchestrator';
+export { Orchestrator, type OrchestratorOptions, type ExtraTool, type ToolFactoryContext } from './orchestrator';
 export { ToolGate, TOOL_SPECS, realExecutors, describe, type Executors, type GateContext, type Isolation } from './toolgate';
 export { validatePlan, defaultPlan, findCycle } from './plan';
 export { detectRecipes, gate, type Recipe, type Verdict } from './verification';

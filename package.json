@@ -23,6 +23,7 @@
     "screenshots": "pnpm build && playwright test -c tests/e2e-electron/screenshots.config.ts"
   },
   "devDependencies": {
+    "@atlas/browser": "workspace:*",
     "@atlas/contracts": "workspace:*",
     "@atlas/orchestrator": "workspace:*",
     "@atlas/policy": "workspace:*",

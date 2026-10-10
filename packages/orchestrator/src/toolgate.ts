@@ -33,6 +33,21 @@ export const TOOL_SPECS: ToolSpec[] = [
     },
   },
   {
+    name: 'browser_action',
+    description: 'Drive the project app in an isolated browser. One step per call: goto {path}, click {selector|text|role+name}, fill {selector,value}, press {key}, expectText {text,selector?}, expectNoText, expectUrl {path}, expectVisible {selector}, screenshot {name}, wait {ms}. The app is started from your worktree on first use.',
+    parameters: { type: 'object', additionalProperties: false, required: ['step'], properties: { step: { type: 'object', description: 'e.g. {"action":"goto","path":"/"}' } } },
+  },
+  {
+    name: 'desktop_action',
+    description: 'Control the isolated virtual desktop. One action per call: screenshot, click {x,y,button?}, type {text}, key {keys}, scroll {dx,dy}, windows, focus {windowId}, launch {app}, waitFor {windowTitle, timeoutMs}.',
+    parameters: { type: 'object', additionalProperties: false, required: ['action'], properties: { action: { type: 'string' }, x: { type: 'number' }, y: { type: 'number' }, button: { type: 'string' }, text: { type: 'string' }, keys: { type: 'string' }, dx: { type: 'number' }, dy: { type: 'number' }, windowId: { type: 'string' }, app: { type: 'string' }, windowTitle: { type: 'string' }, timeoutMs: { type: 'number' } } },
+  },
+  {
+    name: 'inspect_logs',
+    description: 'Read recent logs of the current staging deployment.',
+    parameters: { type: 'object', additionalProperties: false, properties: { lines: { type: 'integer' } } },
+  },
+  {
     name: 'delegate',
     description: 'Hand a well-scoped, independent piece of work to a subagent. Blocks until it finishes; its change is merged into your worktree and its summary returned. Subject to depth, count and token budgets.',
     parameters: {
@@ -51,6 +66,9 @@ const ARGS: Record<string, z.ZodTypeAny> = {
   run_tests: z.object({}).strict(),
   view_diff: z.object({ path: z.string().min(1).optional() }).strict(),
   report_finding: FindingArgs,
+  browser_action: z.object({ step: z.record(z.unknown()) }).strict(),
+  desktop_action: z.object({ action: z.string().min(1).max(40) }).passthrough(),
+  inspect_logs: z.object({ lines: z.number().int().min(1).max(2000).optional() }).strict(),
   delegate: z.object({ role: z.enum(['coder', 'tester', 'reviewer']), title: z.string().min(3).max(200), reason: z.string().min(3).max(2000), acceptance: z.array(z.string().min(1).max(500)).min(1).max(10) }).strict(),
 };
 
@@ -96,6 +114,8 @@ export interface GateContext {
   base: string;
   /** Record a finding; returns the text shown to the agent. */
   onFinding?(args: FindingArgs, failingRuns: ReadonlySet<string>): string;
+  /** Tools provided by service packages (browser, desktop, deploy), created lazily per attempt. */
+  extra?: Record<string, { invoke(args: unknown, signal: AbortSignal): Promise<ToolResult> }>;
   /** Run a delegated subtask to completion. */
   delegate?(args: { role: 'coder' | 'tester' | 'reviewer'; title: string; reason: string; acceptance: string[] }, signal: AbortSignal): Promise<ToolResult>;
 }
@@ -181,6 +201,11 @@ export class ToolGate implements ToolInvoker {
       case 'report_finding': {
         if (!this.ctx.onFinding) return this.fail('unknown_tool', 'Findings are not recorded for this task.');
         return ok(this.ctx.onFinding(a as FindingArgs, this.failingRuns));
+      }
+      case 'browser_action': case 'desktop_action': case 'inspect_logs': {
+        const t = this.ctx.extra?.[name];
+        if (!t) return this.fail('unknown_tool', `${name} is not available in this environment.`);
+        return t.invoke(a, signal);
       }
       case 'delegate': {
         if (!this.ctx.delegate) return this.fail('unknown_tool', 'Delegation is not available for this task.');

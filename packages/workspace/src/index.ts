@@ -76,3 +76,4 @@ export async function diffSince(worktree: string, base: string): Promise<DiffSum
   });
   return { patch, files };
 }
+export { loadConfig } from './config';

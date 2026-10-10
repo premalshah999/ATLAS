@@ -2,6 +2,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { CheckRecord, CheckResult } from '@atlas/contracts';
+import { loadConfig } from '@atlas/workspace';
 
 export interface Recipe { name: string; command: string; args: string[]; required: boolean; timeoutMs: number }
 
@@ -13,6 +14,14 @@ function pkgManager(root: string): 'pnpm' | 'yarn' | 'npm' {
 
 /** Discover checks from project scripts. Unknown projects get no recipes (reported as not configured). */
 export function detectRecipes(root: string): Recipe[] {
+  // Explicit recipes from atlas.config.json come first; they run in the sandbox like everything else.
+  const { config } = loadConfig(root);
+  const fromConfig: Recipe[] = (config?.checks ?? []).map((c) => ({ name: c.name, command: c.command[0], args: c.command.slice(1), required: c.required, timeoutMs: c.timeoutSec * 1000 }));
+  const names = new Set(fromConfig.map((r) => r.name));
+  return [...fromConfig, ...detectScriptRecipes(root).filter((r) => !names.has(r.name))];
+}
+
+function detectScriptRecipes(root: string): Recipe[] {
   const file = path.join(root, 'package.json');
   if (!existsSync(file)) return [];
   let scripts: Record<string, string> = {};

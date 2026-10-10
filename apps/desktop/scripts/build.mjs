@@ -14,7 +14,7 @@ const configs = [
   {
     ...common, entryPoints: ['../daemon/src/main.ts'], outfile: path.join(out, 'daemon.mjs'), format: 'esm',
     // Pi and its provider SDKs load assets at runtime; they stay in node_modules.
-    external: ['@earendil-works/*', 'typebox', 'electron'],
+    external: ['@earendil-works/*', 'typebox', 'electron', 'playwright-core'],
     banner: { js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);" },
   },
 ];

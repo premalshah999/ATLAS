@@ -327,7 +327,7 @@ function Evidence({ checks, gate }: { checks: CheckRecord[]; gate?: AtlasEvent }
           <tbody>
             {checks.map((c) => (
               <tr key={c.id} data-testid="check-row" data-result={c.result}>
-                <td><span className="body-strong">{c.name}</span> <span className="at-subtle lv-small">{c.required ? 'required' : 'optional'}</span></td>
+                <td><span className="body-strong">{c.name}</span> <span className="at-subtle lv-small">{c.required ? 'required' : 'optional'}</span>{c.result !== 'pass' && c.reason && <div className="lv-check-reason">{c.reason}</div>}</td>
                 <td><span className={cx('lv-result', `lv-result--${c.result}`)}><Icon as={c.result === 'pass' ? ICheck : c.result === 'fail' ? IXCircle : IWarn} size="sm" />{resultWord(c.result)}</span></td>
                 <td className="at-mono at-muted">{c.command ?? '—'}</td>
                 <td className="at-mono at-muted">{c.commit?.slice(0, 7) ?? '—'}</td>
@@ -340,7 +340,7 @@ function Evidence({ checks, gate }: { checks: CheckRecord[]; gate?: AtlasEvent }
         </table>
         <div className="lv-callout" style={{ marginTop: 16 }}>
           <Icon as={IShield} />
-          <div><b>Not verified in this release:</b> staging deployment, browser QA and code review. Only checks listed above count as evidence.</div>
+          <div><b>Only the checks above count as evidence.</b> A passing review is a gate, not evidence. Anything not listed (for example a deployment that was not configured) was not verified.</div>
         </div>
         {log && (
           <div className="lv-log">

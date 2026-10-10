@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Slug maker</title>
+<style>body{font:16px system-ui;margin:48px;max-width:560px}input{font:inherit;padding:6px 8px;width:100%}button{font:inherit;margin-top:8px;padding:6px 12px}output{display:block;margin-top:16px;font-family:monospace}</style>
+</head>
+<body>
+  <h1>Slug maker</h1>
+  <label for="title">Post title</label>
+  <input id="title" autocomplete="off">
+  <button id="make" type="button">Make slug</button>
+  <output id="slug" aria-live="polite"></output>
+  <script>
+    document.getElementById('make').addEventListener('click', async () => {
+      const t = document.getElementById('title').value;
+      const r = await fetch('/api/slug?title=' + encodeURIComponent(t));
+      const { slug } = await r.json();
+      document.getElementById('slug').textContent = slug;
+    });
+  </script>
+</body>
+</html>

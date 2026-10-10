@@ -8,6 +8,7 @@ import { Orchestrator, replay } from '@atlas/orchestrator';
 import { FakeRuntime, sampleSlugifyScript } from '@atlas/runtime-fake';
 import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
 import { detectSandbox } from '@atlas/terminal';
+import { applicationStage, createBrowserTool, resolveBrowser } from '@atlas/browser';
 import { createLogger, type Logger } from './log';
 
 export interface ServiceOptions { dataDir: string; version: string; apiKeys?: Record<string, string>; model?: string }
@@ -31,7 +32,12 @@ export class DaemonService {
     this.keys = { ...(o.apiKeys ?? {}) };
     for (const k of Object.values(this.keys)) registerSecret(k);
     this.pi = this.makePi();
-    this.orch = new Orchestrator({ repo: this.repo, artifacts: this.artifacts, runtimes: { fake: this.fake, pi: this.pi }, worktreeDir: path.join(o.dataDir, 'worktrees'), factsDir: path.join(o.dataDir, 'facts') });
+    this.orch = new Orchestrator({ repo: this.repo, artifacts: this.artifacts, runtimes: { fake: this.fake, pi: this.pi }, worktreeDir: path.join(o.dataDir, 'worktrees'), factsDir: path.join(o.dataDir, 'facts'),
+      stages: [applicationStage()],
+      toolFactories: {
+        browser_action: (c) => createBrowserTool({ worktree: c.worktree, sandbox: c.sandbox, putScreenshot: (n, png) => c.putArtifact({ kind: 'screenshot', name: n, bytes: png }).id, emit: (p, ids) => c.emit('browser.step', p, ids) }),
+      },
+    });
   }
 
   private makePi() {
@@ -70,7 +76,7 @@ export class DaemonService {
     const { params } = parseRequest(method, payload);
     const p = params as any;
     switch (method as Method) {
-      case 'app.info': return { version: this.o.version, schema: schemaVersion(this.db), pi: PI_PINNED, platform: process.platform, node: process.versions.node };
+      case 'app.info': return { version: this.o.version, schema: schemaVersion(this.db), pi: PI_PINNED, platform: process.platform, node: process.versions.node, sandbox: detectSandbox(), browser: resolveBrowser() };
       case 'workspace.list': return this.repo.workspaces();
       case 'workspace.refresh': return this.orch.refreshWorkspace(p.workspaceId);
       case 'workspace.preflight': return this.orch.preflight(p.workspaceId, p.runtime);

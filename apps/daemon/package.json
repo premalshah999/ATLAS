@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@atlas/browser": "workspace:*",
     "@atlas/contracts": "workspace:*",
     "@atlas/orchestrator": "workspace:*",
     "@atlas/runtime-fake": "workspace:*",
