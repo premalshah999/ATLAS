@@ -13,14 +13,14 @@ function seed(repo: Repo) {
   const now = nowIso();
   const ws = repo.upsertWorkspace({ id: newId('ws'), name: 'w', root: '/tmp/w-' + Math.random(), isGit: true, branch: 'main', head: 'abc', dirty: 0, createdAt: now, updatedAt: now });
   const id = newId('msn');
-  repo.insertMission({ id, workspaceId: ws.id, title: 't', goal: 'g', constraints: '', approvalMode: 'ask_risky', runtime: 'fake', baseCommit: null, state: 'draft', planVersion: 0, policyId: 'p', outcome: null, decision: null, budget: DEFAULT_BUDGET, integrationBranch: null, integrationCommit: null, archived: false, createdAt: now, updatedAt: now });
+  repo.insertMission({ id, workspaceId: ws.id, title: 't', goal: 'g', constraints: '', approvalMode: 'ask_risky', runtime: 'fake', baseCommit: null, state: 'draft', planVersion: 0, policyId: 'p', outcome: null, decision: null, budget: DEFAULT_BUDGET, integrationBranch: null, integrationCommit: null, archived: false, targetEnvironment: null, createdAt: now, updatedAt: now });
   return id;
 }
 
 describe('storage', () => {
   it('applies migrations once with WAL and foreign keys', () => {
     const { db } = setup();
-    expect(schemaVersion(db)).toBe(3);
+    expect(schemaVersion(db)).toBe(4);
     expect((db.prepare('PRAGMA journal_mode').get() as any).journal_mode).toBe('wal');
     expect((db.prepare('PRAGMA foreign_keys').get() as any).foreign_keys).toBe(1);
   });

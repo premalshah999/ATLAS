@@ -9,9 +9,11 @@ import { FakeRuntime, sampleSlugifyScript } from '@atlas/runtime-fake';
 import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
 import { detectSandbox } from '@atlas/terminal';
 import { applicationStage, createBrowserTool, resolveBrowser } from '@atlas/browser';
+import { DeployManager, stagingStage } from '@atlas/deploy';
+import { loadConfig } from '@atlas/workspace';
 import { createLogger, type Logger } from './log';
 
-export interface ServiceOptions { dataDir: string; version: string; apiKeys?: Record<string, string>; model?: string }
+export interface ServiceOptions { dataDir: string; version: string; apiKeys?: Record<string, string>; model?: string; deploySecrets?: Record<string, Record<string, string>> }
 
 export class DaemonService {
   readonly repo: Repo;
@@ -22,6 +24,8 @@ export class DaemonService {
   private pi: PiRuntime;
   private readonly fake = new FakeRuntime([sampleSlugifyScript], 350);
   private keys: Record<string, string>;
+  private deploySecrets: Record<string, Record<string, string>>;
+  readonly deploy: DeployManager;
 
   constructor(private readonly o: ServiceOptions) {
     mkdirSync(o.dataDir, { recursive: true });
@@ -32,10 +36,28 @@ export class DaemonService {
     this.keys = { ...(o.apiKeys ?? {}) };
     for (const k of Object.values(this.keys)) registerSecret(k);
     this.pi = this.makePi();
+    this.deploySecrets = o.deploySecrets ?? {};
+    for (const t of Object.values(this.deploySecrets)) for (const v of Object.values(t)) registerSecret(v);
+    this.deploy = new DeployManager({
+      repo: this.repo, dataDir: o.dataDir, secrets: (target) => ({ ...(this.deploySecrets[target] ?? {}) }),
+      isolation: () => { const sb = detectSandbox(); return sb.kind !== 'none' ? { mode: 'sandbox', detail: sb.detail } : this.repo.setting('execution.allowUnsandboxed', false) ? { mode: 'unsandboxed', detail: sb.detail } : { mode: 'unavailable', detail: sb.detail }; },
+      log: (m, d) => this.log.info(m, d),
+    });
     this.orch = new Orchestrator({ repo: this.repo, artifacts: this.artifacts, runtimes: { fake: this.fake, pi: this.pi }, worktreeDir: path.join(o.dataDir, 'worktrees'), factsDir: path.join(o.dataDir, 'facts'),
-      stages: [applicationStage()],
+      stages: [applicationStage(), stagingStage(this.deploy)],
       toolFactories: {
         browser_action: (c) => createBrowserTool({ worktree: c.worktree, sandbox: c.sandbox, putScreenshot: (n, png) => c.putArtifact({ kind: 'screenshot', name: n, bytes: png }).id, emit: (p, ids) => c.emit('browser.step', p, ids) }),
+        inspect_logs: (c) => ({
+          invoke: async (args) => {
+            const m = this.repo.mission(c.missionId);
+            const live = m?.targetEnvironment ? this.repo.liveDeployment(m.targetEnvironment) : null;
+            if (!live) return { ok: false, output: 'No live staging deployment for this mission\'s target.', exitCode: null, artifactIds: [], error: 'process_failed' };
+            const lines = (args as { lines?: number }).lines ?? 200;
+            const text = await this.deploy.logs(live, loadConfig(c.worktree).config?.deploy, lines);
+            return { ok: true, output: text || '(no log output)', exitCode: null, artifactIds: [], error: null };
+          },
+          dispose: async () => {},
+        }),
       },
     });
   }
@@ -51,6 +73,9 @@ export class DaemonService {
 
   async start() {
     const recovered = await this.orch.recover();
+    // Bring back live local staging deployments; never retry a deployment that was interrupted (manual §40).
+    const rec = await this.deploy.reconcile((dep) => this.configForDeployment(dep.releaseDir));
+    if (rec.restarted.length || rec.unknown.length) this.log.info('deployments reconciled', rec);
     // Retention (manual §39): purge decided missions older than the configured number of days.
     const purge = async () => {
       const days = this.repo.setting('retention.days', 0);
@@ -64,8 +89,11 @@ export class DaemonService {
     return recovered;
   }
 
+  private configForDeployment(dir: string | null) { return dir ? loadConfig(dir).config : null; }
+
   async stop() {
     if (this.retentionTimer) clearInterval(this.retentionTimer);
+    await this.deploy.shutdown();
     await this.orch.shutdown();
     this.db.close();
   }
@@ -89,6 +117,20 @@ export class DaemonService {
       case 'terminal.open': return this.orch.openTerminal(p.missionId, p.target, { cols: p.cols, rows: p.rows }, { onData: (id, t) => this.terminalSink(id, t), onExit: (id, c) => this.terminalSink(id, undefined, c) });
       case 'terminal.input': this.orch.terminalInput(p.sessionId, p.data); return null;
       case 'terminal.close': await this.orch.closeTerminal(p.sessionId); return null;
+      case 'deployment.list': return this.repo.deployments({ target: p.target });
+      case 'deployment.rollback': {
+        const d = this.repo.deployment(p.deploymentId);
+        if (!d) throw new AtlasError('invalid_request', 'Unknown deployment');
+        const r = await this.deploy.rollback(d.target, this.configForDeployment(d.releaseDir), d.id);
+        this.log.warn('operator rollback', { target: d.target, to: d.id, ok: r.ok, confirmed: r.revisionConfirmed });
+        return r;
+      }
+      case 'deploy.targets': {
+        const w = this.repo.workspace(p.workspaceId);
+        const cfg = w ? loadConfig(w.root).config?.deploy : undefined;
+        const allowed = this.repo.setting<string[]>('deploy.allowedTargets', []);
+        return cfg ? [{ target: cfg.target, provider: cfg.provider, allowed: allowed.includes(cfg.target), live: this.repo.liveDeployment(cfg.target) }] : [];
+      }
       case 'mission.list': return this.repo.missions(p.workspaceId).map((m) => ({ ...m, tasks: this.repo.tasks(m.id).map((t) => ({ key: t.key, state: t.state })), pendingApprovals: this.repo.approvals(m.id).filter((a) => a.status === 'pending').length }));
       case 'mission.get': return this.snapshot(p.missionId);
       case 'mission.plan': return this.orch.plan(p.missionId);
@@ -115,7 +157,10 @@ export class DaemonService {
   }
 
   private settingValues() {
-    return { 'execution.allowUnsandboxed': this.repo.setting('execution.allowUnsandboxed', false), 'retention.days': this.repo.setting('retention.days', 0) };
+    return {
+      'execution.allowUnsandboxed': this.repo.setting('execution.allowUnsandboxed', false), 'retention.days': this.repo.setting('retention.days', 0),
+      'deploy.allowedTargets': this.repo.setting<string[]>('deploy.allowedTargets', []), 'deploy.autoRollback': this.repo.setting('deploy.autoRollback', true),
+    };
   }
 
   private async internal(method: keyof typeof InternalRequests, payload: unknown) {
@@ -128,7 +173,11 @@ export class DaemonService {
       for (const [provider, key] of Object.entries(params.keys as Record<string, string>)) if (PROVIDER_ENV[provider]) { this.keys[provider] = key; registerSecret(key); }
       this.pi = this.makePi();
       this.orch.setRuntime('pi', this.pi);
-      return { providers: Object.keys(this.keys) };
+      if (params.deploySecrets) {
+        this.deploySecrets = params.deploySecrets;
+        for (const t of Object.values(this.deploySecrets)) for (const v of Object.values(t)) registerSecret(v);
+      }
+      return { providers: Object.keys(this.keys), deployTargets: Object.keys(this.deploySecrets) };
     }
     throw new AtlasError('invalid_request', 'unknown internal method');
   }

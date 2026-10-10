@@ -20,6 +20,7 @@ export const Requests = {
     approvalMode: ApprovalMode,
     runtime: RuntimeKind,
     budget: MissionBudget.partial().optional(),
+    targetEnvironment: z.string().min(1).max(100).nullable().optional(),
   }).strict(),
   'mission.list': z.object({ workspaceId: Id.optional() }).strict(),
   'mission.get': missionRef,
@@ -38,6 +39,12 @@ export const Requests = {
   'terminal.open': z.object({ missionId: Id, target: z.union([Id, z.literal('integration')]), cols: z.number().int().min(20).max(400), rows: z.number().int().min(5).max(200) }).strict(),
   'terminal.input': z.object({ sessionId: Id, data: z.string().max(65_536) }).strict(),
   'terminal.close': z.object({ sessionId: Id }).strict(),
+  'deployment.list': z.object({ target: z.string().max(100).optional() }).strict(),
+  'deployment.rollback': z.object({ deploymentId: Id }).strict(),
+  'deploy.targets': z.object({ workspaceId: Id }).strict(),
+  'deploy.secrets.list': empty,
+  'deploy.secrets.set': z.object({ target: z.string().min(1).max(100), name: z.string().regex(/^[A-Z_][A-Z0-9_]{0,63}$/), value: z.string().min(1).max(10_000) }).strict(),
+  'deploy.secrets.remove': z.object({ target: z.string().min(1).max(100), name: z.string().regex(/^[A-Z_][A-Z0-9_]{0,63}$/) }).strict(),
   'approval.respond': z.object({ approvalId: Id, decision: z.enum(['approve', 'deny']) }).strict(),
   'events.since': z.object({ missionId: Id, afterSeq: z.number().int().min(0) }).strict(),
   'artifact.read': z.object({ artifactId: Id }).strict(),
@@ -46,6 +53,8 @@ export const Requests = {
   'settings.set': z.discriminatedUnion('key', [
     z.object({ key: z.literal('execution.allowUnsandboxed'), value: z.boolean() }).strict(),
     z.object({ key: z.literal('retention.days'), value: z.number().int().min(0).max(3650) }).strict(),
+    z.object({ key: z.literal('deploy.allowedTargets'), value: z.array(z.string().min(1).max(100)).max(50) }).strict(),
+    z.object({ key: z.literal('deploy.autoRollback'), value: z.boolean() }).strict(),
   ]),
   'credentials.list': empty,
   'credentials.set': z.object({ provider: z.enum(['anthropic', 'openai', 'google']), key: z.string().trim().min(8).max(500) }).strict(),
@@ -57,7 +66,7 @@ export const InternalRequests = {
   'workspace.register': z.object({ path: z.string().min(1).max(4096) }).strict(),
   'mission.exportTo': z.object({ missionId: Id, path: z.string().min(1).max(4096) }).strict(),
   'mission.importFrom': z.object({ path: z.string().min(1).max(4096) }).strict(),
-  'credentials.apply': z.object({ keys: z.record(z.string(), z.string()) }).strict(),
+  'credentials.apply': z.object({ keys: z.record(z.string(), z.string()), deploySecrets: z.record(z.string(), z.record(z.string(), z.string())).optional() }).strict(),
 } as const;
 export type InternalMethod = keyof typeof InternalRequests;
 

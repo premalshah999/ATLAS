@@ -1,5 +1,5 @@
 // Typed persistence for the domain model. State-machine rules live in @atlas/orchestrator; this layer only stores.
-import { DEFAULT_BUDGET, nowIso, redactDeep, type Approval, type Attempt, type AtlasEvent, type CheckRecord, type Finding, type Mission, type NewEvent, type Plan, type Task, type Workspace } from '@atlas/contracts';
+import { DEFAULT_BUDGET, nowIso, redactDeep, type Approval, type Attempt, type AtlasEvent, type CheckRecord, type Deployment, type Finding, type Mission, type NewEvent, type Plan, type Task, type Workspace } from '@atlas/contracts';
 import { tx, type Db } from './db';
 
 type Row = Record<string, any>;
@@ -56,8 +56,8 @@ export class Repo {
 
   /* ---------- missions ---------- */
   insertMission(m: Mission) {
-    this.db.prepare(`INSERT INTO missions (id, workspace_id, title, goal, constraints, approval_mode, runtime, base_commit, state, plan_version, policy_id, outcome, decision, budget, integration_branch, integration_commit, archived, created_at, updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(m.id, m.workspaceId, m.title, m.goal, m.constraints, m.approvalMode, m.runtime, m.baseCommit, m.state, m.planVersion, m.policyId, m.outcome, m.decision, j(m.budget), m.integrationBranch, m.integrationCommit, m.archived ? 1 : 0, m.createdAt, m.updatedAt);
+    this.db.prepare(`INSERT INTO missions (id, workspace_id, title, goal, constraints, approval_mode, runtime, base_commit, state, plan_version, policy_id, outcome, decision, budget, integration_branch, integration_commit, archived, target_environment, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(m.id, m.workspaceId, m.title, m.goal, m.constraints, m.approvalMode, m.runtime, m.baseCommit, m.state, m.planVersion, m.policyId, m.outcome, m.decision, j(m.budget), m.integrationBranch, m.integrationCommit, m.archived ? 1 : 0, m.targetEnvironment ?? null, m.createdAt, m.updatedAt);
   }
   updateMission(id: string, patch: Partial<Pick<Mission, 'state' | 'planVersion' | 'baseCommit' | 'outcome' | 'decision' | 'integrationBranch' | 'integrationCommit'>>) {
     const cols: Record<string, string> = { state: 'state', planVersion: 'plan_version', baseCommit: 'base_commit', outcome: 'outcome', decision: 'decision', integrationBranch: 'integration_branch', integrationCommit: 'integration_commit' };
@@ -155,11 +155,40 @@ export class Repo {
     return (this.db.prepare("SELECT * FROM missions WHERE updated_at < ? AND (decision IS NOT NULL OR archived = 1 OR state = 'cancelled')").all(iso) as Row[]).map(toMission);
   }
 
+  /* ---------- deployments (manual §30–32) ---------- */
+  insertDeployment(d: Deployment) {
+    this.db.prepare(`INSERT INTO deployments (id, mission_id, target, provider, revision, url, external_id, status, verified, release_dir, previous_id, detail, created_at, updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(d.id, d.missionId, d.target, d.provider, d.revision, d.url, d.externalId, d.status, d.verified ? 1 : 0, d.releaseDir, d.previousId, d.detail, d.createdAt, d.updatedAt);
+  }
+  updateDeployment(id: string, patch: Partial<Pick<Deployment, 'status' | 'url' | 'externalId' | 'verified' | 'detail' | 'releaseDir'>>) {
+    const cols: Record<string, string> = { status: 'status', url: 'url', externalId: 'external_id', verified: 'verified', detail: 'detail', releaseDir: 'release_dir' };
+    const keys = Object.keys(patch) as (keyof typeof patch)[];
+    if (!keys.length) return;
+    this.db.prepare(`UPDATE deployments SET ${keys.map((k) => `${cols[k]} = ?`).join(', ')}, updated_at = ? WHERE id = ?`).run(...keys.map((k) => (k === 'verified' ? (patch[k] ? 1 : 0) : patch[k]) as any), nowIso(), id);
+  }
+  deployment(id: string): Deployment | null { const r = this.db.prepare('SELECT * FROM deployments WHERE id = ?').get(id) as Row | undefined; return r ? toDeployment(r) : null; }
+  deployments(filter: { target?: string; missionId?: string } = {}): Deployment[] {
+    const where: string[] = []; const args: string[] = [];
+    if (filter.target) { where.push('target = ?'); args.push(filter.target); }
+    if (filter.missionId) { where.push('mission_id = ?'); args.push(filter.missionId); }
+    return (this.db.prepare(`SELECT * FROM deployments ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY created_at DESC, rowid DESC`).all(...args) as Row[]).map(toDeployment);
+  }
+  liveDeployment(target: string): Deployment | null {
+    const r = this.db.prepare("SELECT * FROM deployments WHERE target = ? AND status = 'live' ORDER BY created_at DESC, rowid DESC LIMIT 1").get(target) as Row | undefined;
+    return r ? toDeployment(r) : null;
+  }
+  lastVerified(target: string, exceptId?: string): Deployment | null {
+    const r = this.db.prepare("SELECT * FROM deployments WHERE target = ? AND verified = 1 AND id != ? AND release_dir IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT 1").get(target, exceptId ?? '') as Row | undefined;
+    return r ? toDeployment(r) : null;
+  }
+
   /* ---------- deletion (manual §43) ---------- */
   /** Remove every row of a mission. Artifact files are removed by the ArtifactStore. */
   deleteMission(id: string) {
     tx(this.db, () => {
       for (const t of ['events', 'findings', 'checks', 'artifacts', 'approvals', 'attempts', 'plans']) this.db.prepare(`DELETE FROM ${t} WHERE mission_id = ?`).run(id);
+      // Deployment history belongs to the target; it outlives the mission that produced it.
+      this.db.prepare('UPDATE deployments SET mission_id = NULL WHERE mission_id = ?').run(id);
       this.db.prepare('UPDATE tasks SET parent_task_id = NULL WHERE mission_id = ?').run(id);
       this.db.prepare('DELETE FROM tasks WHERE mission_id = ?').run(id);
       this.db.prepare('DELETE FROM missions WHERE id = ?').run(id);
@@ -183,9 +212,14 @@ const toMission = (r: Row): Mission => ({
   id: r.id, workspaceId: r.workspace_id, title: r.title, goal: r.goal, constraints: r.constraints, approvalMode: r.approval_mode, runtime: r.runtime, baseCommit: r.base_commit,
   state: r.state, planVersion: r.plan_version, policyId: r.policy_id, outcome: r.outcome, decision: r.decision,
   budget: { ...DEFAULT_BUDGET, ...p<object>(r.budget ?? '{}') }, integrationBranch: r.integration_branch ?? null, integrationCommit: r.integration_commit ?? null, archived: !!r.archived,
+  targetEnvironment: r.target_environment ?? null,
   createdAt: r.created_at, updatedAt: r.updated_at,
 });
 const toTask = (r: Row): Task => ({ id: r.id, missionId: r.mission_id, key: r.key, title: r.title, role: r.role, dependencies: p(r.dependencies), state: r.state, retries: r.retries, acceptance: p(r.acceptance), resultRef: r.result_ref, worktree: r.worktree, branch: r.branch, checkpoint: r.checkpoint ?? null, parentTaskId: r.parent_task_id ?? null, depth: r.depth ?? 0 });
+const toDeployment = (r: Row): Deployment => ({
+  id: r.id, missionId: r.mission_id, target: r.target, provider: r.provider, revision: r.revision, url: r.url, externalId: r.external_id, status: r.status, verified: !!r.verified,
+  releaseDir: r.release_dir, previousId: r.previous_id, detail: r.detail, createdAt: r.created_at, updatedAt: r.updated_at,
+});
 const toFinding = (r: Row): Finding => ({
   id: r.id, missionId: r.mission_id, taskId: r.task_id, file: r.file, line: r.line, endLine: r.end_line, severity: r.severity, kind: r.kind, title: r.title, observation: r.observation,
   recommendation: r.recommendation, evidence: r.evidence, reproductionArtifactId: r.reproduction_artifact_id, confidence: r.confidence, status: r.status, fingerprint: r.fingerprint, createdAt: r.created_at,

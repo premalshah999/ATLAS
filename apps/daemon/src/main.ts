@@ -19,7 +19,9 @@ async function main() {
     const v = process.env[env];
     if (v) { apiKeys[provider] = v; delete process.env[env]; }
   }
-  const svc = new DaemonService({ dataDir, version: process.env.ATLAS_VERSION ?? '0.0.0', apiKeys, model: process.env.ATLAS_MODEL || undefined });
+  let deploySecrets: Record<string, Record<string, string>> = {};
+  if (process.env.ATLAS_DEPLOY_SECRETS) { try { deploySecrets = JSON.parse(process.env.ATLAS_DEPLOY_SECRETS); } catch { /* ignored */ } delete process.env.ATLAS_DEPLOY_SECRETS; }
+  const svc = new DaemonService({ dataDir, version: process.env.ATLAS_VERSION ?? '0.0.0', apiKeys, model: process.env.ATLAS_MODEL || undefined, deploySecrets });
   const io = port();
   svc.onEvent((event) => io.send({ kind: 'event', event }));
   svc.onTerminal((sessionId, data, exit) => io.send({ kind: 'terminal', sessionId, ...(data !== undefined ? { data } : {}), ...(exit !== undefined ? { exit } : {}) }));

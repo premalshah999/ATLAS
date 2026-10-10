@@ -1,6 +1,6 @@
 // Release pipeline stages (manual §28, §31–32). The orchestrator runs stages in order on the integrated
 // commit; each stage reports CheckRecords. Only `pass` satisfies a required check.
-import type { Approval, Artifact, ArtifactKind, CheckRecord, Mission } from './domain';
+import type { Approval, Artifact, ArtifactKind, CheckRecord, Deployment, Mission } from './domain';
 import type { EventType } from './events';
 
 export interface StageSandbox {
@@ -24,6 +24,11 @@ export interface StageContext {
   /** Ask the operator; resolves with the decided approval (approved/denied/expired). */
   requestApproval(a: Pick<Approval, 'tool' | 'capability' | 'action' | 'environment' | 'resources' | 'reason' | 'risk'>): Promise<Approval>;
   setting<T>(key: string, fallback: T): T;
+  /** Checks recorded so far in this release run. */
+  checks?(): CheckRecord[];
+  repoDeployments?(missionId: string): Deployment[];
+  repoDeployment?(id: string): Deployment | null;
+  markDeployment?(id: string, verified: boolean): void;
 }
 
 export interface ReleaseStage {

@@ -77,4 +77,16 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       CREATE INDEX findings_mission ON findings(mission_id);
     `,
   },
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE missions ADD COLUMN target_environment TEXT;
+      CREATE TABLE deployments (
+        id TEXT PRIMARY KEY, mission_id TEXT REFERENCES missions(id), target TEXT NOT NULL, provider TEXT NOT NULL,
+        revision TEXT NOT NULL, url TEXT, external_id TEXT, status TEXT NOT NULL, verified INTEGER NOT NULL DEFAULT 0,
+        release_dir TEXT, previous_id TEXT, detail TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      CREATE INDEX deployments_target ON deployments(target, created_at);
+    `,
+  },
 ];

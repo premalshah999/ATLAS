@@ -14,6 +14,9 @@ importers:
       '@atlas/contracts':
         specifier: workspace:*
         version: link:packages/contracts
+      '@atlas/deploy':
+        specifier: workspace:*
+        version: link:packages/deploy
       '@atlas/orchestrator':
         specifier: workspace:*
         version: link:packages/orchestrator
@@ -65,6 +68,9 @@ importers:
       '@atlas/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@atlas/deploy':
+        specifier: workspace:*
+        version: link:../../packages/deploy
       '@atlas/orchestrator':
         specifier: workspace:*
         version: link:../../packages/orchestrator
@@ -162,6 +168,24 @@ importers:
       zod:
         specifier: 3.24.1
         version: 3.24.1
+
+  packages/deploy:
+    dependencies:
+      '@atlas/browser':
+        specifier: workspace:*
+        version: link:../browser
+      '@atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@atlas/storage':
+        specifier: workspace:*
+        version: link:../storage
+      '@atlas/terminal':
+        specifier: workspace:*
+        version: link:../terminal
+      '@atlas/workspace':
+        specifier: workspace:*
+        version: link:../workspace
 
   packages/orchestrator:
     dependencies:

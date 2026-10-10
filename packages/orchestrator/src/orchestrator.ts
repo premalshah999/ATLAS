@@ -174,17 +174,17 @@ export class Orchestrator {
 
   /* ---------------- mission lifecycle ---------------- */
 
-  createMission(input: { workspaceId: string; title: string; goal: string; constraints: string; approvalMode: ApprovalMode; runtime: RuntimeKind; budget?: Partial<MissionBudget> }): Mission {
+  createMission(input: { workspaceId: string; title: string; goal: string; constraints: string; approvalMode: ApprovalMode; runtime: RuntimeKind; budget?: Partial<MissionBudget>; targetEnvironment?: string | null }): Mission {
     const w = this.repo.workspace(input.workspaceId);
     if (!w) throw new AtlasError('invalid_request', 'Unknown workspace');
     const now = nowIso();
     const budget = MissionBudget.parse({ ...DEFAULT_BUDGET, ...(input.budget ?? {}) });
     const m: Mission = {
       id: newId('msn'), workspaceId: input.workspaceId, title: input.title, goal: input.goal, constraints: input.constraints, approvalMode: input.approvalMode, runtime: input.runtime,
-      baseCommit: null, state: 'draft', planVersion: 0, policyId: 'default@2', outcome: null, decision: null, budget, integrationBranch: null, integrationCommit: null, archived: false, createdAt: now, updatedAt: now,
+      baseCommit: null, state: 'draft', planVersion: 0, policyId: 'default@2', outcome: null, decision: null, budget, integrationBranch: null, integrationCommit: null, archived: false, targetEnvironment: input.targetEnvironment ?? null, createdAt: now, updatedAt: now,
     };
     this.repo.insertMission(m);
-    this.emit({ missionId: m.id, type: 'mission.created', actor: OPERATOR, payload: { title: m.title, goal: m.goal, constraints: m.constraints, approvalMode: m.approvalMode, runtime: m.runtime, workspace: w.name, budget } });
+    this.emit({ missionId: m.id, type: 'mission.created', actor: OPERATOR, payload: { title: m.title, goal: m.goal, constraints: m.constraints, approvalMode: m.approvalMode, runtime: m.runtime, workspace: w.name, budget, targetEnvironment: m.targetEnvironment } });
     return m;
   }
 
@@ -730,6 +730,10 @@ export class Orchestrator {
         return this.awaitApproval(approval, signal);
       },
       setting: (key, fallback) => this.repo.setting(key, fallback),
+      checks: () => checks,
+      repoDeployments: (missionId) => this.repo.deployments({ missionId }),
+      repoDeployment: (id) => this.repo.deployment(id),
+      markDeployment: (id, verified) => this.repo.updateDeployment(id, { verified }),
     };
   }
 

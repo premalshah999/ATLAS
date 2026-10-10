@@ -5,7 +5,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { IPC, parseRequest, PROVIDER_ENV, type Envelope, type Method } from '@atlas/contracts';
 import { DaemonClient, type DaemonStatus } from './daemon';
-import { credentials } from './credentials';
+import { credentials, deploySecrets } from './credentials';
 
 const isMac = process.platform === 'darwin';
 const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -45,6 +45,8 @@ function daemonEnv(): Record<string, string> {
   env.PI_TELEMETRY = '0';
   if (process.env.ATLAS_MODEL) env.ATLAS_MODEL = process.env.ATLAS_MODEL;
   for (const [provider, key] of Object.entries(credentials.keys())) env[PROVIDER_ENV[provider]] = key;
+  const ds = deploySecrets.decrypted();
+  if (Object.keys(ds).length) env.ATLAS_DEPLOY_SECRETS = JSON.stringify(ds);
   return env;
 }
 
@@ -91,8 +93,17 @@ async function route(method: Method, params: any): Promise<unknown> {
     case 'credentials.list': return { available: credentials.available(), providers: credentials.list() };
     case 'credentials.set':
       credentials.set(params.provider, params.key);
-      await daemon.request('credentials.apply', { keys: credentials.keys() });
+      await daemon.request('credentials.apply', { keys: credentials.keys(), deploySecrets: deploySecrets.decrypted() });
       return { available: credentials.available(), providers: credentials.list() };
+    case 'deploy.secrets.list': return deploySecrets.list();
+    case 'deploy.secrets.set':
+      deploySecrets.set(params.target, params.name, params.value);
+      await daemon.request('credentials.apply', { keys: credentials.keys(), deploySecrets: deploySecrets.decrypted() });
+      return deploySecrets.list();
+    case 'deploy.secrets.remove':
+      deploySecrets.remove(params.target, params.name);
+      await daemon.request('credentials.apply', { keys: credentials.keys(), deploySecrets: deploySecrets.decrypted() });
+      return deploySecrets.list();
     case 'credentials.remove':
       credentials.remove(params.provider);
       await daemon.request('credentials.apply', { keys: credentials.keys() });

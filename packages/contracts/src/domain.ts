@@ -55,6 +55,8 @@ export interface Mission {
   integrationCommit: string | null;
   /** Imported from an export: read-only, never scheduled. */
   archived: boolean;
+  /** Staging target the operator chose for this mission (manual §34); null = no deployment. */
+  targetEnvironment: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -88,6 +90,25 @@ export interface Task {
   /** Set for subtasks created by delegation. */
   parentTaskId: string | null;
   depth: number;
+}
+
+/** A staging deployment record (manual §30). Production deployment does not exist in this release. */
+export interface Deployment {
+  id: string;
+  missionId: string | null;
+  target: string;
+  provider: 'local' | 'command';
+  revision: string;
+  url: string | null;
+  externalId: string | null;
+  /** deploying → live | failed; live → superseded | rolled_back | stopped; unknown after a crash mid-deploy. */
+  status: 'deploying' | 'live' | 'failed' | 'superseded' | 'rolled_back' | 'stopped' | 'unknown';
+  verified: boolean;
+  releaseDir: string | null;
+  previousId: string | null;
+  detail: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export const FindingSeverity = z.enum(['high', 'medium', 'low', 'info']);

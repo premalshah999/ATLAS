@@ -25,6 +25,7 @@
   "devDependencies": {
     "@atlas/browser": "workspace:*",
     "@atlas/contracts": "workspace:*",
+    "@atlas/deploy": "workspace:*",
     "@atlas/orchestrator": "workspace:*",
     "@atlas/policy": "workspace:*",
     "@atlas/runtime-fake": "workspace:*",
