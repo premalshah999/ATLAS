@@ -28,7 +28,7 @@ Ranked by severity, user impact, technical risk, dependency order and evidence. 
 
 | ID | Item | Evidence | Status |
 |---|---|---|---|
-| P2-1 | **Daemon idle memory 181 MB.** Pi SDK and playwright-core load eagerly | Baseline metrics | candidate: lazy import, measured before and after |
+| P2-1 | **Daemon idle memory 181 MB.** Pi SDK and playwright-core load eagerly | Baseline metrics | **done**: daemon idle RSS 180 → 134/135 MB (two runs each, `pnpm metrics`) |
 | P2-2 | **No live preview browser.** Only verification QA | Matrix #12 | candidate |
 | P2-3 | **PTY resize** (part of P1-5) | — | **done** with P1-5 (Linux, macOS) |
 | P2-4 | **Idle CPU metric is not meaningful** | Baseline | measure with two samples |

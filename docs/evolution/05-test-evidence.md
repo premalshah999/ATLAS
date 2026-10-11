@@ -50,7 +50,7 @@ Every number below comes from a process exit or a test assertion, and each one n
 | Model connection drop | Runtime throws (typed / untyped) | Typed network error → fresh attempt, verified; untyped → failed with reason, no blind retry | `faults.test.ts` |
 | Agent command killed externally | SIGKILL of the command's group | Non-zero exit recorded; never verified | `faults.test.ts` |
 | User commits during the mission | Commit + dirty file in the user's checkout | Untouched; result based on the approved base | `faults.test.ts` |
-| Evidence altered on disk | Overwrite a check log | Read reports not intact. **Before the fix the export re-hashed it and another install imported it as intact**; now the import is refused and flipping the flag breaks the trailer | `faults.test.ts` |
+| Evidence altered on disk | Overwrite a check log | Read reports not intact. **Before the fix the export re-hashed it and another install imported it as intact**; now the import is refused and flipping the flag breaks the trailer. A deliberate forger who recomputes every hash is **not** detected (unkeyed hashes; final audit) | `faults.test.ts` |
 | Terminal tab switch | e2e: type, switch tab, return | Shell state and history intact | `capabilities.spec.ts` |
 
 ## Metrics (Linux, `pnpm metrics`, same harness as the baseline)
@@ -63,5 +63,6 @@ Every number below comes from a process exit or a test assertion, and each one n
 | Peak memory during a mission | 817 MB | 829 MB | |
 | Daemon crash → ready | 1990 ms | 1996 ms | |
 | Terminal echo (median of 5) | 182 ms | 92 ms and 160 ms in two runs | within run-to-run variance; **no improvement claimed** |
+| Daemon idle memory (utility process RSS) | 180–181 MB | **134 MB and 135 MB** in two runs | P2-1: Pi SDK and playwright-core load on first use |
 
-No performance improvement is claimed. The slices targeted correctness, safety and recovery.
+The only performance change claimed is daemon idle memory (P2-1), which is about 45 MB lower in two runs on each side. Every other metric is unchanged within noise.

@@ -215,8 +215,47 @@ It also found **three false positives** (G, H, K: legitimate new scripts or test
 
 **Status.** Windows is **not** green. The status is maintained in [05-test-evidence.md](05-test-evidence.md).
 
+## P2-1 Daemon idle memory
+
+**Measurement.** Importing `@earendil-works/pi-coding-agent` costs about 89 MB of RSS; `playwright-core` costs about 36 MB. Both were loaded at daemon start, even when no Pi mission or browser check ever ran.
+
+**Change.**
+- The Pi adapter imports the SDK on first use; types stay static.
+- `playwright-core` is required when a browser is looked up or launched.
+
+**Evidence.**
+- Daemon utility-process RSS from `pnpm metrics` went from 180–181 MB to 134 MB and 135 MB (two runs).
+- Runtime-pi contract tests pass (9).
+- Browser integration tests pass (4).
+
+## Final audit (Phase 9)
+
+An independent agent re-ran every suite and matched the documented counts exactly. It then tried to break the highest-stakes fixes.
+
+**Findings.**
+1. **High: long-option abbreviations bypassed P1-1.** `sort --compress-p=`, `sort --out=` and `git grep --open-files=` were reproduced with the real tools. Fixed: any long option that is a prefix of a dangerous name is privileged. A table test covers the abbreviations and confirms safe options stay safe.
+2. **Medium: export integrity was overclaimed.** Hashes are unkeyed, so a forger who recomputes them is not detected. The docs are corrected to "tamper-evidence, not authenticity", and signing is recorded as an open risk.
+
+The auditor also confirmed several fixes against new scenarios (could not break them):
+- P0-3, including an additive-check laundering attempt;
+- P1-3;
+- the early-kill fix;
+- the P1-2 denial path.
+
 ## Not done
-- **P2-1 (daemon memory):** not attempted.
 - **P2-2 (live preview browser):** not attempted.
 - **P3:** not attempted.
-- **Linux CI flake:** the crash-recovery integration test timed out twice on loaded Linux runners, and has not reproduced in 7 local runs. The test now reports the stuck step and mission state, and the cause stays open until a failing run shows it.
+## Linux CI timeouts — root-caused and fixed (`29b9a42`)
+
+**Symptom.** Intermittent 60 s timeouts in tests that cancel a sandboxed command.
+
+**Root cause.** bwrap's child runs in its own session. When bwrap was killed during namespace setup, before the child had armed `--die-with-parent`, the child survived holding our pipes, so `run()` never resolved. This reproduced under load: 118 of 150 early cancels hung.
+
+**Fix.**
+- The sandboxed child's pid is read from `--json-status-fd`, and both process groups are killed.
+- After the leader exits, the pipes are given a bounded wait.
+
+**Evidence.**
+- 0 of 150 hung under the same load.
+- A regression test asserts no hang and no survivor.
+- Linux CI has been green on every run since.

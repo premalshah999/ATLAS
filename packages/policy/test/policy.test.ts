@@ -123,3 +123,17 @@ describe('path-qualified programs and package-manager config (P1-2 review)', () 
     expect(d.decision).toBe('ask');
   });
 });
+
+describe('long-option abbreviations (final audit finding)', () => {
+  it.each([
+    ['sort', ['--compress-p=sh', 'f']], ['sort', ['--out=/tmp/x', 'f']], ['sort', ['--o=/tmp/x', 'f']],
+    ['git', ['grep', '--open-files=sh', 'x']], ['git', ['grep', '--open-fi', 'x']], ['git', ['log', '--ext-d']],
+    ['git', ['branch', '--del']], ['rg', ['--pr=sh', 'x']], ['diff', ['--to-f=x', 'a']],
+  ] as const)('%s %s is privileged, and asks even unsandboxed', (cmd, args) => {
+    expect(classifyCommand(cmd, [...args]).capability).toBe('shell.privileged');
+    expect(evaluate({ role: 'coder', tool: 'shell_exec', args: { command: cmd, args: [...args] }, mode: 'ask_risky', sandboxed: false }).decision).toBe('ask');
+  });
+  it.each([['sort', ['-n', 'f']], ['sort', ['--reverse', 'f']], ['git', ['log', '--oneline']], ['git', ['grep', '-n', 'x']], ['rg', ['--files']]] as const)('%s %s stays safe', (cmd, args) => {
+    expect(classifyCommand(cmd, [...args]).capability).toBe('shell.safe');
+  });
+});

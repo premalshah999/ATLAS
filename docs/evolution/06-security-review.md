@@ -10,7 +10,7 @@ Scope: the changes made during this evolution, and the trust boundaries they tou
 | Agent → verdict | The verification definition comes from the approved base. Modified tests run the base suite. Approval is hash-bound and is never evidence | `mission.test.ts` › verification cannot be redefined (incl. 6 review bypasses) |
 | Agent → approvals | Argument-level classification. Path-qualified programs are never safe. Unsandboxed project code always asks | policy unit tables; `sandbox.test.ts` (integration) approve/deny |
 | Renderer → daemon | Frozen 6-key bridge; zod-validated IPC; sender check | `security.spec.ts` (e2e) |
-| Evidence at rest → another installation | SHA-256 per artifact, trailer hash over the export; artifacts that fail their checksum are refused on import | `archive.test.ts`, `faults.test.ts` |
+| Evidence at rest → another installation | SHA-256 per artifact, trailer hash over the export; artifacts that fail their checksum are refused on import. **Tamper-evidence only, not authenticity:** the hashes are unkeyed, so someone who controls the export file can rewrite it and recompute every hash (final audit, reproduced). Verifying who produced an export needs signing with a key the importer trusts, which is not built | `archive.test.ts`, `faults.test.ts` |
 | Daemon restart → leftover processes | Process journal with OS identity; reaper runs only when the identity matches; single daemon per data directory | `orphans.test.ts`, `reap.test.ts` |
 | Mission cleanup → user's data | Preserve before remove; retain what cannot be preserved; never prune the user's worktrees | `workspace.test.ts`, `mission.test.ts` |
 
@@ -19,7 +19,7 @@ Scope: the changes made during this evolution, and the trust boundaries they tou
 | # | Severity | Finding | Fix |
 |---|---|---|---|
 | S1 | High | **The agent could redefine its own verification**: rewrite a test script or config, gut or skip tests, track `node_modules/.bin/node`, or swap the package manager. The result was "Verified" with no approval | P0-3 |
-| S2 | High | **Safe-listed programs ran other programs.** Examples: `git -c`, `find -exec`, `rg --pre`, `sort --compress-program`, `npm exec`, `node --require` | P1-1 |
+| S2 | High | **Safe-listed programs ran other programs.** Examples: `git -c`, `find -exec`, `rg --pre`, `sort --compress-program`, `npm exec`, `node --require`. The final audit also reproduced unambiguous **abbreviations** of these options (`sort --compress-p=`, `git grep --open-files=`) | P1-1; any long option that is a prefix of a dangerous name is privileged |
 | S3 | High | **Unsandboxed mode ran project code with no consent**, through agent commands, release checks, the original-suite run, and browser app starts | P1-2 and its review fix (`unsandboxed_run` consent per context) |
 | S4 | High | **Path-qualified programs were classified by basename.** `tools\ls.cmd` and `script/test` ran agent-written code as "safe" | Paths are never safe-listed |
 | S5 | Medium | Package-manager "read-only" subcommands load project code (yarnPath, plugins, `.pnpmfile.cjs`) | All package-manager subcommands count as project code |
@@ -36,6 +36,7 @@ Scope: the changes made during this evolution, and the trust boundaries they tou
 | Windows: a sandboxed child outlives a daemon crash (the helper does not watch its parent); unsandboxed Windows commands have no Job Object | Medium | Not yet implemented | Kill-on-close job while the helper lives |
 | macOS operator terminal can open `/dev/ttys*` (needed for the PTY) | Low | Seatbelt cannot express "only the pty I allocated" | Only for operator-driven terminal sessions; agent commands cannot |
 | Desktop app launch checks only that a command is classifiable, not the per-command ask (review P1 finding 10) | Low | Covered by a session-level approval that states "unsandboxed" | Session approval |
+| Exports are not signed (see trust boundaries): a forged export with recomputed hashes imports as intact | Medium | Needs a key-trust design (whose key, how distributed) | Treat imported archives as read-only records of a claim, not as proof |
 | Ignored files (e.g. `.env`) are not in preserve snapshots | Low | Snapshotting ignored files would capture `node_modules` and secrets | Documented |
 | Redaction runs per output chunk; a secret split across chunks can pass | Low | Pre-existing | Env allowlist keeps credentials out of the sandbox in the first place |
 | A brand-new weak test on new code cannot be told apart from a good one | Inherent | The eval keeps a deliberate `weak-tests` case: false passes 1/7 | Review stage; shown as a limitation in the eval report |

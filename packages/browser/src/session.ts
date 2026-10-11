@@ -1,6 +1,6 @@
 // Browser sessions owned by one task (manual §25): fresh context, navigation restricted to allowed
 // origins, structured steps with expected outcomes, console/network capture, screenshots and a trace.
-import { chromium, type Browser, type BrowserContext, type Page } from 'playwright-core';
+import type { Browser, BrowserContext, Page } from 'playwright-core';
 import type { BrowserStep } from '@atlas/contracts';
 import { resolveBrowser } from './resolve';
 
@@ -20,6 +20,7 @@ export class BrowserSession {
   async open(opts: { trace?: boolean } = {}) {
     const exe = resolveBrowser();
     if (!exe.path) throw new Error(exe.detail);
+    const { chromium } = await import('playwright-core');
     this.browser = await chromium.launch({ executablePath: exe.path, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
     // A fresh, non-persistent context per session: no cookies or storage shared across projects or tasks.
     this.context = await this.browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: false, serviceWorkers: 'block', ignoreHTTPSErrors: false });

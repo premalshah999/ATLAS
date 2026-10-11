@@ -3,10 +3,7 @@
 //  - No resources are discovered from the repository (extensions, skills, AGENTS files): repo text cannot
 //    reconfigure the agent. Instructions come from ATLAS role definitions only.
 //  - Sessions are in-memory; ATLAS's event log is the durable record.
-import {
-  createAgentSession, createExtensionRuntime, defineTool, ModelRuntime, SessionManager, SettingsManager,
-  type AgentSession, type ResourceLoader, type ToolDefinition,
-} from '@earendil-works/pi-coding-agent';
+import type { AgentSession, ModelRuntime, ResourceLoader, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import type { AgentEvent, AgentHandle, AgentInput, AgentRuntime, PlanProposal, PlanRequest, RuntimeHealth } from '@atlas/contracts';
 import { EventQueue } from '@atlas/runtime-fake';
@@ -25,11 +22,19 @@ export interface PiRuntimeOptions {
   configure?: (rt: ModelRuntime) => void | Promise<void>;
 }
 
+type PiSdk = typeof import('@earendil-works/pi-coding-agent');
+let sdkPromise: Promise<PiSdk> | null = null;
+/**
+ * The Pi SDK is loaded on first use, not at daemon start (evolution P2-1): importing it costs ~90 MB of resident
+ * memory, which an idle daemon, or one that only runs the scripted runtime, never needs.
+ */
+const sdk = (): Promise<PiSdk> => (sdkPromise ??= import('@earendil-works/pi-coding-agent'));
+
 interface Run { session: AgentSession; queue: EventQueue<AgentEvent>; done: Promise<void>; unsubscribe: () => void }
 
-function resourceLoader(systemPrompt: string): ResourceLoader {
+function resourceLoader(pi: PiSdk, systemPrompt: string): ResourceLoader {
   return {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+    getExtensions: () => ({ extensions: [], errors: [], runtime: pi.createExtensionRuntime() }),
     getSkills: () => ({ skills: [], diagnostics: [] }),
     getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }),
@@ -78,6 +83,7 @@ export class PiRuntime implements AgentRuntime {
 
   private modelRuntime(): Promise<ModelRuntime> {
     this.runtime ??= (async () => {
+      const { ModelRuntime } = await sdk();
       const rt = await ModelRuntime.create({ authPath: `${this.opts.agentDir}/auth.json`, modelsPath: null });
       for (const [provider, key] of Object.entries(this.opts.apiKeys ?? {})) await rt.setRuntimeApiKey(provider, key);
       await this.opts.configure?.(rt);
@@ -115,6 +121,8 @@ export class PiRuntime implements AgentRuntime {
   }
 
   async start(input: AgentInput): Promise<AgentHandle> {
+    const pi = await sdk();
+    const { createAgentSession, defineTool, SessionManager, SettingsManager } = pi;
     const rt = await this.modelRuntime();
     const model = await this.pickModel(rt);
     const customTools: ToolDefinition[] = input.tools.specs
@@ -136,7 +144,7 @@ export class PiRuntime implements AgentRuntime {
       model,
       thinkingLevel: 'off',
       modelRuntime: rt,
-      resourceLoader: resourceLoader(input.instructions),
+      resourceLoader: resourceLoader(pi, input.instructions),
       tools: customTools.map((t) => t.name),
       customTools,
       sessionManager: SessionManager.inMemory(input.cwd),
@@ -223,8 +231,10 @@ Rules: at most ${req.maxTasks} tasks; no cycles; only tools listed for each role
       req.previousIssues?.length ? `Your previous plan was rejected by the validator:\n${req.previousIssues.map((i) => `- ${i}`).join('\n')}\nReturn a corrected plan.` : '',
       'Return only the JSON object.',
     ].filter(Boolean).join('\n\n');
+    const pi = await sdk();
+    const { createAgentSession, SessionManager, SettingsManager } = pi;
     const { session } = await createAgentSession({
-      cwd: process.cwd(), agentDir: this.opts.agentDir, model, thinkingLevel: 'off', modelRuntime: rt, resourceLoader: resourceLoader(system),
+      cwd: process.cwd(), agentDir: this.opts.agentDir, model, thinkingLevel: 'off', modelRuntime: rt, resourceLoader: resourceLoader(pi, system),
       tools: [], customTools: [], sessionManager: SessionManager.inMemory(process.cwd()),
       settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: true, maxRetries: 2 }, enableInstallTelemetry: false, enableAnalytics: false }),
     });

@@ -57,6 +57,25 @@ const EXEC_ARGS: Record<string, RegExp[]> = {
   diff: [/^--to-file(=|$)/],
   tsc: [/^--(outFile|outDir|declarationDir)(=|$)/],
 };
+/**
+ * GNU getopt_long and git's option parser accept any unambiguous prefix of a long option (`sort --compress-p=x`,
+ * `git grep --open-files=x`). A long option is dangerous when it is a prefix of a dangerous name, even if it might
+ * also abbreviate a harmless one (final audit finding).
+ */
+const LONG_DANGER: Record<string, string[]> = {
+  sort: ['compress-program', 'output'],
+  rg: ['pre', 'pre-glob', 'search-zip'],
+  diff: ['to-file'],
+  node: ['require', 'import', 'loader', 'experimental-loader'],
+  tsc: ['outfile', 'outdir', 'declarationdir'],
+  git: ['output', 'open-files-in-pager', 'ext-diff', 'textconv', 'exec', 'upload-pack', 'receive-pack', 'config-env', 'run'],
+  'git-branch': ['delete', 'move', 'copy', 'force', 'set-upstream-to', 'unset-upstream', 'edit-description', 'track', 'no-track', 'create-reflog'],
+};
+export function abbreviatesDanger(prog: string, arg: string): boolean {
+  if (!arg.startsWith('--') || arg === '--') return false;
+  const name = arg.slice(2).split('=')[0].toLowerCase();
+  return !!name && (LONG_DANGER[prog] ?? []).some((d) => d.startsWith(name));
+}
 const GIT_EXEC_ARG = /^(--output(=|$)|-O|--open-files-in-pager(=|$)|--ext-diff$|--textconv$|--exec(=|$)|--upload-pack(=|$)|--receive-pack(=|$)|--config-env(=|$)|--run(=|$)|-x$)/;
 const GIT_BRANCH_WRITE = new Set(['-d', '-D', '--delete', '-m', '-M', '--move', '-c', '-C', '--copy', '-f', '--force', '-u', '--set-upstream-to', '--unset-upstream', '--edit-description', '--track', '-t', '--no-track', '--create-reflog']);
 const PKG_OVERRIDE = /^--(script-shell|userconfig|globalconfig|prefix|node-options|shell|config)(=|$)/;
@@ -88,9 +107,9 @@ export function classifyCommand(command: string, args: readonly string[]): Shell
     // command run a program, so a "read-only" subcommand is only safe without them.
     if (subIdx > 0 || (subIdx < 0 && args.length)) return { capability: 'shell.privileged', risk: 'elevated', reason: 'git global options can configure programs to run' };
     const rest = args.slice(subIdx + 1);
-    const danger = rest.find((a) => GIT_EXEC_ARG.test(a));
+    const danger = rest.find((a) => GIT_EXEC_ARG.test(a) || abbreviatesDanger('git', a));
     if (SAFE_GIT.has(sub) && danger) return { capability: 'shell.privileged', risk: 'elevated', reason: `git ${sub} ${danger.split('=')[0]} can run a program or write a file` };
-    if (sub === 'branch' && rest.some((a) => !a.startsWith('-') || GIT_BRANCH_WRITE.has(a.split('=')[0]))) return { capability: 'shell.privileged', risk: 'elevated', reason: 'git branch with these arguments creates, renames or deletes branches' };
+    if (sub === 'branch' && rest.some((a) => !a.startsWith('-') || GIT_BRANCH_WRITE.has(a.split('=')[0]) || abbreviatesDanger('git-branch', a))) return { capability: 'shell.privileged', risk: 'elevated', reason: 'git branch with these arguments creates, renames or deletes branches' };
     if (SAFE_GIT.has(sub)) return { capability: 'shell.safe', risk: 'low', reason: `git ${sub} is read-only` };
     return { capability: 'shell.privileged', risk: sub === 'push' || sub === 'reset' || sub === 'clean' ? 'high' : 'elevated', reason: `git ${sub || '(none)'} changes repository state`, network: ['push', 'fetch', 'pull', 'clone', 'ls-remote', 'submodule'].includes(sub) };
   }
@@ -110,7 +129,7 @@ export function classifyCommand(command: string, args: readonly string[]): Shell
     return { capability: 'shell.privileged', risk: 'elevated', reason: 'Inline code evaluation' };
   }
   if (SAFE_EXEC.has(exe)) {
-    const danger = args.find((a) => (EXEC_ARGS[exe] ?? []).some((re) => re.test(a)));
+    const danger = args.find((a) => (EXEC_ARGS[exe] ?? []).some((re) => re.test(a)) || abbreviatesDanger(exe, a));
     if (danger) return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} ${danger.split('=')[0]} can run a program or write outside the expected output` };
     return { capability: 'shell.safe', risk: 'low', reason: `${exe} is on the safe list`, runsProjectCode: PROJECT_CODE_EXEC.has(exe) };
   }
