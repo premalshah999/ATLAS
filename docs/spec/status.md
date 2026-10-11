@@ -1,17 +1,17 @@
 # Implementation status — M0–M5
 
-Report date 2026-10-10. Platform tested: Linux x64 (Node 22.22, Electron 44.1.1, bubblewrap, Xvfb, Chromium from Playwright 1.56). A **met** below means a test ran and passed on that date. Nothing here relies on an agent's own report.
+Report date 2026-10-11 for lint, typecheck, unit, integration and e2e; the eval, screenshot, Pi-version and package rows are carried over from the 2026-10-10 run. Platform tested: Linux x64 (Node 22.22, Electron 44.1.1, bubblewrap, Xvfb, Chromium from Playwright 1.56). A **met** below means a test ran and passed on that date. Nothing here relies on an agent's own report.
 
 ## Results of the last run
 
 | Command | Result |
 | --- | --- |
-| `pnpm lint` | dependency graph acyclic (13 workspaces); ESLint clean |
+| `pnpm lint` | dependency graph acyclic (13 workspaces); ESLint 0 errors (13 react-hooks `exhaustive-deps` warnings in the renderer) |
 | `pnpm typecheck` | every workspace, plus `tests/` and `evals/` |
-| `pnpm test` | 75 / 75 passed (11 files) |
-| `pnpm test:integration` | 42 / 42 passed (7 files, real git repositories, real sandbox) |
+| `pnpm test` | 203 passed, 5 skipped (24 files; skips are platform- or tool-gated) |
+| `pnpm test:integration` | 99 passed, 1 skipped (13 files, real git repositories, real sandbox) |
 | `pnpm eval` | 11 / 11 cases behaved as expected; false pass rate 1/7 (the deliberate `weak-tests` case) — [report](../eval/latest.md) |
-| `xvfb-run -a pnpm test:e2e` | 7 / 7 passed (built Electron app) |
+| `xvfb-run -a pnpm test:e2e` | 13 / 13 passed (built Electron app) |
 | `pnpm screenshots` | both capture runs passed; `docs/screenshots` regenerated |
 | `pnpm pi:version` | installed Pi packages match pin 0.87.1, MIT |
 | `pnpm package` | `apps/desktop/release/ATLAS-0.1.0.AppImage` (153 MB); launched under xvfb, daemon reached ready (schema v4) |
@@ -25,7 +25,7 @@ Report date 2026-10-10. Platform tested: Linux x64 (Node 22.22, Electron 44.1.1,
 | 5 | Pi adapter replaceable by a fake | **met** | orchestration tests use the fake; same contract suite on both |
 | 6 | Fresh clone installs, boots, runs baseline suite | **met** on Linux | CI workflow; local run above |
 | 7 | Acyclic graph, typechecks per workspace | **met** | `scripts/check-deps.mjs`, `pnpm typecheck` |
-| 8 | Third-party notices, pinned version script | **partly** | `licenses/third-party/pi.md`, `pnpm pi:version`; upstream LICENSE text still to be copied (npm tarball ships none) |
+| 8 | Third-party notices, pinned version script | **met** | `licenses/third-party/pi.md`, `licenses/third-party/pi-LICENSE.txt` (upstream MIT text), `pnpm pi:version` |
 | 9–10 | Fake and Pi pass the same contract; no leaks | **met** | `packages/runtime-pi/test/contract.test.ts` |
 | 11 | Migration and CRUD tests per entity | **met** | `packages/storage/test` (migrations v1–v4) |
 | 12 | Invalid transitions rejected; replay reconstructs state | **met** | `core.test.ts`; replay checked after crash and in eval `crash-recovery` |
@@ -35,7 +35,7 @@ Report date 2026-10-10. Platform tested: Linux x64 (Node 22.22, Electron 44.1.1,
 | 16 | Runaway delegation stops at limits | **met** | `m2.test.ts` depth and token budget tests |
 | 17 | Reviewer gets the diff plus relevant context | **met** | `m2.test.ts` "context bundles record their sources…" |
 | 18 | Symlink traversal, dirty worktree, cleanup | **met** | `packages/workspace/test` |
-| 19 | Inspect, reject, restore an unmerged change | **partly** | inspect and reject are covered (e2e, integration); restoring a rejected change is not offered |
+| 19 | Inspect, reject, restore an unmerged change | **met** | inspect and reject (e2e, integration); `mission.restore` restores a rejected change exactly once and refuses a tampered ref (`tests/integration/mission.test.ts`) |
 | 20 | Cancel leaves no orphaned child process | **met** | terminal tests, integration cancel, eval `long-running` |
 | 21 | Denied tool call never reaches the executor | **met** | integration "governed tools" with spy executors |
 | 22 | Allow, deny, prompt and expired-approval cases | **met** | policy unit tests; integration |
@@ -50,15 +50,15 @@ Report date 2026-10-10. Platform tested: Linux x64 (Node 22.22, Electron 44.1.1,
 | 31 | Wrong deployed revision blocks completion | **met** | `deploy.test.ts`; eval `wrong-deploy-revision` |
 | 32 | Deploy failure blocks and records rollback | **met** | `deploy.test.ts` (rollback with revision confirmation) |
 | 34 | Plan a mission and see approvals before starting | **met** | e2e |
-| 35 | Disconnect or restart the UI mid-mission and reconnect | **partly** | e2e restarts after a mission; integration stops the daemon mid-command. A UI restart in the middle of a mission is not tested end to end |
+| 35 | Disconnect or restart the UI mid-mission and reconnect | **met** | e2e "UI reload and full app restart in the middle of a mission resume accurately" (`mission.spec.ts`); integration stops the daemon mid-command |
 | 36 | Reject a patch without changing the checkout | **met** | e2e, integration |
 | 37 | Inspect the exact failed browser step and screenshot | **met** | `browser.test.ts` (failed step screenshot); Browser tab in e2e |
 | 38 | Replay matches persisted state after a crash | **met** | integration crash recovery |
 | 39 | Backup/restore keeps evidence links | **met** | storage test; export/import round trip |
 | 40 | Fault injection: stable state, no duplicate deployment | **met** | integration crash tests; `deploy.test.ts` "crash mid-deploy … never silently redeployed" |
-| 41 | Stress test respects maximum workers, UI responsive | **partly** | `m2.test.ts` concurrency budget; no stress test of UI responsiveness |
+| 41 | Stress test respects maximum workers, UI responsive | **met** | `m2.test.ts`: 12 parallel writers peak at exactly the cap of 3; `stress.spec.ts`: six concurrent missions all verify while renderer timer delay p95 stays under 250 ms and the palette opens under 1.5 s p95 (last run: 5 ms, 80 ms). The probe is calibrated against a deliberately blocked renderer |
 | 42 | Untrusted text requesting credentials is refused | **met** | eval `prompt-injection` (network denied, path escape denied, canary unreadable) |
-| 43 | Idle app makes no unexplained outbound requests | **not tested** | no telemetry code exists; no automated network audit yet |
+| 43 | Idle app makes no unexplained outbound requests | **met** | `apps/daemon/test/network-audit.test.ts`; e2e "network audit: the idle app makes no outbound requests" (`security.spec.ts`) |
 | 45 | Each release generates an evaluation summary | **met** | `pnpm eval` → `docs/eval/latest.md` (traceable failures) |
 | 50 | Contracts build, API tests pass | **met** | IPC validated by zod; e2e checks undeclared and malformed requests |
 | E8 | Branded window; hardened renderer; undeclared IPC denied | **met** | `tests/e2e-electron/security.spec.ts` |
@@ -73,12 +73,11 @@ Report date 2026-10-10. Platform tested: Linux x64 (Node 22.22, Electron 44.1.1,
   - audit export, then import into a second installation as a read-only archive;
   - a desktop session with approval and operator takeover, with the agent's next input refused and recorded.
 - **`mission.spec.ts` and `security.spec.ts`:** the M1 flows, daemon crash and app restart, and the renderer hardening.
+- **`stress.spec.ts`:** six concurrent missions while the renderer's timer delay and palette latency are measured (§41).
 
 ## Known gaps and risks
 1. **Real-model path.** It is not exercised against a live provider in CI. The Pi adapter is contract-tested with Pi's faux provider. `ATLAS_EVAL_RUNTIME=pi pnpm eval` runs the corpus with a real model when a key is present; that has not been run for this report.
 2. **Weak project tests produce false passes.** The `weak-tests` eval case shows that ATLAS cannot know an overfit change is wrong when the project's own checks pass it.
-3. **macOS and Windows** build but are untested and unsigned. The sandbox-exec profile is untested, and there is no desktop backend on either.
-4. **Restore of a rejected change** (§19) is not implemented.
-5. **Network audit** (§43) is not automated.
-6. **Pi resume** is not supported. Recovery restarts tasks as new attempts in fresh worktrees.
-7. **Pi telemetry** is disabled in the adapter (`enableInstallTelemetry: false`, `PI_TELEMETRY=0`). Re-check on every Pi upgrade.
+3. **Windows** builds, but its sandbox fails closed: an AppContainer cannot create the named pipes Node uses for child stdio, so agent and check commands are refused there (ADR 0016, proposed; the restricted-token experiment is paused). **macOS** runs the full unit, integration and e2e suites in CI, including the Seatbelt sandbox and XQuartz desktop control. Neither platform's build is signed.
+4. **Pi resume** is supported for the Pi runtime (ADR 0014). Runtimes without it still restart a task as a new attempt in a fresh worktree.
+5. **Pi telemetry** is disabled in the adapter (`enableInstallTelemetry: false`, `PI_TELEMETRY=0`). Re-check on every Pi upgrade.
