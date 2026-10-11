@@ -635,7 +635,7 @@ export class Orchestrator {
         else if (ev.type === 'error') outcome = { kind: 'error', errorKind: ev.kind, message: ev.message };
       }
     } catch (e) {
-      outcome = { kind: 'error', errorKind: ac.signal.aborted ? 'cancelled' : 'internal', message: (e as Error).message };
+      outcome = { kind: 'error', errorKind: ac.signal.aborted ? 'cancelled' : e instanceof AtlasError ? e.kind : 'internal', message: (e as Error).message };
     } finally {
       this.unwatchSignal(attempt.id);
       if (handle) await rt.dispose(handle).catch(() => {});

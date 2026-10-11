@@ -33,7 +33,9 @@ export function exportMission(repo: Repo, artifacts: ArtifactStore, missionId: s
     const text = TEXT_KINDS.has(a.kind);
     const content = text ? redact(bytes.toString('utf8')) : bytes.toString('base64');
     const sha256 = createHash('sha256').update(text ? Buffer.from(content, 'utf8') : bytes).digest('hex');
-    lines.push(JSON.stringify({ type: 'artifact', data: { ...a, sha256, size: text ? Buffer.byteLength(content) : bytes.length }, encoding: text ? 'utf8' : 'base64', intact, content }));
+    // `intact` (checked against the checksum recorded at write time) travels with the record and is covered by the
+    // trailer hash, so re-hashing for export can never vouch for evidence that was altered on disk.
+    lines.push(JSON.stringify({ type: 'artifact', data: { ...a, sha256, size: text ? Buffer.byteLength(content) : bytes.length }, recordedSha256: a.sha256, encoding: text ? 'utf8' : 'base64', intact, content }));
   }
   const sha256 = createHash('sha256').update(lines.join('\n')).digest('hex');
   lines.push(JSON.stringify({ type: 'end', records: lines.length, sha256 }));
@@ -55,6 +57,9 @@ export function importMission(repo: Repo, artifacts: ArtifactStore, file: string
   if (end?.type !== 'end') throw new AtlasError('invalid_request', 'Export is truncated (no trailer)');
   const sha = createHash('sha256').update(raw.slice(0, -1).join('\n')).digest('hex');
   if (sha !== end.sha256) throw new AtlasError('invalid_request', 'Export failed its integrity check (contents changed or truncated)');
+  // Phase 8 finding: an artifact tampered on disk before export was re-hashed and imported elsewhere as intact.
+  const failed = records.filter((r) => r.type === 'artifact' && r.intact !== true);
+  if (failed.length) throw new AtlasError('invalid_request', `Export contains ${failed.length} artifact(s) that failed their checksum before export (${failed.slice(0, 3).map((r) => r.data?.name ?? r.data?.id).join(', ')}); refusing to import evidence that cannot be trusted`);
   const m = records.find((r) => r.type === 'mission')!.data as Mission;
   if (repo.mission(m.id)) throw new AtlasError('invalid_request', `Mission ${m.id} already exists here`);
   const wsRec = records.find((r) => r.type === 'workspace')?.data as { id: string; name: string } | undefined;
