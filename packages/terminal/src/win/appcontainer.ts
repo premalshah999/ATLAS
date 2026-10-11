@@ -1,7 +1,7 @@
 // Windows sandbox (ADR 0012): AppContainer + Job Object via atlas-sandbox.exe, file access by explicit ACL grants.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { HELPER_SOURCE, HELPER_VERSION } from './helper';
@@ -32,10 +32,19 @@ export function ensureHelper(): string {
   if (!existsSync(exe)) {
     const compiler = csc();
     if (!compiler) throw new Error('The .NET Framework C# compiler (csc.exe) was not found; it ships with Windows 10 and 11.');
-    const src = `${exe}.cs`;
-    writeFileSync(src, HELPER_SOURCE);
-    try { execFileSync(compiler, ['/nologo', '/optimize+', '/target:exe', '/platform:anycpu', `/out:${exe}`, src], { stdio: 'pipe', windowsHide: true, timeout: 120_000 }); }
-    catch (e) { throw new Error(`Compiling the sandbox helper failed: ${String((e as { stdout?: Buffer }).stdout ?? (e as Error).message).slice(0, 600)}`); }
+    // Several processes (daemon restarts, parallel test workers) can get here at once: compile to a private name and
+    // rename into place, so nobody runs or overwrites a half-written executable.
+    const tmp = `${exe}.${process.pid}.${Date.now()}`;
+    writeFileSync(`${tmp}.cs`, HELPER_SOURCE);
+    try {
+      execFileSync(compiler, ['/nologo', '/optimize+', '/target:exe', '/platform:anycpu', `/out:${tmp}.exe`, `${tmp}.cs`], { stdio: 'pipe', windowsHide: true, timeout: 120_000 });
+      try { renameSync(`${tmp}.exe`, exe); } catch (e) { if (!existsSync(exe)) throw e; }
+    } catch (e) {
+      if (!existsSync(exe)) throw new Error(`Compiling the sandbox helper failed: ${String((e as { stdout?: Buffer }).stdout ?? (e as Error).message).slice(0, 600)}`);
+    } finally {
+      rmSync(`${tmp}.cs`, { force: true });
+      rmSync(`${tmp}.exe`, { force: true });
+    }
   }
   return (helperPath = exe);
 }

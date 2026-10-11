@@ -6,7 +6,7 @@ import { registerSecret } from '@atlas/contracts';
 import { FakeRuntime, forTask, SAMPLE_FIX, type FakeScript } from '@atlas/runtime-fake';
 import { realExecutors, replay, type Executors } from '@atlas/orchestrator';
 import { sampleRepo, sh } from '../helpers';
-import { autoDecide, makeOrchestrator, startMission, waitFor } from './harness';
+import { autoDecide, explainChecks, makeOrchestrator, startMission, waitFor } from './harness';
 
 describe('sample mission', () => {
   it('edits code in an isolated worktree, verifies independently and keeps the user checkout intact', async () => {
@@ -16,8 +16,8 @@ describe('sample mission', () => {
     const id = await startMission(h, root);
     await h.orch.settle(id);
     const m = h.repo.mission(id)!;
+    expect(m.outcome, explainChecks(h, id)).toMatch(/^Verified: tests passed/);
     expect(m.state).toBe('completed');
-    expect(m.outcome).toMatch(/^Verified: tests passed/);
 
     // Evidence: real check records on the integrated commit, a review gate, and patch artifacts.
     const checks = h.repo.checks(id);

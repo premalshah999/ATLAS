@@ -46,3 +46,11 @@ export function autoDecide(h: ReturnType<typeof makeOrchestrator>, missionId: st
   tick();
   return () => { stopped = true; };
 }
+
+/** Failed checks with their reason and output tail: the assertion message when a platform fails a mission. */
+export function explainChecks(h: ReturnType<typeof makeOrchestrator>, missionId: string): string {
+  return h.repo.checks(missionId).filter((c) => c.result !== 'pass').map((c) => {
+    const out = c.artifactId ? h.artifacts.read(c.artifactId).text.slice(-1500) : '';
+    return `[${c.name}: ${c.result}] ${c.command ?? ''}\n${c.reason}\n${out}`;
+  }).join('\n---\n') || '(all checks passed)';
+}
