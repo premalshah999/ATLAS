@@ -23,11 +23,11 @@ Every number below comes from a process exit or a test assertion, and each one n
 | 38102776208 | fd796ff | integration ✗ (timeout) | **unit ✓ integration ✓ eval ✓**; e2e ✗ (PTY: tcgetattr) | ✗ (realpath EPERM in AppContainer) |
 | 38104874121 | b8ec01c | integration ✗ (cancel test timeout) | unit, integration, eval ✓; e2e ✗ (openpty denied) | ✗ (npm.cmd "Access is denied.") |
 | **38106986371** | **29b9a42** | **all steps ✓** (lint, typecheck, unit, integration, eval, e2e, package) | unit, integration, eval ✓; e2e ✗ (openpty, fixed in 6317668) | ✗ |
-| 38107974496 | 6317668 | pending | pending | pending |
+| **38107974496** | **6317668** | **all steps ✓** | **all steps ✓** (lint, typecheck, unit, integration, eval, Electron e2e, package) | unit, integration, eval ✗ |
 
 **What the CI history shows**
 - **Linux flake.** Before `29b9a42`, Linux integration timed out intermittently (3 of 6 runs) on tests that cancel a sandboxed command. The root cause was reproduced locally: under 4 busy cores, 118 of 150 early cancels hung. After the fix, 0 of 150 hung under the same load, and the first CI run with the fix is fully green.
-- **macOS.** The Seatbelt sandbox, missions, gate and eval are verified green. The only remaining failure is the operator terminal, and its fix awaits CI.
+- **macOS.** Fully green in CI as of `6317668`. That covers Seatbelt sandbox tests, missions, the gate, eval, the Electron e2e (including the operator terminal) and packaging. It took three CI-diagnosed fixes: the profile scope, the PTY stdin, and the PTY device for operator terminals.
 - **Windows.** It is **not** working. Sandboxed Node runs: the trivial, canary, write-isolation and network tests pass inside the AppContainer as of b8ec01c. The npm shim does not, so every mission's `npm test` is denied and missions end "Blocked: tests failed". Bisection is in 6317668.
 
 ## Probes and fault injection

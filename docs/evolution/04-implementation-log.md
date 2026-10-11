@@ -204,7 +204,7 @@ It also found **three false positives** (G, H, K: legitimate new scripts or test
 
 **Result.** In CI run 38102776208 macOS **unit, integration and eval passed**.
 
-**Remaining failure: the e2e terminal.** BSD `script` exits with `tcgetattr: Operation not supported on socket`, because Node's stdio pipes are socketpairs on macOS. Fixed in `b8ec01c` by giving `script` a real pipe (`cat |`). This is pending CI confirmation.
+**Remaining failure: the e2e terminal.** BSD `script` exits with `tcgetattr: Operation not supported on socket`, because Node's stdio pipes are socketpairs on macOS. Fixed in `b8ec01c` by giving `script` a real pipe (`cat |`). The next run failed with `openpty: Operation not permitted`. `6317668` allows the PTY devices only for operator terminal sessions (agent commands still cannot open `/dev/ttys*`). **Result: macOS CI fully green (run 38107974496).**
 
 ## P0-6 Windows — `fd796ff`, `b8ec01c` (in progress)
 
