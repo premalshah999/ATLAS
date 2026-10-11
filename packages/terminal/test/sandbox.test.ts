@@ -3,7 +3,7 @@
 // has no network unless granted, and dies with its whole tree on cancellation. Probes are Node scripts so the
 // same assertions run everywhere; on failure the sandboxed output is part of the message.
 import { describe, expect, it } from 'vitest';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { detectSandbox, isAlive, run, sanitizedEnv } from '../src';
@@ -69,6 +69,22 @@ console.log('done');`);
     const off = await probe(tmpDir(), js);
     expect(off.output, off.output).toMatch(/NET-DOWN/);
   });
+
+  // CI hang (two loaded Linux runs): bwrap killed during namespace setup left its sandboxed child (own session)
+  // alive, holding our pipes, so run() never resolved. Under 4 busy cores this hung 118 of 150 times before the fix.
+  it.skipIf(info.kind !== 'bwrap')('cancelling during sandbox setup never hangs and leaves nothing running', async () => {
+    const root = tmpDir();
+    const marker = `atlas-early-kill-${process.pid}`;
+    for (let i = 0; i < 30; i++) {
+      const ac = new AbortController();
+      const p = run({ command: 'node', args: ['-e', 'setInterval(()=>{},1000)', marker], cwd: root, timeoutMs: 60_000, signal: ac.signal, env: sanitizedEnv(), sandbox: { root, writable: true, network: false }, onStart: () => setTimeout(() => ac.abort(), i % 10) });
+      const r = await Promise.race([p.then(() => 'ok'), new Promise((res) => setTimeout(() => res('hang'), 10_000))]);
+      expect(r, `iteration ${i}`).toBe('ok');
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+    const alive = readdirSync('/proc').filter((d) => /^\d+$/.test(d)).filter((d) => { try { return readFileSync(`/proc/${d}/cmdline`, 'utf8').includes(marker); } catch { return false; } });
+    expect(alive).toEqual([]);
+  }, 300_000);
 
   it.skipIf(process.platform !== 'linux')('cannot see host processes (Linux PID namespace)', async () => {
     const r = await probe(tmpDir(), "console.log(require('fs').readdirSync('/proc').filter((x) => /^\\d+$/.test(x)).length)");

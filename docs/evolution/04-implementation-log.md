@@ -1,0 +1,222 @@
+# 04 — Implementation log
+
+Each slice follows the same steps:
+1. Probe or test that reproduces the defect.
+2. The change.
+3. Tests, including a negative test.
+4. An independent adversarial review by a separate agent with no write access.
+5. Fixes for the confirmed findings.
+
+"Evidence" names a test or a CI run, never an agent's claim. The commits are on `claude/gifted-volta-j4hvy4`.
+
+The execution order followed the backlog: P0-1/2 → P0-3 → P1-1 → P0-4 → P1-3 → P1-2 → P1-6 → P1-4 → P1-5, with P0-5/P0-6 (macOS, Windows) worked in parallel against CI.
+
+---
+
+## P0-1 Truncated event history · P0-2 Unverified shown as Completed — `0ba91ff`
+
+**Defects**
+- `useMission` read one page of 2000 events, so long missions lost their tail, including the gate result.
+- The gate verdict was not stored, so an unverified mission rendered as "Completed".
+
+**Change**
+- `fetchAllSince` pages until it gets a short page.
+- Migration v5 adds `missions.verdict`, backfilled from the latest `gate.result`.
+- `missionStatus()` drives the status dot and the verdict label everywhere in the UI.
+
+**Evidence**
+- `apps/desktop/renderer/src/live/eventSync.test.ts`: a 4321-event log, and a log that is an exact multiple of the page size.
+- Storage backfill test.
+- Integration test: `verdict === 'unverified'`.
+- e2e: `data-verdict`.
+
+## P0-3 The agent could redefine its own verification — `5afe983`, revised in `0f1dba3`
+
+**Probe (baseline).** Rewriting `scripts.test` to `node -e "process.exit(0)"` produced "Verified: tests passed; review passed" with zero approvals.
+
+**First change (`5afe983`)**
+- A `verification-definition` gate check compares the approved base with the integrated commit. It covers scripts, runner config and `atlas.config.json`.
+- Deleted tests are listed.
+- A test run that executed zero tests is inconclusive.
+
+**Independent review of v1** (subagent, read-only on the repo). It found **six bypasses**:
+
+| ID | Bypass |
+|---|---|
+| A | Gut a test body |
+| B | `test.skip` |
+| C | Rename tests out of the runner's reach and add a trivial test |
+| F | Commit `node_modules/.bin/node` |
+| D | Switch package manager via lockfiles |
+| J | Fan-out scripts (`run-s`, `-r`) |
+
+It also found **three false positives** (G, H, K: legitimate new scripts or tests flagged), a crash on a `null` package.json, an approval that was not bound to content or state, and `noTestsRan` misfiring on output that merely mentions "0 tests".
+
+**Revision (`0f1dba3`)**
+- **Definition coverage** (`packages/orchestrator/src/definition.ts`):
+  - every package.json outside node_modules;
+  - `pre`/`post` hooks of `test`/`typecheck`/`lint`, plus scripts reached through `npm run x`;
+  - all scripts when a fan-out runner is used;
+  - runner keys (`workspaces`, `packageManager`, `type`, `imports`, `exports`, …);
+  - lockfiles as a `package-manager` item;
+  - config files in any directory (jest/vitest/tsconfig/eslint/.npmrc/.yarnrc/pnpm files/babel/swc/pytest/tox/conftest).
+- **Large and unusual files:** blobs over 1 MB are hashed. Paths are read NUL-separated, so unusual names cannot break parsing.
+- **New items:**
+  - A new script or a first test script is reported as *added*, which is informational (fixes G/H/K).
+  - A new config file, lockfile or runner key counts as *changed*.
+- **Modified or renamed tests:** the gate runs the **base commit's original suite** against the integrated code, inside the sandbox. It restores the base tests, configs, lockfiles and the base package.json verification keys, removes added tests, and resets in `finally` (fixes A/B/C).
+- **Tracked `node_modules`** blocks the gate (fixes F).
+- **Operator approval** is bound to a SHA-256 over the integrated *tree*, the base, the definition hash and the weakening list. It is refused unless the mission failed and is undecided. It is recorded as an `operator.action`, never as evidence.
+- **`noTestsRan`** reads only the runner summary lines (node, jest, vitest, mocha, cargo, pytest, go). Any count above zero means tests ran; all-skipped runs are detected.
+
+**Evidence**
+- `tests/integration/mission.test.ts` › "verification cannot be redefined…": a rewritten script; A, B, C, D, E (`null` package.json), F; a legitimate fix with a new test and lint script stays verified; a legitimate test edit passes the original suite; the approval is hash-bound and is not evidence; the approval is refused when not failed.
+- `packages/orchestrator/test/definition.test.ts`: fan-out, nested config, conftest, non-ASCII deletion, hash follows the tree, a git failure throws.
+- `core.test.ts`: `noTestsRan` misfire cases.
+
+**Residual risk**
+- A test rewritten to be weaker *and* still passing on correct code is caught only by the original suite. A brand-new weak test on new code is not distinguishable from a good one; the eval keeps a deliberate `weak-tests` case at 1/7 false passes.
+- Coverage is limited to the Node, Python and Go ecosystems listed above.
+
+## P1-1 Approval bypass through argument forms — `5afe983`
+
+**Probe.** All 8 forms were classified `shell.safe`: `git -c…`, `git grep -O`, `--open-files-in-pager`, `--ext-diff`, `--output`, `find -exec`, `sort --compress-program`, `rg --pre`.
+
+**Change** (`packages/policy`). Per-program argument deny patterns (`EXEC_ARGS`). The following are now privileged:
+- git global options before the subcommand;
+- `git branch` writes;
+- `npm/pnpm exec`;
+- config overrides (`--script-shell`, `--userconfig`, …);
+- `node --require/--import/--loader`.
+
+**Evidence.** Policy unit table: 22 bypass forms are privileged, and the plain forms are still safe.
+
+## P0-4 Orphaned processes after a daemon crash — `0f1dba3`, hardened in `d20546b`
+
+**Probe (baseline).** After a hard daemon kill, an unsandboxed command was reparented to PID 1 and kept running. Under bwrap it was clean (`--die-with-parent`).
+
+**Change**
+- `packages/terminal/src/journal.ts` records every spawned process (`run`, `startProcess`, PTYs) in SQLite `process_journal` with an OS identity: start time plus boot id on Linux, `ps lstart` on macOS.
+- On start, the daemon kills journaled process groups whose identity still matches. It does this before `recover()`.
+
+**Independent review** (subagent). Findings and fixes:
+- **Major: survivors were missed when the leader died first.** If `npm` exits but its server keeps running, the leader's identity no longer matches, so nothing was reaped. *Fixed:* when the leader's pid is free, members of the group it led are found by pgid and start time ≥ the leader's. When the pid is alive under another identity, it was reused, and POSIX never reuses a pid while a group with that id exists, so nothing is searched.
+- **Major: `startProcess` did not kill its group on exit.** *Fixed:* it now does, like `run()`.
+- **Major: Xvfb was never journaled.** *Fixed.* The Playwright Chromium is not journaled; it exits when its pipe closes.
+- **Major: no single-instance protection.** A second app launch would reap the first instance's live work. *Fixed:* a daemon lock file per data directory (identity-checked; stale locks are taken over), plus Electron `requestSingleInstanceLock`.
+- **Minor: no boot id.** A row from a previous boot could match. *Fixed:* the boot id is part of the Linux identity.
+- **Minor: EPERM kills were counted as killed.** *Fixed.*
+- **Open: Windows.** The helper holds a kill-on-close Job Object but does not watch its parent, so after a daemon crash a sandboxed child lives until it exits. Unsandboxed Windows commands get no job. Recorded in [06-security-review.md](06-security-review.md).
+- **Open, minor:**
+  - `journalStart` is synchronous per spawn; on macOS it calls `ps`.
+  - PTY shells started with `nohup`/`setsid` escape the group.
+
+**Evidence** (`tests/integration/orphans.test.ts`, run in a child process that is SIGKILLed mid-command):
+- the survivor is reaped;
+- a pid-reuse (identity mismatch) row is not killed;
+- a dead leader's surviving group member is reaped while a bystander group is untouched;
+- a finished command leaves the journal empty.
+
+`apps/daemon/test/reap.test.ts`:
+- the daemon kills a journaled orphan on start;
+- a second daemon on the same data directory refuses to start and kills nothing, then takes over a stale lock.
+
+## P1-3 Uncommitted work destroyed by `worktree remove --force` — `0f1dba3`, hardened in `d20546b`
+
+**Change**
+- `preserveWorktree` snapshots dirty and untracked state through a temporary `GIT_INDEX_FILE` into `refs/atlas/preserved/<mission>/<worktree>/uncommitted`, and keeps the branch tip at `…/branch`.
+- The user's index and checkout are never touched.
+- Deleting a mission deletes its refs.
+
+**Independent review.** Findings and fixes:
+- **Blocker: a failed snapshot still destroyed the work.** A path git refuses (e.g. `GIT~1/` under `core.protectNTFS`), an unreadable file, or a status error meant nothing was preserved, and the worktree was still force-removed. *Fixed:* `retireWorktree` keeps the directory and branch and returns a `retained` reason, which is recorded as a `workspace.worktree {action:'retained'}` event.
+- **Major: nested repositories became bare gitlinks.** If an agent ran `git init` or a scaffolder, the nested repo was recorded only as a gitlink, so its files and history were lost. *Fixed:* new gitlinks in the snapshot tree mean the worktree is retained.
+- **Major: `git worktree prune` ran on the user's repository.** It deleted the metadata of the user's own temporarily missing worktrees. *Fixed:* only the ATLAS worktree's admin directory is removed.
+- **Minor: automatic retention purged cancelled, undecided missions.** *Fixed:* automatic purge is limited to decided or archived missions.
+- **Minor: refs were recorded only at the end of `decide`.** *Fixed:* they are recorded per worktree.
+- **Open, minor:**
+  - Ignored files (e.g. `.env`) are not captured. This is documented.
+  - Preserved refs accumulate until the mission is deleted.
+
+**Evidence**
+- `packages/workspace/test/workspace.test.ts` › "retireWorktree keeps what it cannot preserve":
+  - a refused path, and a nested repository: both retained;
+  - a normal dirty worktree is preserved and removed, and the user's moved worktree is still listed.
+- Integration: a reject preserves the dirty file and the branch ref; delete removes the refs; a cancelled mission is never auto-purged.
+
+## P1-2 Unsandboxed mode ran project code without approval — `e2084e8`
+
+**Change**
+- `evaluate()` takes a required `sandboxed` flag.
+- Without a sandbox, safe-listed commands that run project code (npm/pnpm/yarn test and run, npx dev tools, `node <file>`, `tsc`, `run_tests`) return `ask` with a "No OS sandbox" reason.
+- Read-only commands stay allowed.
+- The Settings copy now states this.
+
+**Evidence**
+- Policy unit tests for both modes, including a tester's `run_tests`.
+- Integration (`tests/integration/sandbox.test.ts`): with approval the mission is verified; with denial no agent process starts.
+
+## P1-6 Stalled attempts looked healthy — `2c2afb4`
+
+**Change**
+- A watchdog emits `attempt.stalled` once per silence when a running attempt has produced no event for `stallAfterMs` (default 120 s).
+- A pending approval does not count as a stall.
+- The attempt is not stopped.
+- The task row shows "No signal" until the attempt produces an event.
+
+**Evidence**
+- Integration: the stall is flagged once and not repeated while an approval is pending, and the attempt still succeeds.
+- Unit: `stalledTasks()`.
+
+**Note.** This slice introduced a hook-order bug (a `useMemo` after an early return) that blanked the mission view. The full Electron e2e suite caught it, not lint: the ESLint config has no react-hooks rule. It was fixed in `d20546b` before CI ran that code.
+
+## P1-4 Resource guards — `6645eb5`
+
+**Change.** A task or integration worktree is refused below `worktrees.minFreeMiB` (default 1024) or at `worktrees.maxPerMission` (default 40), with a typed `resource_limit` reason.
+
+**Evidence.** Integration with an injected `diskFree`; a cap of 1.
+
+## P1-5 Operator terminal died with its tab — `fdf2dce`
+
+**Change**
+- Sessions live in the daemon. The view attaches and detaches; Close, the mission decision, delete or daemon stop ends a session.
+- `terminal.list`, `terminal.attach` (snapshot + seq) and `terminal.resize`.
+- The view subscribes before taking the snapshot, and each push carries `seq` (`attachGate`).
+- Output is coalesced at 8 ms or 16 KB.
+- Resize applies `TIOCSWINSZ` via `stty` on the shell's terminal. On Linux the terminal is reached through `/proc/<pid>/fd/0`, which crosses bwrap's private devpts. Resize is unsupported on Windows.
+
+**Evidence**
+- `pty.test.ts`: resize from outside the sandbox (`stty size` → `43 132`).
+- `termSync.test.ts`.
+- e2e `capabilities.spec.ts`: type, switch tab, return; history and shell variables are intact; Close works.
+
+**Measurement.** Echo latency medians were 92 ms and 160 ms in two runs, against a 182 ms single-run baseline. That is within run-to-run variance. **No latency improvement is claimed.**
+
+## P0-5 macOS — `64cffcd`, `b8ec01c`
+
+**Evidence from CI.**
+- Run 38101667968: `sandbox-exec` allowed reads *and writes* anywhere in `$TMPDIR` (the sandbox test read and wrote a sibling temp directory).
+- Denying reads under `/Users` also denied `lstat` on the ancestors of granted paths, so Node's `realpath` failed, and with it every mission check.
+
+**Change**
+- `seatbeltProfile()` is a pure function, unit-tested on every platform. It denies reads under home, `/Users`, `/Volumes`, the per-user temp directory and `/private/tmp`, except granted paths. Parents of granted paths get `file-read-metadata` only.
+- Each command gets a private scratch `HOME`/`TMPDIR`, which is removed when the command exits.
+
+**Result.** In CI run 38102776208 macOS **unit, integration and eval passed**.
+
+**Remaining failure: the e2e terminal.** BSD `script` exits with `tcgetattr: Operation not supported on socket`, because Node's stdio pipes are socketpairs on macOS. Fixed in `b8ec01c` by giving `script` a real pipe (`cat |`). This is pending CI confirmation.
+
+## P0-6 Windows — `fd796ff`, `b8ec01c` (in progress)
+
+**Evidence from CI and fixes so far**
+1. The C# helper compile raced between parallel workers (`CS0016`). Fixed with an atomic compile-and-rename.
+2. Inside the AppContainer, Node fails with `EPERM lstat 'C:\'` (its JS realpath walks ancestors). Sandboxed Node now runs with `--preserve-symlinks --preserve-symlinks-main`, rather than ATLAS changing the ACL of the drive root.
+3. `npm test` reports "Access is denied." from `cmd.exe`. A bisection test was added (cmd.exe alone, then the npm shim).
+
+**Status.** Windows is **not** green. The status is maintained in [05-test-evidence.md](05-test-evidence.md).
+
+## Not done
+- **P2-1 (daemon memory):** not attempted.
+- **P2-2 (live preview browser):** not attempted.
+- **P3:** not attempted.
+- **Linux CI flake:** the crash-recovery integration test timed out twice on loaded Linux runners, and has not reproduced in 7 local runs. The test now reports the stuck step and mission state, and the cause stays open until a failing run shows it.

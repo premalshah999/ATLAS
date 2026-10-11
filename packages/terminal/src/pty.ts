@@ -3,7 +3,7 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { redact } from '@atlas/contracts';
-import { killTree, sanitizedEnv } from './index';
+import { sanitizedEnv, trackSandboxChild } from './index';
 import { wrapCommand, type SandboxSpec } from './sandbox';
 import { ensureHelper, windowsCommand } from './win/appcontainer';
 import { journalStart } from './journal';
@@ -67,6 +67,7 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
   let env = { ...sanitizedEnv({ TERM: 'xterm-256color', COLUMNS: String(cols), LINES: String(rows), PS1: 'atlas$ ' }) };
   let cmd: string, args: string[];
   let cleanup: (() => void) | undefined;
+  let statusFd: number | undefined;
   if (process.platform === 'win32') {
     // ConPTY hosted by the sandbox helper: inside the task's AppContainer when sandboxed, otherwise uncontained
     // (only reachable when the operator allowed unsandboxed execution).
@@ -90,9 +91,10 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
       ? { command: '/bin/sh', args: ['-c', 'cat | /usr/bin/script -q /dev/null /bin/sh -c "$1"', 'atlas-pty', start] }
       : { command: '/usr/bin/script', args: ['-qfec', start, '/dev/null'] };
     cmd = inner.command; args = inner.args;
-    if (o.sandbox) ({ command: cmd, args, env, cleanup } = wrapCommand(inner.command, inner.args, o.cwd, o.sandbox, env));
+    if (o.sandbox) ({ command: cmd, args, env, cleanup, statusFd } = wrapCommand(inner.command, inner.args, o.cwd, o.sandbox, env, { statusFd: true }));
   }
-  const child = spawn(cmd, args, { cwd: o.cwd, env, detached: process.platform !== 'win32', windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(cmd, args, { cwd: o.cwd, env, detached: process.platform !== 'win32', windowsHide: true, stdio: statusFd !== undefined ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'] });
+  const sandboxed = trackSandboxChild(child, statusFd);
   const max = o.maxTranscript ?? 512 * 1024;
   let transcript = '';
   const take = (b: Buffer) => { const t = redact(b.toString('utf8')); transcript = (transcript + t).slice(-max); o.onData(t); };
@@ -116,8 +118,9 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
     },
     close: async () => {
       if (exited || !child.pid) return;
-      killTree(child.pid, 'SIGHUP');
-      const t = setTimeout(() => { if (child.pid) killTree(child.pid, 'SIGKILL'); }, 1500);
+      await sandboxed.ready(2000);
+      sandboxed.kill(child.pid, 'SIGHUP');
+      const t = setTimeout(() => sandboxed.kill(child.pid, 'SIGKILL'), 1500);
       await done;
       clearTimeout(t);
     },

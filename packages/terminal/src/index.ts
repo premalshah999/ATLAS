@@ -1,6 +1,7 @@
 // Terminal executor (manual §20). Commands are argument arrays, never shell strings. Each run owns a
 // process group so cancellation and timeouts terminate the whole tree.
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import type { Readable } from 'node:stream';
 import { redact } from '@atlas/contracts';
 import { wrapCommand, type SandboxSpec } from './sandbox';
 import { windowsCommand } from './win/appcontainer';
@@ -67,6 +68,42 @@ export function killTree(pid: number, sig: NodeJS.Signals = 'SIGTERM'): void {
   try { process.kill(-pid, sig); } catch { try { process.kill(pid, sig); } catch { /* already gone */ } }
 }
 
+/**
+ * The sandboxed child that bwrap reports on its status fd. It runs in its own session, so it is not in bwrap's
+ * process group: when bwrap is killed during setup, before the child arms --die-with-parent, the child survives
+ * and holds our pipes. Knowing its pid lets every kill reach it too.
+ */
+export function trackSandboxChild(child: ChildProcess, statusFd?: number) {
+  let childPid: number | null = null;
+  let done = statusFd === undefined;
+  const waiters: (() => void)[] = [];
+  const fire = () => { for (const w of waiters.splice(0)) w(); };
+  const status = statusFd !== undefined ? (child.stdio[statusFd] as Readable | null) : null;
+  if (status) {
+    let buf = '';
+    status.on('data', (b: Buffer) => {
+      buf += b.toString('utf8');
+      const m = /"child-pid":\s*(\d+)/.exec(buf);
+      if (m && childPid === null) { childPid = Number(m[1]); fire(); }
+    });
+    status.on('error', () => {});
+    status.on('close', () => { done = true; fire(); });
+  } else done = true;
+  return {
+    pid: () => childPid,
+    /** Resolves once the child pid is known, or can no longer become known, or after `ms`. */
+    ready(ms: number): Promise<void> {
+      if (childPid !== null || done) return Promise.resolve();
+      return new Promise((r) => { const t = setTimeout(r, ms); waiters.push(() => { clearTimeout(t); r(); }); });
+    },
+    /** Signal the leader's group and the sandboxed child's group. */
+    kill(leader: number | undefined, sig: NodeJS.Signals) {
+      if (leader) killTree(leader, sig);
+      if (childPid) killTree(childPid, sig);
+    },
+  };
+}
+
 export function isAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
@@ -88,8 +125,9 @@ export function run(o: RunOptions): Promise<RunResult> {
 
     let cmd = o.command, argv = o.args, env = o.env ?? sanitizedEnv();
     let cleanup: (() => void) | undefined;
+    let statusFd: number | undefined;
     if (o.sandbox) {
-      try { ({ command: cmd, args: argv, env, cleanup } = wrapCommand(o.command, o.args, o.cwd, o.sandbox, env)); }
+      try { ({ command: cmd, args: argv, env, cleanup, statusFd } = wrapCommand(o.command, o.args, o.cwd, o.sandbox, env, { statusFd: true })); }
       catch (e) {
         resolve({ exitCode: null, signal: null, durationMs: 0, output: '', truncated: false, timedOut: false, cancelled: false, pid: null, spawnError: (e as Error).message });
         return;
@@ -109,9 +147,10 @@ export function run(o: RunOptions): Promise<RunResult> {
       shell: false,
       windowsHide: true,
       windowsVerbatimArguments: plan.verbatim,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: statusFd !== undefined ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
     });
     const pid = child.pid ?? null;
+    const inner = trackSandboxChild(child, statusFd);
     const unjournal = journalStart(pid, 'command', [o.command, ...o.args].join(' '));
     if (pid) o.onStart?.(pid);
 
@@ -126,8 +165,11 @@ export function run(o: RunOptions): Promise<RunResult> {
 
     const stop = () => {
       if (!pid) return;
-      killTree(pid, 'SIGTERM');
-      setTimeout(() => { if (isAlive(pid)) killTree(pid, 'SIGKILL'); }, 1500).unref();
+      // Wait (briefly) for the sandboxed child's pid, so a kill during sandbox setup cannot miss it.
+      void inner.ready(2000).then(() => {
+        inner.kill(pid, 'SIGTERM');
+        setTimeout(() => inner.kill(pid, 'SIGKILL'), 1500).unref();
+      });
     };
     const timer = setTimeout(() => { timedOut = true; stop(); }, o.timeoutMs);
     const onAbort = () => { cancelled = true; stop(); };
@@ -141,11 +183,21 @@ export function run(o: RunOptions): Promise<RunResult> {
       o.signal?.removeEventListener('abort', onAbort);
       // Reap any descendants that outlived the leader (e.g. backgrounded children).
       if (pid && process.platform !== 'win32') { try { process.kill(-pid, 'SIGKILL'); } catch { /* group already empty */ } }
+      const c = inner.pid();
+      if (c) { try { process.kill(-c, 'SIGKILL'); } catch { /* group already empty */ } }
       cleanup?.();
       resolve({ exitCode, signal: sig, durationMs: Date.now() - started, output, truncated, timedOut, cancelled, pid, spawnError });
     };
     child.on('error', (e) => finish(null, null, e.message));
     child.on('close', (code, sig) => finish(code, sig, null));
+    // The leader exited but something still holds our pipes (an escaped descendant): do not wait forever.
+    child.on('exit', (code, sig) => {
+      setTimeout(() => {
+        if (settled) return;
+        for (const st of child.stdio) (st as Readable | null)?.destroy();
+        finish(code, sig, null);
+      }, 3000).unref();
+    });
   });
 }
 
@@ -161,8 +213,9 @@ export interface ProcessHandle {
 export function startProcess(o: { command: string; args: string[]; cwd: string; env?: Record<string, string>; sandbox?: SandboxSpec; maxOutput?: number; onOutput?: (text: string) => void }): ProcessHandle {
   let cmd = o.command, argv = o.args, env = o.env ?? sanitizedEnv();
   let cleanup: (() => void) | undefined;
+  let statusFd: number | undefined;
   if (o.sandbox) {
-    try { ({ command: cmd, args: argv, env, cleanup } = wrapCommand(o.command, o.args, o.cwd, o.sandbox, env)); }
+    try { ({ command: cmd, args: argv, env, cleanup, statusFd } = wrapCommand(o.command, o.args, o.cwd, o.sandbox, env, { statusFd: true })); }
     catch (e) { return { pid: null, spawnError: (e as Error).message, output: () => '', exited: () => ({ code: null }), stop: async () => {} }; }
   }
   const max = o.maxOutput ?? 256 * 1024;
@@ -172,7 +225,8 @@ export function startProcess(o: { command: string; args: string[]; cwd: string; 
   let plan: ReturnType<typeof spawnPlan>;
   try { plan = spawnPlan(cmd, argv, env); }
   catch (e) { cleanup?.(); return { pid: null, spawnError: (e as Error).message, output: () => '', exited: () => ({ code: null }), stop: async () => {} }; }
-  const child = spawn(plan.file, plan.args, { cwd: o.cwd, env, detached: process.platform !== 'win32', shell: false, windowsHide: true, windowsVerbatimArguments: plan.verbatim, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(plan.file, plan.args, { cwd: o.cwd, env, detached: process.platform !== 'win32', shell: false, windowsHide: true, windowsVerbatimArguments: plan.verbatim, stdio: statusFd !== undefined ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'] });
+  const inner = trackSandboxChild(child, statusFd);
   const take = (b: Buffer) => { const t = redact(b.toString('utf8')); o.onOutput?.(t); buf = (buf + t).slice(-max); };
   child.stdout!.on('data', take);
   child.stderr!.on('data', take);
@@ -183,9 +237,12 @@ export function startProcess(o: { command: string; args: string[]; cwd: string; 
     unjournal();
     // Like run(): children a service left behind die with it (review finding 4).
     if (child.pid && process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* group already empty */ } }
+    const c = inner.pid();
+    if (c && process.platform !== 'win32') { try { process.kill(-c, 'SIGKILL'); } catch { /* group already empty */ } }
     cleanup?.();
     r();
   }));
+  child.on('exit', () => setTimeout(() => { if (!exit) for (const st of child.stdio) (st as Readable | null)?.destroy(); }, 3000).unref());
   return {
     pid: child.pid ?? null,
     get spawnError() { return spawnError; },
@@ -193,8 +250,9 @@ export function startProcess(o: { command: string; args: string[]; cwd: string; 
     exited: () => exit,
     stop: async () => {
       if (exit || !child.pid) return;
-      killTree(child.pid, 'SIGTERM');
-      const t = setTimeout(() => { if (child.pid && isAlive(child.pid)) killTree(child.pid, 'SIGKILL'); }, 2000);
+      await inner.ready(2000);
+      inner.kill(child.pid, 'SIGTERM');
+      const t = setTimeout(() => inner.kill(child.pid, 'SIGKILL'), 2000);
       await done;
       clearTimeout(t);
     },

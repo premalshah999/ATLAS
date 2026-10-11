@@ -26,6 +26,15 @@ export interface SandboxSpec {
 export interface SandboxInfo { kind: SandboxKind; detail: string; path: string | null }
 
 let cached: SandboxInfo | null = null;
+let bwrapStatusFd = false;
+
+/**
+ * File descriptor on which the wrapper reports the sandboxed child's host pid as JSON ({"child-pid": N}).
+ * bwrap's child runs in its own session, so if bwrap itself is killed before the child has armed
+ * --die-with-parent (a window during namespace setup), killing bwrap's process group misses the child, which keeps
+ * our pipes open. Callers that know the child's pid kill its group too.
+ */
+export const SANDBOX_STATUS_FD = 3;
 
 function which(bin: string): string | null {
   for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
@@ -44,6 +53,10 @@ export function detectSandbox(force = false): SandboxInfo {
     if (!bwrap) return (cached = { kind: 'none', detail: 'bubblewrap (bwrap) is not installed. Install it: apt install bubblewrap / dnf install bubblewrap.', path: null });
     try {
       execFileSync(bwrap, ['--ro-bind', '/', '/', '--unshare-all', '--die-with-parent', 'true'], { stdio: 'ignore', timeout: 5000 });
+      // --json-status-fd (bubblewrap ≥ 0.5) reports the sandboxed child's host pid; see wrapCommand.
+      let statusFd = false;
+      try { execFileSync(bwrap, ['--ro-bind', '/', '/', '--json-status-fd', '1', 'true'], { stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }); statusFd = true; } catch { /* older bubblewrap */ }
+      bwrapStatusFd = statusFd;
       return (cached = { kind: 'bwrap', detail: `bubblewrap at ${bwrap}`, path: bwrap });
     } catch (e) {
       return (cached = { kind: 'none', detail: `bubblewrap is installed but cannot create namespaces (${(e as Error).message.slice(0, 120)}). Enable unprivileged user namespaces.`, path: null });
@@ -155,7 +168,7 @@ function sweepScratch() {
 }
 
 /** Wrap a command so it runs inside the sandbox. Throws if no sandbox is available. */
-export function wrapCommand(command: string, args: string[], cwd: string, spec: SandboxSpec, env: Record<string, string>): { command: string; args: string[]; env: Record<string, string>; cleanup?: () => void } {
+export function wrapCommand(command: string, args: string[], cwd: string, spec: SandboxSpec, env: Record<string, string>, opts: { statusFd?: boolean } = {}): { command: string; args: string[]; env: Record<string, string>; cleanup?: () => void; statusFd?: number } {
   const info = detectSandbox();
   const root = real(spec.root);
   const net = spec.network ? networkEnv() : { env: {}, files: [] };
@@ -169,7 +182,7 @@ export function wrapCommand(command: string, args: string[], cwd: string, spec: 
     if (l.length) inner = { command: which('prlimit')!, args: [...l, '--', command, ...args] };
   }
   if (info.kind === 'bwrap') {
-    const a: string[] = ['--unshare-all', '--die-with-parent', '--new-session'];
+    const a: string[] = ['--unshare-all', '--die-with-parent', '--new-session', ...(bwrapStatusFd && opts.statusFd ? ['--json-status-fd', String(SANDBOX_STATUS_FD)] : [])];
     if (spec.network) a.push('--share-net');
     for (const p of SYSTEM_RO) a.push('--ro-bind-try', p, p);
     for (const p of toolchainPaths(env)) a.push('--ro-bind-try', p, p);
@@ -178,7 +191,7 @@ export function wrapCommand(command: string, args: string[], cwd: string, spec: 
     a.push(spec.writable ? '--bind' : '--ro-bind', root, root);
     for (const p of spec.readWrite ?? []) a.push('--bind-try', real(p), real(p));
     a.push('--chdir', real(cwd), '--', inner.command, ...inner.args);
-    return { command: info.path!, args: a, env: envOut };
+    return { command: info.path!, args: a, env: envOut, ...(bwrapStatusFd && opts.statusFd ? { statusFd: SANDBOX_STATUS_FD } : {}) };
   }
   if (info.kind === 'sandbox-exec') {
     sweepScratch();
