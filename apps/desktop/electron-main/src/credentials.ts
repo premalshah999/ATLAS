@@ -3,7 +3,10 @@
 import { app, safeStorage } from 'electron';
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import path from 'node:path';
-import { PROVIDER_ENV } from '@atlas/contracts';
+import { PROVIDER_ENV, SERVICE_ENV } from '@atlas/contracts';
+
+/** Model provider keys and service tokens (GitHub, ADR 0015), each with the variable that can supply it instead. */
+const ALL_ENV: Record<string, string> = { ...PROVIDER_ENV, ...SERVICE_ENV };
 
 const file = () => path.join(app.getPath('userData'), 'credentials.json');
 
@@ -22,7 +25,7 @@ export const credentials = {
   /** Decrypted keys from the store, plus any provider variables exported in the launching shell. */
   keys(): Record<string, string> {
     const out: Record<string, string> = {};
-    for (const [provider, env] of Object.entries(PROVIDER_ENV)) if (process.env[env]) out[provider] = process.env[env]!;
+    for (const [provider, env] of Object.entries(ALL_ENV)) if (process.env[env]) out[provider] = process.env[env]!;
     if (!safeStorage.isEncryptionAvailable()) return out;
     for (const [provider, enc] of Object.entries(load())) {
       try { out[provider] = safeStorage.decryptString(Buffer.from(enc, 'base64')); } catch { /* unreadable entry: ignored */ }
@@ -31,7 +34,7 @@ export const credentials = {
   },
   list() {
     const stored = load();
-    return Object.entries(PROVIDER_ENV).map(([provider, env]) => ({ provider, stored: provider in stored, fromEnvironment: !!process.env[env], env }));
+    return Object.entries(ALL_ENV).map(([provider, env]) => ({ provider, stored: provider in stored, fromEnvironment: !!process.env[env], env }));
   },
   set(provider: string, key: string) {
     if (!safeStorage.isEncryptionAvailable()) throw Object.assign(new Error('No OS credential store is available. Export the provider variable before launching ATLAS instead.'), { kind: 'secrets' });

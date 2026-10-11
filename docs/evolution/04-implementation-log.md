@@ -332,3 +332,16 @@ The auditor also confirmed several fixes against new scenarios (could not break 
 - **Tests:**
   - 3 unit tests: crash mid-command, fresh fallback, path-like ids refused;
   - 2 integration tests: a full mission across a daemon restart, verified, plus the case where the worktree is gone.
+
+## GitHub PR/CI feedback loop — ADR 0015
+- **What it does.** After an accepted, verified mission:
+  - *Open pull request* pushes the branch, never force-pushing, and opens or reuses a pull request;
+  - CI checks are read on demand and polled while unfinished;
+  - *Fix CI failures* creates a follow-up mission. It starts from the pull request head as it is on GitHub now, carries the CI output as quoted data, needs plan approval, and fast-forwards the same pull request when published.
+- **Token.** The GitHub token is stored like model keys and passed to the daemon only. Git receives it through environment config, never arguments, and it is redacted everywhere.
+- **Found while testing:** the e2e launcher stripped `ATLAS_GITHUB_TOKEN` after merging the test's own environment, so the app reported "no token". Fixed. The daemon now logs whether a GitHub token is configured; it logs presence only, never the value.
+- **Tests:**
+  - 7 unit tests;
+  - 4 integration tests: the full loop, refusing to overwrite a moved branch, a follow-up from someone else's commit, and the refusals;
+  - 1 Electron e2e.
+- **Limits:** github.com only. API calls ignore `HTTPS_PROXY`.

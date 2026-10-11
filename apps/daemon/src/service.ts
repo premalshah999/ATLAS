@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { AtlasError, InternalRequests, parseRequest, PROVIDER_ENV, registerSecret, type AtlasEvent, type Method } from '@atlas/contracts';
 import { ArtifactStore, openDb, Repo, schemaVersion, type Db } from '@atlas/storage';
-import { Orchestrator, replay, ROLES, suiteHash, type Skill } from '@atlas/orchestrator';
+import { GitHubForge, Orchestrator, replay, ROLES, suiteHash, type Skill } from '@atlas/orchestrator';
 import { ROLE_GRANTS } from '@atlas/policy';
 import { FakeRuntime, sampleDesktopScript, samplePlanner, sampleSlugifyScript } from '@atlas/runtime-fake';
 import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
@@ -16,7 +16,13 @@ import { loadConfig } from '@atlas/workspace';
 import { createLogger, type Logger } from './log';
 import { lockDataDir } from './lock';
 
-export interface ServiceOptions { dataDir: string; skillsDir?: string; version: string; apiKeys?: Record<string, string>; model?: string; deploySecrets?: Record<string, Record<string, string>> }
+export interface ServiceOptions {
+  dataDir: string; skillsDir?: string; version: string; apiKeys?: Record<string, string>; model?: string; deploySecrets?: Record<string, Record<string, string>>;
+  /** GitHub token for publishing pull requests and reading CI (ADR 0015). */
+  githubToken?: string;
+  /** GitHub API base, for GitHub-compatible test servers. Default https://api.github.com. */
+  githubApi?: string;
+}
 
 export class DaemonService {
   readonly repo: Repo;
@@ -28,6 +34,7 @@ export class DaemonService {
   private readonly fake = new FakeRuntime([sampleSlugifyScript, sampleDesktopScript], 350, samplePlanner);
   private keys: Record<string, string>;
   private deploySecrets: Record<string, Record<string, string>>;
+  private githubToken: string | null;
   readonly deploy: DeployManager;
   readonly desktop: DesktopManager;
 
@@ -43,6 +50,8 @@ export class DaemonService {
     for (const k of Object.values(this.keys)) registerSecret(k);
     this.pi = this.makePi();
     this.deploySecrets = o.deploySecrets ?? {};
+    this.githubToken = o.githubToken || null;
+    if (this.githubToken) registerSecret(this.githubToken);
     for (const t of Object.values(this.deploySecrets)) for (const v of Object.values(t)) registerSecret(v);
     this.deploy = new DeployManager({
       repo: this.repo, dataDir: o.dataDir, secrets: (target) => ({ ...(this.deploySecrets[target] ?? {}) }),
@@ -55,6 +64,7 @@ export class DaemonService {
       operatorInput: (i, a, ok, message) => this.record(i.missionId, i.taskId, 'desktop.action', 'operator', { sessionId: i.id, action: a.action, args: a.action === 'type' ? { chars: a.text.length } : a, ok, message, controller: i.controller, by: 'operator' }),
     });
     this.orch = new Orchestrator({ repo: this.repo, artifacts: this.artifacts, runtimes: { fake: this.fake, pi: this.pi }, worktreeDir: path.join(o.dataDir, 'worktrees'), factsDir: path.join(o.dataDir, 'facts'), skillDirs: { bundled: o.skillsDir, operator: path.join(o.dataDir, 'skills') },
+      forge: () => (this.githubToken ? new GitHubForge({ token: this.githubToken, apiBase: o.githubApi }) : null),
       stages: [applicationStage(), stagingStage(this.deploy)],
       toolFactories: {
         browser_action: (c) => createBrowserTool({ worktree: c.worktree, sandbox: c.sandbox, putScreenshot: (n, png) => c.putArtifact({ kind: 'screenshot', name: n, bytes: png }).id, emit: (p, ids) => c.emit('browser.step', p, ids) }),
@@ -87,6 +97,7 @@ export class DaemonService {
   private terminalSink: (sessionId: string, data?: string, exit?: number | null, seq?: number) => void = () => {};
   onTerminal(fn: (sessionId: string, data?: string, exit?: number | null, seq?: number) => void) { this.terminalSink = fn; }
   private retentionTimer: NodeJS.Timeout | null = null;
+  private ciTimer: NodeJS.Timeout | null = null;
 
   private unlock: () => void = () => {};
 
@@ -109,7 +120,10 @@ export class DaemonService {
     void purge();
     this.retentionTimer = setInterval(() => void purge(), 6 * 3600_000);
     this.retentionTimer.unref();
-    this.log.info('daemon started', { schema: schemaVersion(this.db), ...recovered });
+    // CI of published pull requests, until it finishes (for a day after publishing). Network only with a token.
+    this.ciTimer = setInterval(() => void this.orch.pollCi().catch(() => {}), 60_000);
+    this.ciTimer.unref();
+    this.log.info('daemon started', { schema: schemaVersion(this.db), github: !!this.githubToken, ...recovered });
     return recovered;
   }
 
@@ -152,6 +166,7 @@ export class DaemonService {
 
   async stop() {
     if (this.retentionTimer) clearInterval(this.retentionTimer);
+    if (this.ciTimer) clearInterval(this.ciTimer);
     await this.desktop.shutdown();
     await this.deploy.shutdown();
     await this.orch.shutdown();
@@ -219,6 +234,10 @@ export class DaemonService {
       case 'mission.cancel': return this.orch.cancelMission(p.missionId);
       case 'mission.decide': return this.orch.decide(p.missionId, p.decision);
       case 'mission.restore': return this.orch.restore(p.missionId);
+      case 'mission.forge': return this.orch.forgeView(p.missionId);
+      case 'mission.publish': return this.orch.publish(p.missionId, p.base);
+      case 'mission.ciRefresh': return this.orch.ciRefresh(p.missionId);
+      case 'mission.fixCi': return this.orch.fixCi(p.missionId);
       case 'mission.approveDefinition': return this.orch.approveDefinitionChange(p.missionId, p.hash);
       case 'task.cancel': return this.orch.cancelTask(p.taskId);
       case 'roles.list': return Object.values(ROLES).map((r) => ({ id: r.id, version: r.version, title: r.title, tools: r.tools, writes: r.writes, modelPreference: r.modelPreference, budget: r.budget, capabilities: ROLE_GRANTS[r.id], instructions: r.instructions }));
@@ -270,13 +289,16 @@ export class DaemonService {
     if (method === 'credentials.apply') {
       this.keys = {};
       for (const [provider, key] of Object.entries(params.keys as Record<string, string>)) if (PROVIDER_ENV[provider]) { this.keys[provider] = key; registerSecret(key); }
+      // Service tokens are kept apart from model keys: the GitHub token never reaches a runtime.
+      this.githubToken = (params.keys as Record<string, string>).github || null;
+      if (this.githubToken) registerSecret(this.githubToken);
       this.pi = this.makePi();
       this.orch.setRuntime('pi', this.pi);
       if (params.deploySecrets) {
         this.deploySecrets = params.deploySecrets;
         for (const t of Object.values(this.deploySecrets)) for (const v of Object.values(t)) registerSecret(v);
       }
-      return { providers: Object.keys(this.keys), deployTargets: Object.keys(this.deploySecrets) };
+      return { providers: Object.keys(this.keys), deployTargets: Object.keys(this.deploySecrets), github: !!this.githubToken };
     }
     throw new AtlasError('invalid_request', 'unknown internal method');
   }

@@ -6,7 +6,7 @@ import { ICheck, ICheckCircle, IClock, IFileDiff, IShield, IStopCircle, ITermina
 import { Menu, MenuItem } from '../ui/primitives';
 import { BrowserPanel, BudgetMeter, DeployPanel, DesktopPanel, Findings, TaskGraph, TerminalPanel } from './panels';
 import { go, refreshLists } from './store';
-import { call } from './api';
+import { call, type ForgeView } from './api';
 import { useMission } from './useMission';
 import { describeEvent, fmtMs, markOf, missionStatus, resultWord, roleMark, roleName, stalledTasks, stateWord, time, type Row } from './format';
 import { toast } from './toast';
@@ -79,6 +79,9 @@ export function MissionView({ missionId }: { missionId: string }) {
           <span>{m.outcome}</span>
         </div>
       )}
+
+      {m.followUp && <div className="lv-callout" data-testid="follow-up" style={{ margin: '0 20px 8px' }}><span>Fixes CI on pull request #{m.followUp.pullRequest}. Started from its head {m.followUp.headSha.slice(0, 7)}; publishing pushes to {m.followUp.branch}.</span></div>}
+      {m.decision === 'accepted' && !m.archived && <PullRequestBar missionId={missionId} events={events} />}
 
       {m.state === 'awaiting_approval' && snap.plan && <PlanReview snap={snap} busy={busy} onApprove={() => void act('Could not start the mission', () => call('mission.approvePlan', { missionId }))} />}
 
@@ -403,6 +406,49 @@ function Evidence({ checks, gate, canApproveDefinition, onApproveDefinition }: {
             <pre className="lv-proc-body" style={{ maxHeight: 360 }}>{log.text}</pre>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Pull request and CI for an accepted mission (ADR 0015). Every step is a click: publish pushes and opens the pull
+ * request, refresh reads CI, and a failure can become a follow-up mission that goes through plan approval.
+ */
+function PullRequestBar({ missionId, events }: { missionId: string; events: AtlasEvent[] }) {
+  const [view, setView] = useState<ForgeView | null>(null);
+  const [busy, setBusy] = useState(false);
+  const forgeEvents = events.filter((e) => e.type === 'forge.published' || e.type === 'forge.ci').length;
+  useEffect(() => { void call('mission.forge', { missionId }).then(setView).catch(() => {}); }, [missionId, forgeEvents]);
+  const run = async (label: string, fn: () => Promise<void>) => {
+    setBusy(true);
+    try { await fn(); } catch (e) { toast({ tone: 'danger', title: label, body: (e as Error).message }); } finally { setBusy(false); }
+  };
+  if (!view) return null;
+  const p = view.published;
+  const ci = view.ci && p && view.ci.headSha === p.headSha ? view.ci : null;
+  const failing = ci?.checks.filter((c) => c.conclusion && !['success', 'neutral', 'skipped'].includes(c.conclusion)) ?? [];
+  const tone = !ci ? 'outline' : ci.state === 'success' ? 'success' : ci.state === 'failure' ? 'danger' : 'outline';
+  const word = !ci ? 'CI not read yet' : ci.state === 'success' ? 'CI passed' : ci.state === 'failure' ? `CI failed: ${failing.map((c) => c.name).join(', ')}` : ci.state === 'pending' ? 'CI running' : 'No CI checks reported';
+  return (
+    <div className="lv-callout" data-testid="pull-request" data-ci={ci?.state ?? ''} style={{ margin: '0 20px 8px', alignItems: 'center' }}>
+      <div style={{ flex: 1 }}>
+        {p
+          ? <span>Pull request <a href={p.url} target="_blank" rel="noreferrer" data-testid="pr-link">#{p.number}</a> · {p.branch} at {p.headSha.slice(0, 7)} · <span data-testid="ci-state"><Badge tone={tone as any}>{word}</Badge></span></span>
+          : <span className="at-muted">{view.blocker ?? `Push this change to ${view.remote} and open a pull request. ATLAS never force-pushes.`}</span>}
+      </div>
+      <div className="at-row" style={{ gap: 6 }}>
+        {!p && <Button size="sm" variant="primary" disabled={busy || !!view.blocker} data-testid="publish" onClick={() => {
+          if (!window.confirm(`Push ${view.followUp?.branch ?? 'the accepted branch'} to ${view.remote} and open a pull request?`)) return;
+          void run('Publish failed', async () => { setView(await call('mission.publish', { missionId })); toast({ tone: 'info', title: 'Pull request ready' }); });
+        }}>Open pull request</Button>}
+        {p && <Button size="sm" variant="ghost" disabled={busy} data-testid="ci-refresh" onClick={() => void run('Could not read CI', async () => setView(await call('mission.ciRefresh', { missionId })))}>Refresh CI</Button>}
+        {view.canFixCi && <Button size="sm" disabled={busy} data-testid="fix-ci" onClick={() => void run('Could not create the follow-up', async () => {
+          const f = await call('mission.fixCi', { missionId });
+          await call('mission.plan', { missionId: f.id });
+          await refreshLists();
+          go({ screen: 'mission', missionId: f.id });
+        })}>Fix CI failures</Button>}
       </div>
     </div>
   );

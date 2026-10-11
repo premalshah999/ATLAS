@@ -12,6 +12,8 @@ Scope: the changes made during this evolution, and the trust boundaries they tou
 | Renderer → daemon | Frozen 6-key bridge; zod-validated IPC; sender check | `security.spec.ts` (e2e) |
 | Evidence at rest → another installation | SHA-256 per artifact, trailer hash over the export; artifacts that fail their checksum are refused on import. The final audit reproduced that unkeyed hashes alone can be recomputed by a forger. **Since then, exports are signed** with a per-installation Ed25519 key (trailer signature over the hash of every record). An import shows the signer: this installation, a key the operator trusts, or an untrusted key. A changed file with the old signature is refused | `archive.test.ts` › signed exports, `faults.test.ts`, e2e provenance badge |
 | Daemon restart → leftover processes | Process journal with OS identity; reaper runs only when the identity matches; single daemon per data directory | `orphans.test.ts`, `reap.test.ts` |
+| Daemon → GitHub (ADR 0015) | Operator actions only: publishing requires an accepted, verified mission and a confirmation. Push is a plain refspec (never forced). The token goes to the daemon only, never to a runtime; git gets it through `GIT_CONFIG_*` environment variables, with credential helpers off and hooks off. CI output enters a follow-up mission as quoted data, and that mission needs plan approval | `forge.test.ts` (unit + integration), `github.spec.ts` |
+| Saved agent conversations (ADR 0014) | Pi sessions persist under the ATLAS data directory only between an attempt's start and end, or until a lost attempt is resumed or recovery decides not to resume it. Attempt ids are validated before use as paths | `runtime-pi/test/resume.test.ts`, `resume.test.ts` |
 | Mission cleanup → user's data | Preserve before remove; retain what cannot be preserved; never prune the user's worktrees | `workspace.test.ts`, `mission.test.ts` |
 
 ## Findings fixed in this evolution (security-relevant)
@@ -39,6 +41,8 @@ Scope: the changes made during this evolution, and the trust boundaries they tou
 | Export key distribution is manual: the operator copies a 32-hex key id between installations; no revocation | Low | No PKI in a local-first app | A re-signed forgery is always shown as "untrusted key", never as the original signer |
 | Ignored files (e.g. `.env`) are not in preserve snapshots | Low | Snapshotting ignored files would capture `node_modules` and secrets | Documented |
 | Redaction runs per output chunk; a secret split across chunks can pass | Low | Pre-existing | Env allowlist keeps credentials out of the sandbox in the first place |
+| The daemon's GitHub API calls ignore `HTTPS_PROXY` (Node `fetch`) | Low (functional) | Not implemented | Publishing fails with a network error; nothing is sent elsewhere |
+| A user's global git config (for example an `insteadOf` to SSH) applies to ATLAS's push | Low | It is the user's own configuration | Push only on an operator click; never forced |
 | A brand-new weak test on new code cannot be told apart from a good one | Inherent | The eval keeps a deliberate `weak-tests` case: false passes 1/7 | Review stage; shown as a limitation in the eval report |
 
 ## Dependency audit

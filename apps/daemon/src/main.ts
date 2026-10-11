@@ -1,5 +1,5 @@
 // Daemon entry. Runs as an Electron utility process (parentPort) or a Node child process (process.send).
-import { PROVIDER_ENV, type DaemonInbound, type DaemonOutbound } from '@atlas/contracts';
+import { PROVIDER_ENV, SERVICE_ENV, type DaemonInbound, type DaemonOutbound } from '@atlas/contracts';
 import { DaemonService } from './service';
 
 type Port = { send(m: DaemonOutbound): void; on(fn: (m: DaemonInbound) => void): void };
@@ -19,9 +19,11 @@ async function main() {
     const v = process.env[env];
     if (v) { apiKeys[provider] = v; delete process.env[env]; }
   }
+  const githubToken = process.env[SERVICE_ENV.github] || undefined;
+  delete process.env[SERVICE_ENV.github];
   let deploySecrets: Record<string, Record<string, string>> = {};
   if (process.env.ATLAS_DEPLOY_SECRETS) { try { deploySecrets = JSON.parse(process.env.ATLAS_DEPLOY_SECRETS); } catch { /* ignored */ } delete process.env.ATLAS_DEPLOY_SECRETS; }
-  const svc = new DaemonService({ dataDir, skillsDir: process.env.ATLAS_SKILLS_DIR, version: process.env.ATLAS_VERSION ?? '0.0.0', apiKeys, model: process.env.ATLAS_MODEL || undefined, deploySecrets });
+  const svc = new DaemonService({ dataDir, skillsDir: process.env.ATLAS_SKILLS_DIR, version: process.env.ATLAS_VERSION ?? '0.0.0', apiKeys, model: process.env.ATLAS_MODEL || undefined, deploySecrets, githubToken, githubApi: process.env.ATLAS_GITHUB_API || undefined });
   const io = port();
   svc.onEvent((event) => io.send({ kind: 'event', event }));
   svc.onTerminal((sessionId, data, exit, seq) => io.send({ kind: 'terminal', sessionId, ...(data !== undefined ? { data, seq } : {}), ...(exit !== undefined ? { exit } : {}) }));

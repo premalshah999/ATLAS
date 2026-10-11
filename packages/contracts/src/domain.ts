@@ -59,6 +59,11 @@ export interface Mission {
   targetEnvironment: string | null;
   /** Release-gate verdict once verification ran: only `verified` means a required check actually passed. */
   verdict: 'verified' | 'unverified' | 'failed' | null;
+  /**
+   * Set when the mission fixes CI on an earlier mission's pull request (ADR 0015): it starts from the pull request's
+   * head instead of the checkout's HEAD, and its result is pushed to the same branch.
+   */
+  followUp: { parentMissionId: string; branch: string; headSha: string; pullRequest: number } | null;
   createdAt: string;
   updatedAt: string;
 }

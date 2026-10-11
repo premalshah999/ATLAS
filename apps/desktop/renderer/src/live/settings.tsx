@@ -7,7 +7,8 @@ import { useLive } from './store';
 import { roleName } from './format';
 import { toast } from './toast';
 
-const NAMES: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', google: 'Google Gemini' };
+const NAMES: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', google: 'Google Gemini', github: 'GitHub' };
+type Provider = 'anthropic' | 'openai' | 'google' | 'github';
 
 export function Settings() {
   const [health, setHealth] = useState<RuntimeHealth[] | null>(null);
@@ -27,11 +28,11 @@ export function Settings() {
     catch (e) { toast({ tone: 'danger', title: 'Setting not saved', body: (e as Error).message }); }
   };
   useEffect(load, []);
-  const save = async (provider: 'anthropic' | 'openai' | 'google') => {
+  const save = async (provider: Provider) => {
     try { setCreds(await call('credentials.set', { provider, key: draft[provider] ?? '' })); setDraft((d) => ({ ...d, [provider]: '' })); toast({ tone: 'info', title: `${NAMES[provider]} key saved`, body: 'Encrypted with the OS credential store. It is never shown again or sent to the interface.' }); load(); }
     catch (e) { toast({ tone: 'danger', title: 'Key not saved', body: (e as Error).message }); }
   };
-  const remove = async (provider: 'anthropic' | 'openai' | 'google') => {
+  const remove = async (provider: Provider) => {
     try { setCreds(await call('credentials.remove', { provider })); toast({ tone: 'info', title: `${NAMES[provider]} key removed` }); load(); }
     catch (e) { toast({ tone: 'danger', title: 'Key not removed', body: (e as Error).message }); }
   };
@@ -86,12 +87,25 @@ export function Settings() {
           <section className="lv-section">
             <div className="at-label">Model provider keys</div>
             <p className="at-muted lv-small">Keys are encrypted with the operating system credential store and passed only to the agent runtime process. They are redacted from every log, event and artifact.{creds && !creds.available ? ' No credential store is available on this system: export the variable before launching ATLAS instead.' : ''}</p>
-            {creds?.providers.map((p) => (
+            {creds?.providers.filter((p) => p.provider !== 'github').map((p) => (
               <Field key={p.provider} label={NAMES[p.provider]} aside={p.stored ? <Badge tone="success">saved</Badge> : p.fromEnvironment ? <Badge tone="outline">from {p.env}</Badge> : <Badge tone="outline">not set</Badge>}>
                 <div className="at-row" style={{ gap: 8 }}>
-                  <Input type="password" autoComplete="off" spellCheck={false} placeholder={p.stored ? '•••••••• saved' : `Paste a ${NAMES[p.provider]} API key`} value={draft[p.provider] ?? ''} onChange={(e) => setDraft((d) => ({ ...d, [p.provider]: e.target.value }))} style={{ flex: 1 }} disabled={!creds.available} />
+                  <Input type="password" autoComplete="off" spellCheck={false} placeholder={p.stored ? '•••••••• saved' : p.provider === 'github' ? 'Paste a GitHub token' : `Paste a ${NAMES[p.provider]} API key`} value={draft[p.provider] ?? ''} onChange={(e) => setDraft((d) => ({ ...d, [p.provider]: e.target.value }))} style={{ flex: 1 }} disabled={!creds.available} />
                   <Button disabled={!creds.available || (draft[p.provider] ?? '').trim().length < 8} onClick={() => void save(p.provider as any)}>Save</Button>
                   {p.stored && <Button variant="ghost" onClick={() => void remove(p.provider as any)}>Remove</Button>}
+                </div>
+              </Field>
+            ))}
+          </section>
+          <section className="lv-section" data-testid="github-settings">
+            <div className="at-label">GitHub</div>
+            <p className="at-muted lv-small">Lets you open a pull request for an accepted, verified mission and read its CI results. ATLAS pushes only when you click Publish, never force-pushes, and never gives this token to an agent. A fine-grained token needs Contents and Pull requests (read and write), and Checks and Actions (read) on the repositories you publish to.</p>
+            {creds?.providers.filter((p) => p.provider === 'github').map((p) => (
+              <Field key={p.provider} label="Token" aside={p.stored ? <Badge tone="success">saved</Badge> : p.fromEnvironment ? <Badge tone="outline">from {p.env}</Badge> : <Badge tone="outline">not set</Badge>}>
+                <div className="at-row" style={{ gap: 8 }}>
+                  <Input data-testid="github-token" type="password" autoComplete="off" spellCheck={false} placeholder={p.stored ? '•••••••• saved' : 'Paste a GitHub token'} value={draft.github ?? ''} onChange={(e) => setDraft((d) => ({ ...d, github: e.target.value }))} style={{ flex: 1 }} disabled={!creds.available} />
+                  <Button data-testid="github-token-save" disabled={!creds.available || (draft.github ?? '').trim().length < 8} onClick={() => void save('github')}>Save</Button>
+                  {p.stored && <Button variant="ghost" onClick={() => void remove('github')}>Remove</Button>}
                 </div>
               </Field>
             ))}
@@ -101,7 +115,7 @@ export function Settings() {
             {info && <KV col={150} rows={[
               ['ATLAS', info.version], ['Electron', info.electron], ['Chromium', info.chrome], ['Daemon Node', info.node], ['Database schema', `v${info.schema}`],
               ['Pi runtime', `${info.pi.package}@${info.pi.version}`], ['Pi source', `${info.pi.repository} @ ${info.pi.gitHead.slice(0, 12)} · ${info.pi.license}`],
-              ['Network', 'No telemetry. Outbound traffic only to model providers you configure.'],
+              ['Network', 'No telemetry. Outbound traffic only to model providers you configure, and to GitHub when you publish or read CI.'],
             ]} />}
           </section>
         </div>

@@ -37,6 +37,17 @@ export type MissionListItem = Mission & { tasks: { key: string; state: string }[
 export type RoleInfo = { id: string; version: string; title: string; tools: string[]; writes: boolean; modelPreference: string; budget: { maxToolCalls: number; maxTokens: number; wallClockMs: number }; capabilities: string[]; instructions: string };
 export type DesktopState = { support: { ok: boolean; detail: string }; enabled: boolean; sessions: DesktopSessionInfo[] };
 export type SettingsState = { values: { 'execution.allowUnsandboxed': boolean; 'retention.days': number; 'deploy.allowedTargets': string[]; 'deploy.autoRollback': boolean; 'desktop.enabled': boolean }; sandbox: { kind: 'bwrap' | 'sandbox-exec' | 'none'; detail: string; path: string | null } };
+/** Pull request and CI state of a mission (ADR 0015). */
+export interface ForgeView {
+  configured: boolean;
+  remote: string | null;
+  published: { owner: string; repo: string; number: number; url: string; branch: string; headSha: string; created: boolean } | null;
+  ci: { state: 'pending' | 'success' | 'failure' | 'none'; headSha: string; number: number; checks: { name: string; status: string; conclusion: string | null; url: string | null }[]; at: string } | null;
+  blocker: string | null;
+  canFixCi: boolean;
+  followUp: { parentMissionId: string; branch: string; headSha: string; pullRequest: number } | null;
+  followUps: string[];
+}
 export type Credentials = { available: boolean; providers: { provider: string; stored: boolean; fromEnvironment: boolean; env: string }[] };
 export type AppInfo = { version: string; schema: number; pi: { package: string; version: string; gitHead: string; license: string; repository: string }; platform: string; node: string; electron: string; chrome: string; daemon: DaemonStatus; credentialStore: boolean };
 
@@ -60,6 +71,10 @@ type Results = {
   'mission.reverify': Mission;
   'mission.restore': Mission;
   'mission.approveDefinition': Mission;
+  'mission.forge': ForgeView;
+  'mission.publish': ForgeView;
+  'mission.ciRefresh': ForgeView;
+  'mission.fixCi': Mission;
   'finding.update': Finding;
   'workspace.facts.get': { text: string };
   'workspace.facts.set': { text: string };

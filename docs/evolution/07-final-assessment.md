@@ -39,6 +39,7 @@ ATLAS was evolved, not rewritten. Its identity is preserved: the Electron + Reac
 | Durable Pi session resumption | done (scripted model) | ADR 0014; unit + integration across a daemon restart |
 | Live Pi test | written, **not run** (no key) | `pnpm test:live` |
 | Toolchain upgrades | done | full regression; audit 30 → 1 |
+| GitHub PR/CI feedback loop | done (fake GitHub API; not run against github.com) | ADR 0015; unit, integration, e2e |
 | P2-2, P2-4, P3-* | not attempted | — |
 
 ## What this does not prove
@@ -48,6 +49,7 @@ ATLAS was evolved, not rewritten. Its identity is preserved: the Electron + Reac
 - **The 1/7 false-pass case in the eval is real:** weak new tests on new code pass. The gate cannot judge test quality.
 - **Export trust is per key id, set by hand.** Signed exports now name their signer; there is no revocation or key distribution beyond copying a key id.
 - **Windows users get a fail-closed product today, not a working one.**
+- **The pull request loop was tested against a fake GitHub API and a local bare repository**, not github.com.
 - **Session resumption was tested with Pi's scripted model.** Whether a real model makes good use of a restored conversation is unmeasured until the live run.
 
 ## Recommended next steps, in order

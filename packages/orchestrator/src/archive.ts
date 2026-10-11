@@ -113,6 +113,7 @@ export async function deleteMission(repo: Repo, artifacts: ArtifactStore, missio
     }
     if (m.integrationBranch) await removeWorktree(w.root, `${worktreeDir}/${m.id}/integration`, m.decision === 'accepted' ? null : m.integrationBranch).catch(() => {});
     await git(w.root, ['update-ref', '-d', `refs/atlas/rejected/${m.id}`]).catch(() => {});
+    await git(w.root, ['update-ref', '-d', `refs/atlas/forge/${m.id}`]).catch(() => {});
     // Deleting a mission is the operator's explicit request to drop its preserved work too.
     await deleteRefs(w.root, `refs/atlas/preserved/${m.id}/`).catch(() => 0);
   }

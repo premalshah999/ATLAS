@@ -104,4 +104,11 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       );
     `,
   },
+  {
+    version: 6,
+    sql: `
+      -- A mission that fixes CI on an earlier mission's pull request (ADR 0015).
+      ALTER TABLE missions ADD COLUMN follow_up TEXT;
+    `,
+  },
 ];

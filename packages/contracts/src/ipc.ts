@@ -35,6 +35,10 @@ export const Requests = {
   'mission.delete': missionRef,
   'mission.reverify': missionRef,
   'mission.restore': missionRef,
+  'mission.publish': z.object({ missionId: Id, base: z.string().regex(/^[A-Za-z0-9._/-]{1,200}$/).optional() }).strict(),
+  'mission.forge': missionRef,
+  'mission.ciRefresh': missionRef,
+  'mission.fixCi': missionRef,
   'mission.approveDefinition': z.object({ missionId: Id, hash: z.string().regex(/^[0-9a-f]{64}$/) }).strict(),
   'finding.update': z.object({ findingId: Id, status: z.enum(['open', 'accepted', 'dismissed', 'fixed']) }).strict(),
   'workspace.facts.get': z.object({ workspaceId: Id }).strict(),
@@ -79,8 +83,8 @@ export const Requests = {
     z.object({ key: z.literal('desktop.enabled'), value: z.boolean() }).strict(),
   ]),
   'credentials.list': empty,
-  'credentials.set': z.object({ provider: z.enum(['anthropic', 'openai', 'google']), key: z.string().trim().min(8).max(500) }).strict(),
-  'credentials.remove': z.object({ provider: z.enum(['anthropic', 'openai', 'google']) }).strict(),
+  'credentials.set': z.object({ provider: z.enum(['anthropic', 'openai', 'google', 'github']), key: z.string().trim().min(8).max(500) }).strict(),
+  'credentials.remove': z.object({ provider: z.enum(['anthropic', 'openai', 'google', 'github']) }).strict(),
 } as const;
 
 /** Methods only the main process may send to the daemon (never exposed to the renderer). */
@@ -93,6 +97,8 @@ export const InternalRequests = {
 export type InternalMethod = keyof typeof InternalRequests;
 
 export const PROVIDER_ENV: Record<string, string> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY', google: 'GEMINI_API_KEY' };
+/** Service tokens stored like provider keys but never given to a model runtime (ADR 0015). */
+export const SERVICE_ENV: Record<string, string> = { github: 'ATLAS_GITHUB_TOKEN' };
 
 /** Messages between Electron main and the daemon process. */
 export type DaemonInbound = { kind: 'req'; id: number; method: string; params: unknown };

@@ -13,14 +13,14 @@ function seed(repo: Repo) {
   const now = nowIso();
   const ws = repo.upsertWorkspace({ id: newId('ws'), name: 'w', root: '/tmp/w-' + Math.random(), isGit: true, branch: 'main', head: 'abc', dirty: 0, createdAt: now, updatedAt: now });
   const id = newId('msn');
-  repo.insertMission({ id, workspaceId: ws.id, title: 't', goal: 'g', constraints: '', approvalMode: 'ask_risky', runtime: 'fake', baseCommit: null, state: 'draft', planVersion: 0, policyId: 'p', outcome: null, decision: null, budget: DEFAULT_BUDGET, integrationBranch: null, integrationCommit: null, archived: false, targetEnvironment: null, verdict: null, createdAt: now, updatedAt: now });
+  repo.insertMission({ id, workspaceId: ws.id, title: 't', goal: 'g', constraints: '', approvalMode: 'ask_risky', runtime: 'fake', baseCommit: null, state: 'draft', planVersion: 0, policyId: 'p', outcome: null, decision: null, budget: DEFAULT_BUDGET, integrationBranch: null, integrationCommit: null, archived: false, targetEnvironment: null, verdict: null, followUp: null, createdAt: now, updatedAt: now });
   return id;
 }
 
 describe('storage', () => {
   it('applies migrations once with WAL and foreign keys', () => {
     const { db } = setup();
-    expect(schemaVersion(db)).toBe(5);
+    expect(schemaVersion(db)).toBe(6);
     expect((db.prepare('PRAGMA journal_mode').get() as any).journal_mode).toBe('wal');
     expect((db.prepare('PRAGMA foreign_keys').get() as any).foreign_keys).toBe(1);
   });
@@ -35,10 +35,26 @@ describe('storage', () => {
     db.exec("DELETE FROM schema_migrations WHERE version = 5; ALTER TABLE missions DROP COLUMN verdict; DROP TABLE process_journal;");
     db.close();
     ({ db, repo } = setup(dir));
-    expect(schemaVersion(db)).toBe(5);
+    expect(schemaVersion(db)).toBe(6);
     expect(repo.mission(id)!.verdict).toBe('unverified'); // the latest gate result wins
     repo.updateMission(id, { verdict: 'verified' });
     expect(repo.mission(id)!.verdict).toBe('verified');
+  });
+
+  it('v6 stores a CI follow-up and upgrades older databases with none', () => {
+    const dir = tmpDir();
+    let { db, repo } = setup(dir);
+    const id = seed(repo);
+    const now = nowIso();
+    const follow = { parentMissionId: id, branch: 'atlas/x/integration', headSha: 'a'.repeat(40), pullRequest: 41 };
+    repo.insertMission({ ...repo.mission(id)!, id: newId('msn'), followUp: follow, createdAt: now, updatedAt: now });
+    expect(repo.missions().find((m) => m.followUp)!.followUp).toEqual(follow);
+    // An installation at v5: the column does not exist yet.
+    db.exec('DELETE FROM missions WHERE follow_up IS NOT NULL; DELETE FROM schema_migrations WHERE version = 6; ALTER TABLE missions DROP COLUMN follow_up;');
+    db.close();
+    ({ db, repo } = setup(dir));
+    expect(schemaVersion(db)).toBe(6);
+    expect(repo.mission(id)!.followUp).toBeNull();
   });
 
   it('assigns monotonic per-mission sequence numbers and redacts payloads', () => {
