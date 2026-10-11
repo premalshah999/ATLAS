@@ -52,12 +52,15 @@ describe.skipIf(process.platform !== 'win32')('ADR 0016: restricted-token varian
     const custom = `S-1-9-1-${[1, 2, 3, 4].map((i) => (process.pid * 7919 + i * 104729) % 4294967295).join('-')}`;
     const capSid = win.capabilitySid(`atlasRoot.${process.pid}`);
     // The root: writable for the logon SID (normal check) and this sandbox's own SID (restricting check), low label.
-    execFileSync('icacls', [root, '/grant', `*${logon}:(OI)(CI)M`, '/grant', `*${custom}:(OI)(CI)M`, '/grant', `*${capSid}:(OI)(CI)M`, '/C', '/Q'], { stdio: 'pipe' });
+    // icacls only takes SIDs it can map to a name (round 2 refused S-1-9-…); Set-Acl takes any SecurityIdentifier.
+    const grantAny = (target: string, sid: string, rights: string, inherit: boolean) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      `$a = Get-Acl -LiteralPath '${target}'; $r = New-Object System.Security.AccessControl.FileSystemAccessRule([System.Security.Principal.SecurityIdentifier]'${sid}', '${rights}', '${inherit ? 'ContainerInherit,ObjectInherit' : 'None'}', 'None', 'Allow'); $a.AddAccessRule($r); Set-Acl -LiteralPath '${target}' -AclObject $a`], { stdio: 'pipe' });
+    for (const sid of [logon, custom, capSid]) grantAny(root, sid, 'Modify', true);
     execFileSync('icacls', [root, '/setintegritylevel', '(OI)(CI)low', '/C', '/Q'], { stdio: 'pipe' });
     // Round 1, variant E: Node started under the restricted token, then failed realpath (lstat EPERM) on an ancestor
     // in the user profile. Read-attributes only (no listing, not inherited) on each ancestor lets it resolve paths.
     for (const sid of [logon, custom]) {
-      for (let d = path.dirname(root); path.dirname(d) !== d; d = path.dirname(d)) execFileSync('icacls', [d, '/grant', `*${sid}:(RA)`, '/C', '/Q'], { stdio: 'pipe' });
+      for (let d = path.dirname(root); path.dirname(d) !== d; d = path.dirname(d)) grantAny(d, sid, 'ReadAttributes', false);
     }
     const pub = path.join(process.env.PUBLIC ?? 'C:\\Users\\Public', `atlas-r-${process.pid}.txt`);
     const variants: [string, string, boolean][] = [

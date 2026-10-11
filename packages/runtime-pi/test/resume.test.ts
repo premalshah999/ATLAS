@@ -76,7 +76,8 @@ describe('Pi durable sessions', () => {
     const sys = seen.filter((m) => m.role === 'system');
     expect(sys[0].sections.preamble).toBe('Test agent.');
     expect(Object.keys(sys.at(-1).sections)).toEqual(['cwd']);
-    expect(sys.at(-1).sections.cwd).toContain(resumedCwd);
+    // Pi writes the directory with forward slashes on Windows.
+    expect(sys.at(-1).sections.cwd.replace(/\\/g, '/')).toContain(resumedCwd.replace(/\\/g, '/'));
     seen = seen.filter((m) => m.role !== 'system');
     const flat = seen.map((m) => `${m.role}:${texts(m)}`);
     expect(flat[0]).toBe('user:Fix the bug in src/fix.js.');
