@@ -37,4 +37,13 @@ describe('seatbeltProfile', () => {
     expect(seatbeltProfile(base)).toContain('(deny network-outbound');
     expect(seatbeltProfile({ ...base, network: true })).not.toContain('network-outbound');
   });
+
+  it('pseudo-terminals only for operator terminal sessions', () => {
+    const plain = seatbeltProfile(base);
+    expect(plain).not.toContain('/dev/ptmx');
+    expect(plain).not.toContain('pseudo-tty');
+    const pty = seatbeltProfile({ ...base, pty: true });
+    expect(rule(pty, 'file-write*')).toContain('(require-not (literal "/dev/ptmx"))');
+    expect(pty).toContain('(allow pseudo-tty)');
+  });
 });

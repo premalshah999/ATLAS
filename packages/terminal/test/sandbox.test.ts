@@ -95,10 +95,23 @@ console.log('done');`);
   it.skipIf(process.platform !== 'win32')('windows: cmd.exe and the npm shim run inside the AppContainer', async () => {
     const root = tmpDir();
     const sb = { root, writable: true, network: false };
-    const c = await run({ command: 'cmd.exe', args: ['/d', '/c', 'echo CMD-OK & cd & where node & where npm'], cwd: root, timeoutMs: 60_000, sandbox: sb });
-    expect(c.output, `cmd.exe: ${c.output} ${c.spawnError ?? ''}`).toContain('CMD-OK');
-    const n = await run({ command: 'npm', args: ['--version'], cwd: root, timeoutMs: 60_000, sandbox: sb });
-    expect(n.output, `npm --version: ${n.output} ${n.spawnError ?? ''} (cmd.exe said: ${c.output})`).toMatch(/\d+\.\d+\.\d+/);
+    const nodeDir = path.dirname(process.execPath);
+    const steps: [string, string, string[]][] = [
+      ['env', 'cmd.exe', ['/d', '/c', 'echo CMD-OK & echo PATH=%PATH% & echo COMSPEC=%COMSPEC% & cd']],
+      ['list node dir', 'cmd.exe', ['/d', '/c', `dir /b "${path.join(nodeDir, 'npm.cmd')}" "${path.join(nodeDir, 'node.exe')}"`]],
+      ['node by path', 'cmd.exe', ['/d', '/c', `"${path.join(nodeDir, 'node.exe')}" --version`]],
+      ['nested cmd (FOR /F)', 'cmd.exe', ['/d', '/c', 'for /f "delims=" %F in (\'echo NESTED-OK\') do @echo %F']],
+      ['npm prefix script', 'cmd.exe', ['/d', '/c', `"${path.join(nodeDir, 'node.exe')}" "${path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-prefix.js')}"`]],
+      ['npm', 'npm', ['--version']],
+    ];
+    const report: string[] = [];
+    let last = '';
+    for (const [label, cmd, args] of steps) {
+      const r = await run({ command: cmd, args, cwd: root, timeoutMs: 60_000, sandbox: sb });
+      last = r.output;
+      report.push(`--- ${label}: exit ${r.exitCode} ${r.spawnError ?? ''}\n${r.output.trim()}`);
+    }
+    expect(last, report.join('\n')).toMatch(/\d+\.\d+\.\d+/);
   });
 
   it('runs a real project test suite inside the sandbox', async () => {

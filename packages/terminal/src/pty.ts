@@ -91,7 +91,7 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
       ? { command: '/bin/sh', args: ['-c', 'cat | /usr/bin/script -q /dev/null /bin/sh -c "$1"', 'atlas-pty', start] }
       : { command: '/usr/bin/script', args: ['-qfec', start, '/dev/null'] };
     cmd = inner.command; args = inner.args;
-    if (o.sandbox) ({ command: cmd, args, env, cleanup, statusFd } = wrapCommand(inner.command, inner.args, o.cwd, o.sandbox, env, { statusFd: true }));
+    if (o.sandbox) ({ command: cmd, args, env, cleanup, statusFd } = wrapCommand(inner.command, inner.args, o.cwd, { ...o.sandbox, pty: true }, env, { statusFd: true }));
   }
   const child = spawn(cmd, args, { cwd: o.cwd, env, detached: process.platform !== 'win32', windowsHide: true, stdio: statusFd !== undefined ? ['pipe', 'pipe', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'] });
   const sandboxed = trackSandboxChild(child, statusFd);

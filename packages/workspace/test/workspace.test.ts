@@ -88,7 +88,8 @@ describe('retireWorktree keeps what it cannot preserve (P1-3 review findings 1-3
     return { repo, dir };
   }
 
-  it('a path git refuses to snapshot: the worktree and branch stay, nothing is lost', async () => {
+  // On Windows `GIT~1` is the 8.3 name of the worktree's own .git file, so the directory cannot be created there.
+  it.skipIf(process.platform === 'win32')('a path git refuses to snapshot: the worktree and branch stay, nothing is lost', async () => {
     const { repo, dir } = await wt();
     mkdirSync(path.join(dir, 'GIT~1'));
     writeFileSync(path.join(dir, 'GIT~1', 'x'), 'x'); // rejected by core.protectNTFS
@@ -121,6 +122,8 @@ describe('retireWorktree keeps what it cannot preserve (P1-3 review findings 1-3
     expect(r.refs.map((x) => x.what).sort()).toEqual(['branch', 'uncommitted']);
     expect(sh(repo, 'git', ['show', 'refs/atlas/preserved/t/w/uncommitted:work.txt'])).toBe('precious');
     expect(existsSync(dir)).toBe(false);
-    expect(sh(repo, 'git', ['worktree', 'list', '--porcelain'])).toContain(mine);
+    // git prints long, forward-slash paths; the temp dir may be an 8.3 path on Windows.
+    const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+    expect(norm(sh(repo, 'git', ['worktree', 'list', '--porcelain']))).toContain(norm(path.join(realpathSync.native(path.dirname(mine)), path.basename(mine))));
   });
 });

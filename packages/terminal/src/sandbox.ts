@@ -19,6 +19,8 @@ export interface SandboxSpec {
   readOnly?: string[];
   /** Extra writable paths (e.g. the worktree's git admin directory). */
   readWrite?: string[];
+  /** Operator terminal session: may allocate a pseudo-terminal (macOS Seatbelt needs /dev/ptmx and /dev/ttys*). */
+  pty?: boolean;
   /** Resource limits applied with prlimit when available. */
   limits?: { cpuSeconds?: number; fileSizeBytes?: number; openFiles?: number };
 }
@@ -119,6 +121,8 @@ function networkEnv(source: NodeJS.ProcessEnv = process.env): { env: Record<stri
 
 export interface SeatbeltInput {
   root: string; scratch: string; network: boolean; readWrite: string[]; readOnly: string[]; home: string; userTemp: string;
+  /** Allow allocating a pseudo-terminal. Only for operator terminals: /dev/ttys* also names the user's other terminals. */
+  pty?: boolean;
 }
 
 /** Every parent directory of `p` (not `p` itself), e.g. /Users, /Users/runner for /Users/runner/work. */
@@ -145,7 +149,8 @@ export function seatbeltProfile(i: SeatbeltInput): string {
   const parents = [...new Set(readable.flatMap(ancestors))].sort();
   return [
     '(version 1)', '(allow default)',
-    `(deny file-write* (require-all ${writable.map((p) => `(require-not (subpath ${q(p)}))`).join(' ')} (require-not (literal "/dev/null")) (require-not (literal "/dev/tty")) (require-not (subpath "/dev/fd"))))`,
+    `(deny file-write* (require-all ${writable.map((p) => `(require-not (subpath ${q(p)}))`).join(' ')} (require-not (literal "/dev/null")) (require-not (literal "/dev/tty")) (require-not (subpath "/dev/fd"))${i.pty ? ' (require-not (literal "/dev/ptmx")) (require-not (regex #"^/dev/ttys[0-9]+$"))' : ''}))`,
+    ...(i.pty ? ['(allow pseudo-tty)'] : []),
     `(deny file-read-data file-read-xattr (require-all ${inUserData} ${notReadable}))`,
     `(deny file-read-metadata (require-all ${inUserData} ${notReadable} ${parents.map((p) => `(require-not (literal ${q(p)}))`).join(' ')}))`,
     ...(i.network ? [] : ['(deny network-outbound (require-not (remote unix-socket)))', '(deny network-inbound)']),
@@ -200,7 +205,7 @@ export function wrapCommand(command: string, args: string[], cwd: string, spec: 
       root, scratch, network: spec.network,
       readWrite: (spec.readWrite ?? []).map(real),
       readOnly: [...(spec.readOnly ?? []).map(real), ...toolchainPaths(env), ...net.files.map(real)],
-      home: real(os.homedir()), userTemp: real(os.tmpdir()),
+      home: real(os.homedir()), userTemp: real(os.tmpdir()), pty: !!spec.pty,
     });
     const file = path.join(scratch, 'profile.sb');
     writeFileSync(file, profile);
