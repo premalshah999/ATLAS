@@ -30,6 +30,7 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
   const rows = Math.max(5, Math.min(200, Math.floor(o.rows)));
   let env = { ...sanitizedEnv({ TERM: 'xterm-256color', COLUMNS: String(cols), LINES: String(rows), PS1: 'atlas$ ' }) };
   let cmd: string, args: string[];
+  let cleanup: (() => void) | undefined;
   if (process.platform === 'win32') {
     // ConPTY hosted by the sandbox helper: inside the task's AppContainer when sandboxed, otherwise uncontained
     // (only reachable when the operator allowed unsandboxed execution).
@@ -51,7 +52,7 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
       ? { command: '/usr/bin/script', args: ['-q', '/dev/null', '/bin/sh', '-c', start] }
       : { command: '/usr/bin/script', args: ['-qfec', start, '/dev/null'] };
     cmd = inner.command; args = inner.args;
-    if (o.sandbox) ({ command: cmd, args, env } = wrapCommand(inner.command, inner.args, o.cwd, o.sandbox, env));
+    if (o.sandbox) ({ command: cmd, args, env, cleanup } = wrapCommand(inner.command, inner.args, o.cwd, o.sandbox, env));
   }
   const child = spawn(cmd, args, { cwd: o.cwd, env, detached: process.platform !== 'win32', windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const max = o.maxTranscript ?? 512 * 1024;
@@ -61,7 +62,7 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
   child.stderr!.on('data', take);
   let exited = false;
   const unjournal = journalStart(child.pid, 'terminal', 'operator terminal');
-  const done = new Promise<void>((r) => child.on('close', (code) => { exited = true; unjournal(); o.onExit(code); r(); }));
+  const done = new Promise<void>((r) => child.on('close', (code) => { exited = true; unjournal(); cleanup?.(); o.onExit(code); r(); }));
   child.on('error', (e) => { o.onData(`\r\n[terminal failed to start: ${e.message}]\r\n`); });
   return {
     pid: child.pid ?? null,

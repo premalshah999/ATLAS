@@ -2,7 +2,7 @@
 // Linux: bubblewrap (user, mount, pid, ipc, uts, net namespaces). macOS: sandbox-exec profile.
 // Anything else: no sandbox — callers must fail closed unless the operator opted into unsandboxed runs.
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as win from './win/appcontainer';
@@ -104,8 +104,58 @@ function networkEnv(source: NodeJS.ProcessEnv = process.env): { env: Record<stri
   return { env, files };
 }
 
+export interface SeatbeltInput {
+  root: string; scratch: string; network: boolean; readWrite: string[]; readOnly: string[]; home: string; userTemp: string;
+}
+
+/** Every parent directory of `p` (not `p` itself), e.g. /Users, /Users/runner for /Users/runner/work. */
+function ancestors(p: string): string[] {
+  const out: string[] = [];
+  for (let d = path.dirname(p); d !== path.dirname(d); d = path.dirname(d)) out.push(d);
+  return out;
+}
+
+/**
+ * macOS Seatbelt profile (evolution P0-5). The default is allow, so user data is denied by location: the home
+ * directory, every other user's home, mounted volumes, the per-user temp directory and the shared /tmp. Inside
+ * those, only the root, the extra paths and the command's private scratch directory are readable, and only the
+ * root, read-write paths and scratch are writable. Parents of granted paths get file-read-metadata only (no data,
+ * no listing), which `realpath` needs to resolve them.
+ */
+export function seatbeltProfile(i: SeatbeltInput): string {
+  const q = (p: string) => JSON.stringify(p);
+  const writable = [i.root, ...i.readWrite, i.scratch];
+  const readable = [...writable, ...i.readOnly];
+  const userData = [...new Set([i.home, '/Users', '/Volumes', i.userTemp, '/private/tmp', '/private/var/tmp'])];
+  const notReadable = readable.map((p) => `(require-not (subpath ${q(p)}))`).join(' ');
+  const inUserData = `(require-any ${userData.map((p) => `(subpath ${q(p)})`).join(' ')})`;
+  const parents = [...new Set(readable.flatMap(ancestors))].sort();
+  return [
+    '(version 1)', '(allow default)',
+    `(deny file-write* (require-all ${writable.map((p) => `(require-not (subpath ${q(p)}))`).join(' ')} (require-not (literal "/dev/null")) (require-not (literal "/dev/tty")) (require-not (subpath "/dev/fd"))))`,
+    `(deny file-read-data file-read-xattr (require-all ${inUserData} ${notReadable}))`,
+    `(deny file-read-metadata (require-all ${inUserData} ${notReadable} ${parents.map((p) => `(require-not (literal ${q(p)}))`).join(' ')}))`,
+    ...(i.network ? [] : ['(deny network-outbound (require-not (remote unix-socket)))', '(deny network-inbound)']),
+  ].join('\n');
+}
+
+let swept = false;
+/** Remove scratch directories left behind by daemons that no longer run (a crash skips per-command cleanup). */
+function sweepScratch() {
+  if (swept) return;
+  swept = true;
+  try {
+    for (const name of readdirSync(os.tmpdir())) {
+      const m = /^atlas-sbhome-(\d+)-/.exec(name);
+      if (!m || Number(m[1]) === process.pid) continue;
+      try { process.kill(Number(m[1]), 0); continue; } catch (e) { if ((e as NodeJS.ErrnoException).code === 'EPERM') continue; }
+      rmSync(path.join(os.tmpdir(), name), { recursive: true, force: true });
+    }
+  } catch { /* best effort */ }
+}
+
 /** Wrap a command so it runs inside the sandbox. Throws if no sandbox is available. */
-export function wrapCommand(command: string, args: string[], cwd: string, spec: SandboxSpec, env: Record<string, string>): { command: string; args: string[]; env: Record<string, string> } {
+export function wrapCommand(command: string, args: string[], cwd: string, spec: SandboxSpec, env: Record<string, string>): { command: string; args: string[]; env: Record<string, string>; cleanup?: () => void } {
   const info = detectSandbox();
   const root = real(spec.root);
   const net = spec.network ? networkEnv() : { env: {}, files: [] };
@@ -131,21 +181,19 @@ export function wrapCommand(command: string, args: string[], cwd: string, spec: 
     return { command: info.path!, args: a, env: envOut };
   }
   if (info.kind === 'sandbox-exec') {
-    const home = real(os.homedir());
-    const writable = [root, ...(spec.readWrite ?? []).map(real), real(os.tmpdir())];
-    const readable = [...writable, ...(spec.readOnly ?? []).map(real), ...toolchainPaths(env), ...net.files.map(real)];
-    const q = (p: string) => JSON.stringify(p);
-    const profile = [
-      '(version 1)', '(allow default)',
-      `(deny file-write* (require-all ${writable.map((p) => `(require-not (subpath ${q(p)}))`).join(' ')} (require-not (literal "/dev/null")) (require-not (subpath "/dev/fd"))))`,
-      `(deny file-read* (require-all (subpath ${q(home)}) ${readable.map((p) => `(require-not (subpath ${q(p)}))`).join(' ')}))`,
-      ...(spec.network ? [] : ['(deny network-outbound (require-not (remote unix-socket)))', '(deny network-inbound)']),
-    ].join('\n');
-    const dir = path.join(os.tmpdir(), 'atlas-sb');
-    mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, `profile-${process.pid}-${Date.now()}.sb`);
+    sweepScratch();
+    const scratch = mkdtempSync(path.join(real(os.tmpdir()), `atlas-sbhome-${process.pid}-`));
+    const profile = seatbeltProfile({
+      root, scratch, network: spec.network,
+      readWrite: (spec.readWrite ?? []).map(real),
+      readOnly: [...(spec.readOnly ?? []).map(real), ...toolchainPaths(env), ...net.files.map(real)],
+      home: real(os.homedir()), userTemp: real(os.tmpdir()),
+    });
+    const file = path.join(scratch, 'profile.sb');
     writeFileSync(file, profile);
-    return { command: info.path!, args: ['-f', file, inner.command, ...inner.args], env: { ...envOut, HOME: real(os.tmpdir()) } };
+    // The scratch directory is the command's private HOME and TMPDIR; it is never shared between commands.
+    const scratchEnv = { HOME: scratch, TMPDIR: scratch, npm_config_cache: path.join(scratch, '.npm'), XDG_CACHE_HOME: path.join(scratch, '.cache') };
+    return { command: info.path!, args: ['-f', file, inner.command, ...inner.args], env: { ...envOut, ...scratchEnv }, cleanup: () => rmSync(scratch, { recursive: true, force: true }) };
   }
   if (info.kind === 'appcontainer') return wrapWindows(command, args, spec, env, net);
   throw Object.assign(new Error(`No OS sandbox is available: ${info.detail}`), { kind: 'sandbox_unavailable' });

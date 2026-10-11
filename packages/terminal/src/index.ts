@@ -17,7 +17,7 @@ export function spawnPlan(command: string, args: string[], env: Record<string, s
   return { file: w.file, args: w.args, verbatim: w.verbatim };
 }
 
-export { detectSandbox, wrapCommand, toolchainPaths, SANDBOX_HOME, type SandboxSpec, type SandboxInfo, type SandboxKind } from './sandbox';
+export { detectSandbox, wrapCommand, seatbeltProfile, toolchainPaths, SANDBOX_HOME, type SandboxSpec, type SandboxInfo, type SandboxKind } from './sandbox';
 export { quoteArg, resolveWindowsCommand, windowsCommand } from './win/appcontainer';
 
 /** Environment variables passed through to child processes. Everything else is dropped. */
@@ -87,8 +87,9 @@ export function run(o: RunOptions): Promise<RunResult> {
     }
 
     let cmd = o.command, argv = o.args, env = o.env ?? sanitizedEnv();
+    let cleanup: (() => void) | undefined;
     if (o.sandbox) {
-      try { ({ command: cmd, args: argv, env } = wrapCommand(o.command, o.args, o.cwd, o.sandbox, env)); }
+      try { ({ command: cmd, args: argv, env, cleanup } = wrapCommand(o.command, o.args, o.cwd, o.sandbox, env)); }
       catch (e) {
         resolve({ exitCode: null, signal: null, durationMs: 0, output: '', truncated: false, timedOut: false, cancelled: false, pid: null, spawnError: (e as Error).message });
         return;
@@ -97,6 +98,7 @@ export function run(o: RunOptions): Promise<RunResult> {
     let plan: ReturnType<typeof spawnPlan>;
     try { plan = spawnPlan(cmd, argv, env); }
     catch (e) {
+      cleanup?.();
       resolve({ exitCode: null, signal: null, durationMs: 0, output: '', truncated: false, timedOut: false, cancelled: false, pid: null, spawnError: (e as Error).message });
       return;
     }
@@ -139,6 +141,7 @@ export function run(o: RunOptions): Promise<RunResult> {
       o.signal?.removeEventListener('abort', onAbort);
       // Reap any descendants that outlived the leader (e.g. backgrounded children).
       if (pid && process.platform !== 'win32') { try { process.kill(-pid, 'SIGKILL'); } catch { /* group already empty */ } }
+      cleanup?.();
       resolve({ exitCode, signal: sig, durationMs: Date.now() - started, output, truncated, timedOut, cancelled, pid, spawnError });
     };
     child.on('error', (e) => finish(null, null, e.message));
@@ -157,8 +160,9 @@ export interface ProcessHandle {
 /** Start a long-lived process (an app server under test, a local staging deployment). Same isolation rules as run(). */
 export function startProcess(o: { command: string; args: string[]; cwd: string; env?: Record<string, string>; sandbox?: SandboxSpec; maxOutput?: number; onOutput?: (text: string) => void }): ProcessHandle {
   let cmd = o.command, argv = o.args, env = o.env ?? sanitizedEnv();
+  let cleanup: (() => void) | undefined;
   if (o.sandbox) {
-    try { ({ command: cmd, args: argv, env } = wrapCommand(o.command, o.args, o.cwd, o.sandbox, env)); }
+    try { ({ command: cmd, args: argv, env, cleanup } = wrapCommand(o.command, o.args, o.cwd, o.sandbox, env)); }
     catch (e) { return { pid: null, spawnError: (e as Error).message, output: () => '', exited: () => ({ code: null }), stop: async () => {} }; }
   }
   const max = o.maxOutput ?? 256 * 1024;
@@ -167,14 +171,14 @@ export function startProcess(o: { command: string; args: string[]; cwd: string; 
   let spawnError: string | null = null;
   let plan: ReturnType<typeof spawnPlan>;
   try { plan = spawnPlan(cmd, argv, env); }
-  catch (e) { return { pid: null, spawnError: (e as Error).message, output: () => '', exited: () => ({ code: null }), stop: async () => {} }; }
+  catch (e) { cleanup?.(); return { pid: null, spawnError: (e as Error).message, output: () => '', exited: () => ({ code: null }), stop: async () => {} }; }
   const child = spawn(plan.file, plan.args, { cwd: o.cwd, env, detached: process.platform !== 'win32', shell: false, windowsHide: true, windowsVerbatimArguments: plan.verbatim, stdio: ['ignore', 'pipe', 'pipe'] });
   const take = (b: Buffer) => { const t = redact(b.toString('utf8')); o.onOutput?.(t); buf = (buf + t).slice(-max); };
   child.stdout!.on('data', take);
   child.stderr!.on('data', take);
   child.on('error', (e) => { spawnError = e.message; exit = { code: null }; });
   const unjournal = journalStart(child.pid, 'service', [o.command, ...o.args].join(' '));
-  const done = new Promise<void>((r) => child.on('close', (code) => { exit = { code }; unjournal(); r(); }));
+  const done = new Promise<void>((r) => child.on('close', (code) => { exit = { code }; unjournal(); cleanup?.(); r(); }));
   return {
     pid: child.pid ?? null,
     get spawnError() { return spawnError; },
