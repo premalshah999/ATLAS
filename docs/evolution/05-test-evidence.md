@@ -55,10 +55,13 @@ Every number below comes from a process exit or a test assertion, and each one n
 | 38104874121 | b8ec01c | integration ✗ (cancel test timeout) | unit, integration, eval ✓; e2e ✗ (openpty denied) | ✗ (npm.cmd "Access is denied.") |
 | **38106986371** | **29b9a42** | **all steps ✓** (lint, typecheck, unit, integration, eval, e2e, package) | unit, integration, eval ✓; e2e ✗ (openpty, fixed in 6317668) | ✗ |
 | **38107974496** | **6317668** | **all steps ✓** | **all steps ✓** (lint, typecheck, unit, integration, eval, Electron e2e, package) | unit, integration, eval ✗ |
+| 38125385152 | e34c9d0 | **all steps ✓** | unit, integration (incl. **desktop control with XQuartz, 4/4**), eval ✓; e2e: desktop takeover ✓, GitHub loop ✗ (follow-up view not shown; fixed in 40f5685) | ✗ |
+| **38127174519** | **40f5685** | **all steps ✓** | **all steps ✓** (incl. real desktop control and the GitHub PR/CI e2e) | ✗ (child processes hang in the AppContainer) |
 
 **What the CI history shows**
 - **Linux flake.** Before `29b9a42`, Linux integration timed out intermittently (3 of 6 runs) on tests that cancel a sandboxed command. The root cause was reproduced locally: under 4 busy cores, 118 of 150 early cancels hung. After the fix, 0 of 150 hung under the same load, and the first CI run with the fix is fully green.
 - **macOS.** Fully green in CI as of `6317668`. That covers Seatbelt sandbox tests, missions, the gate, eval, the Electron e2e (including the operator terminal) and packaging. It took three CI-diagnosed fixes: the profile scope, the PTY stdin, and the PTY device for operator terminals.
+- **macOS desktop control.** Since e34c9d0 the macOS runner installs XQuartz and xdotool, and CI fails if they are missing (`ATLAS_REQUIRE_DESKTOP`). The virtual-desktop integration tests and the Electron desktop-takeover e2e ran for real on macOS and passed.
 - **Windows.** It is **not** working. Sandboxed Node runs: the trivial, canary, write-isolation and network tests pass inside the AppContainer as of b8ec01c. The npm shim does not, so every mission's `npm test` is denied and missions end "Blocked: tests failed". Bisection is in 6317668.
 
 ## Probes and fault injection

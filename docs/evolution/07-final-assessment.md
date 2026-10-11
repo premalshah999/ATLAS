@@ -19,8 +19,8 @@ ATLAS was evolved, not rewritten. Its identity is preserved: the Electron + Reac
 | UI truth | Long missions lost their tail; "Unverified" shown as "Completed" | Full history; verdict persisted and shown |
 | Evidence export | Tampered artifacts re-hashed and imported as intact | Refused on import (tamper-evidence; not authenticity, see open risks) |
 | Daemon idle memory | 180–181 MB | 134–135 MB (two runs each) |
-| macOS | Every mission failed under Seatbelt | **CI fully green**, including Electron e2e and packaging |
-| Windows | Broken | **Still not working end to end.** Sandboxed Node runs; the npm shim is denied inside the AppContainer; diagnosis continues |
+| macOS | Every mission failed under Seatbelt | **CI fully green**, including Electron e2e, packaging, and real desktop control (XQuartz) |
+| Windows | Broken | **Still not working end to end.** Sandboxed Node and npm run; child processes with piped stdio hang inside the AppContainer (test runners), see [04](04-implementation-log.md) |
 
 ## Scorecard against the backlog
 

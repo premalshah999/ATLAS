@@ -17,6 +17,9 @@ async function probe(root: string, js: string, o: { network?: boolean; env?: Rec
   writeFileSync(path.join(root, 'probe.cjs'), js);
   return run({ command: 'node', args: ['probe.cjs'], cwd: root, timeoutMs: o.timeoutMs ?? 30_000, signal: o.signal, env: sanitizedEnv(o.env ?? {}), sandbox: { root, writable: true, network: !!o.network } });
 }
+/** A node -e script that tries to listen on \\<parts joined by \>pid and prints `<tag> ok` or `<tag> <code>` and the path. */
+const pipeProbe = (tag: string, parts: string[]) =>
+  `const b = String.fromCharCode(92); const p = b + b + ${JSON.stringify(parts)}.join(b) + process.pid; const s = require('net').createServer(); s.on('error', (e) => { console.log('${tag}', e.code, p); process.exit(0); }); s.listen(p, () => { console.log('${tag} ok', p); s.close(); });`;
 const tryRead = (p: string) => `try { console.log('READ ' + require('fs').readFileSync(${JSON.stringify(p)}, 'utf8')); } catch (e) { console.log('DENIED ' + e.code); }`;
 
 d(`OS sandbox (${info.kind})`, () => {
@@ -105,7 +108,11 @@ console.log('done');`);
       ['child, stdio pipe', path.join(nodeDir, 'node.exe'), ['-e', "const r = require('child_process').spawnSync(process.execPath, ['-e', 'console.log(1)'], { stdio: 'pipe' }); console.log('PIPE', r.status, r.error && r.error.code, String(r.stdout || '').trim())"]],
       ['child, stdio ignore', path.join(nodeDir, 'node.exe'), ['-e', "const t = Date.now(); const r = require('child_process').spawnSync(process.execPath, ['-e', '0'], { stdio: 'ignore', timeout: 5000 }); console.log('IGNORE', r.status, r.error && r.error.code, Date.now() - t, 'ms')"]],
       ['child, stdio inherit', path.join(nodeDir, 'node.exe'), ['-e', "const r = require('child_process').spawnSync(process.execPath, ['-e', 'console.log(2)'], { stdio: 'inherit' }); console.log('INHERIT', r.status, r.error && r.error.code)"]],
-      ['named pipe server', path.join(nodeDir, 'node.exe'), ['-e', "const s = require('net').createServer(); s.on('error', (e) => { console.log('NAMEDPIPE', e.code); process.exit(0); }); s.listen('\\\\.\\pipe\\atlas-probe-' + process.pid, () => { console.log('NAMEDPIPE ok'); s.close(); });"]],
+      // Pipe names are built with fromCharCode(92): an escaped backslash in this string nested in node -e was wrong once
+      // (CI run 38127174519 probed "\\.pipeatlas-probe", not a pipe).
+      ['named pipe server', path.join(nodeDir, 'node.exe'), ['-e', pipeProbe('NAMEDPIPE', ['.', 'pipe', 'atlas-probe-'])]],
+      // AppContainers may create pipes only under LOCAL\ (their own namespace); libuv names its stdio pipes \\.\pipe\uv\….
+      ['named pipe server, LOCAL namespace', path.join(nodeDir, 'node.exe'), ['-e', pipeProbe('LOCALPIPE', ['.', 'pipe', 'LOCAL', 'atlas-probe-'])]],
       ['npm', 'npm', ['--version']],
     ];
     const report: string[] = [];

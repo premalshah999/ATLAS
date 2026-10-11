@@ -345,3 +345,23 @@ The auditor also confirmed several fixes against new scenarios (could not break 
   - 4 integration tests: the full loop, refusing to overwrite a moved branch, a follow-up from someone else's commit, and the refusals;
   - 1 Electron e2e.
 - **Limits:** github.com only. API calls ignore `HTTPS_PROXY`.
+
+## Windows — child processes in the AppContainer (CI run 38127174519)
+- **Bisection inside the AppContainer**, one bounded step at a time:
+
+  | Step | Result |
+  |---|---|
+  | cmd.exe, node by path, `npm --version` | ✓ |
+  | child with inherited stdio | ✓ |
+  | child with piped stdio | hangs (8 s limit) |
+  | child with `stdio: 'ignore'` | `EPERM` in 4 ms |
+
+- **What this means.** Every test runner that collects worker output through pipes, including `node --test` behind `npm test`, hangs inside the container. That is why missions on Windows cannot verify.
+- **Hypothesis.** libuv backs piped stdio with a named pipe (`\\.\pipe\uv\…`), and an AppContainer may create pipes only under `LOCAL\`.
+- **A probe of ours was wrong.** It printed "named pipe: EACCES", but that probe listened on a mis-escaped path, not a pipe. It is rebuilt now, and a `LOCAL\` variant is added, so the next run tests the hypothesis directly.
+- **If confirmed, the options are:**
+  1. A restricted-token sandbox: a deny-only user SID plus a low-integrity job, as Chromium's legacy sandbox does. It keeps file isolation through ACLs, but its pipe rules have to be tested.
+  2. A helper that pre-creates the stdio pipes in the container's namespace and hands them over. That works for the first process only; its children still use libuv.
+  3. Documenting Windows as unsupported for running project code.
+
+  This choice needs an ADR and evidence from the next run.
