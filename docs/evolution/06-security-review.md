@@ -41,19 +41,36 @@ Scope: the changes made during this evolution, and the trust boundaries they tou
 | Redaction runs per output chunk; a secret split across chunks can pass | Low | Pre-existing | Env allowlist keeps credentials out of the sandbox in the first place |
 | A brand-new weak test on new code cannot be told apart from a good one | Inherent | The eval keeps a deliberate `weak-tests` case: false passes 1/7 | Review stage; shown as a limitation in the eval report |
 
-## Dependency audit (run 2026-10-11, this container)
+## Dependency audit
 
-- `pnpm audit --prod` (what ships in the app): **no known vulnerabilities**.
-- `pnpm audit` (including dev and build tools): **30 advisories** (1 low, 11 moderate, 13 high, 5 critical). All of them are in development or packaging tools, none of which ship:
+**Before the upgrade (2026-10-11):**
+- `pnpm audit --prod` (what ships in the app): no known vulnerabilities.
+- `pnpm audit` (including dev and build tools): 30 advisories (1 low, 11 moderate, 13 high, 5 critical), all in development and packaging tools.
 
-| Packages | Notes |
-|---|---|
-| `vitest` 2.1.8, `tinypool`, `@vitest/mocker` | The RCE and file-read paths need the Vitest UI/API server, which this repo never starts (`vitest run` only) |
-| `vite` 5.4.21, `esbuild` | Dev-server issues; the renderer is a static build |
-| `electron-builder` 25.1.8 → `tar`, `app-builder-lib`, `builder-util-runtime` | Packaging only. The `electron-updater` advisories do not apply: the app has no auto-updater |
-| `typescript-eslint` → `braces`, `eslint` → `@eslint/plugin-kit` | Lint-time ReDoS |
+**Upgrade (this change), with a full regression run on the new toolchain:**
 
-**Recommendation (not done here):** upgrade vitest to ≥ 4.1.11 and electron-builder to ≥ 26.15 as a separate, reviewed change. Both are major upgrades with config and lockfile churn, so they should not ride along with unrelated slices.
+| Package | From | To | Note |
+|---|---|---|---|
+| vitest | 2.1.8 | 4.1.11 | The workspace file moved into `vitest.config.ts` projects |
+| vite-node | (transitive) | 5.3.0 | Now explicit: the orphan test and `pnpm lab:skills` use it |
+| vite | 5.4.21 | 7.3.7 | |
+| @vitejs/plugin-react | 4.3.4 | 5.2.0 | |
+| esbuild | 0.24.2 | 0.25.12 | |
+| electron-builder (+ squirrel peer) | 25.1.8 | 26.17.0 | |
+| eslint | 9.17.0 | 9.39.5 | Majors avoided where not needed for a fix |
+| typescript-eslint | 8.18.1 | 8.71.1 | |
+| tar (override) | — | ≥ 7.5.21 | |
+
+**Regression results:**
+- typecheck and lint clean;
+- unit 191 passed, 3 skipped; integration 93 passed;
+- eval 12/12 as expected (false passes 1/7, unchanged);
+- Electron e2e 11 passed;
+- AppImage packaged.
+
+**After the upgrade:**
+- `pnpm audit --prod`: no known vulnerabilities.
+- `pnpm audit`: **1 moderate** remains: `sprintf-js` ≤ 1.1.3, via electron-builder → @electron/get → global-agent → roarr. It is build-time only, and there is no patched version upstream (`patched: <0.0.0`). Accepted and recorded.
 
 ## Reference-repository handling
 

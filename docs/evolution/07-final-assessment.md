@@ -46,6 +46,6 @@ ATLAS was evolved, not rewritten. Its identity is preserved: the Electron + Reac
 
 1. **Windows AppContainer toolchain access.** Finish the diagnosis the CI bisection has started (the toolchain capability ACL is not in effect). Then grant only the directories of the programs actually used, not every `PATH` entry.
 2. ~~Signed exports~~: done. Per-installation Ed25519 key; imports show signer and trust.
-3. **Dev-tool upgrades.** vitest ≥ 4.1.11 and electron-builder ≥ 26.15, as a separate change (see [06](06-security-review.md)).
+3. ~~Dev-tool upgrades~~: done, with a full regression run. One build-time advisory remains, with no upstream fix (see [06](06-security-review.md)).
 4. **ESLint `react-hooks` rule.** It would have caught the one regression this evolution shipped locally and then fixed.
 5. **Live-model reality run.** A Pi mission against a real provider in a disposable environment, with credentials the operator supplies.

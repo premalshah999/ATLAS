@@ -2,7 +2,7 @@
 // process is SIGKILLed mid-command; the next start reaps what it left behind, and only that.
 import { describe, expect, it } from 'vitest';
 import { spawn } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, Repo } from '@atlas/storage';
@@ -33,7 +33,10 @@ setInterval(() => {}, 1000);
 }
 
 async function crashMidCommand(env: Record<string, string>) {
-  const child = spawn(process.execPath, [path.join(here, '../../node_modules/vite-node/vite-node.mjs'), childScript()], { cwd: path.join(here, '../..'), env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
+  // The CLI entry is read from vite-node's own package.json, so a version bump cannot silently break the path.
+  const vn = path.join(here, '../../node_modules/vite-node');
+  const bin = JSON.parse(readFileSync(path.join(vn, 'package.json'), 'utf8')).bin['vite-node'];
+  const child = spawn(process.execPath, [path.join(vn, bin), childScript()], { cwd: path.join(here, '../..'), env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = '';
   const info = await new Promise<{ self: number; pid: number; sandboxed: boolean; data: string }>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`child did not start: ${out}`)), 60_000);

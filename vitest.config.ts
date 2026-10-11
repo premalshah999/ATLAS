@@ -1,6 +1,7 @@
-import { defineWorkspace } from 'vitest/config';
+import { defineConfig } from 'vitest/config';
 
-export default defineWorkspace([
+// Vitest 4: projects live in the root config (the separate workspace file was removed).
+export default defineConfig({ test: { projects: [
   {
     test: {
       name: 'unit',
@@ -38,4 +39,4 @@ export default defineWorkspace([
       pool: 'forks',
     },
   },
-]);
+] } });
