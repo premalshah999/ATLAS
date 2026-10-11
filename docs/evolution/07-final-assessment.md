@@ -12,6 +12,7 @@ ATLAS was evolved, not rewritten. Its identity is preserved: the Electron + Reac
 | Processes after a daemon crash | Unsandboxed commands orphaned forever | Journal + identity-checked reaper; group survivors found; one daemon per data directory; Windows helper now watches the daemon (test added; result pending on the Windows CI job) |
 | Cancel during sandbox setup | Hung under load (118 of 150) | 0 of 150; Linux CI green since the fix |
 | Uncommitted work at cleanup | Destroyed by `worktree remove --force` | Preserved in refs, or the worktree is kept with a recorded reason; the user's own worktrees are untouched |
+| Daemon restart mid-attempt | The attempt's work and conversation were lost; a fresh attempt started over | Pi attempts continue the lost conversation on a snapshot of the lost files (ADR 0014); other runtimes restart fresh as before |
 | Stalled agents | Looked healthy until the wall-clock budget | "No signal" after 120 s (not raised for approvals, running commands or working subtasks) |
 | Disk and worktree growth | Unbounded | Free-space floor and per-mission cap, with typed reasons |
 | Operator terminal | Died with its tab | Lives in the daemon; reattach with full history; resize (Linux, macOS) |
@@ -35,6 +36,7 @@ ATLAS was evolved, not rewritten. Its identity is preserved: the Electron + Reac
 | Independent acceptance verification | done | holdout suites; eval case `weak-tests-holdout` |
 | Skills + Skill Laboratory | done (benefit unmeasured) | ADR 0013; unit, integration, e2e |
 | Signed exports | done | archive tests incl. both forgery forms |
+| Durable Pi session resumption | done (scripted model) | ADR 0014; unit + integration across a daemon restart |
 | Live Pi test | written, **not run** (no key) | `pnpm test:live` |
 | Toolchain upgrades | done | full regression; audit 30 → 1 |
 | P2-2, P2-4, P3-* | not attempted | — |
@@ -46,6 +48,7 @@ ATLAS was evolved, not rewritten. Its identity is preserved: the Electron + Reac
 - **The 1/7 false-pass case in the eval is real:** weak new tests on new code pass. The gate cannot judge test quality.
 - **Export trust is per key id, set by hand.** Signed exports now name their signer; there is no revocation or key distribution beyond copying a key id.
 - **Windows users get a fail-closed product today, not a working one.**
+- **Session resumption was tested with Pi's scripted model.** Whether a real model makes good use of a restored conversation is unmeasured until the live run.
 
 ## Recommended next steps, in order
 

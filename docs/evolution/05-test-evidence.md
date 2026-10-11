@@ -2,6 +2,15 @@
 
 Every number below comes from a process exit or a test assertion, and each one names the run that produced it. Local runs used the Linux development container (bubblewrap sandbox, Node 22). CI runs are GitHub Actions on `claude/gifted-volta-j4hvy4`.
 
+## Local suite (Linux, durable Pi sessions)
+
+| Command | Result |
+|---|---|
+| `pnpm typecheck`, `pnpm lint` | exit 0 |
+| `pnpm test` (unit) | 194 passed, 3 skipped (platform-gated) |
+| `pnpm test:integration` | 95 passed |
+| `pnpm eval` | 12/12 as expected; unchanged |
+
 ## Local suite (Linux, round 2, toolchain upgraded, commit `a9c7e71`)
 
 | Command | Result |
@@ -63,6 +72,9 @@ Every number below comes from a process exit or a test assertion, and each one n
 | Agent command killed externally | SIGKILL of the command's group | Non-zero exit recorded; never verified | `faults.test.ts` |
 | User commits during the mission | Commit + dirty file in the user's checkout | Untouched; result based on the approved base | `faults.test.ts` |
 | Evidence altered on disk | Overwrite a check log | Read reports not intact. **Before the fix the export re-hashed it and another install imported it as intact**; now the import is refused and flipping the flag breaks the trailer. A deliberate forger who recomputes every hash is **not** detected (unkeyed hashes; final audit) | `faults.test.ts` |
+| Daemon stops while a Pi agent's command runs | Graceful stop mid `shell_exec`, then a new orchestrator over the same data directory | The next attempt continues the conversation on a snapshot of the lost files; the model sees its earlier write; the mission verifies; no saved sessions remain | `resume.test.ts` (integration) |
+| Daemon dies with an unanswered tool call | A second Pi runtime forks a session whose last turn is a call with no result | The call is closed as "Interrupted: ATLAS restarted…" before the model runs | `runtime-pi/test/resume.test.ts` |
+| Lost worktree removed before restart | Worktree deleted, then recovery | A fresh attempt with only the task prompt; the saved conversation is deleted | `resume.test.ts` (integration) |
 | Terminal tab switch | e2e: type, switch tab, return | Shell state and history intact | `capabilities.spec.ts` |
 
 ## Metrics (Linux, `pnpm metrics`, same harness as the baseline)

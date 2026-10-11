@@ -2,8 +2,12 @@
 //  - Pi's built-in tools (read/bash/edit/write) are never enabled: the agent only sees ATLAS's governed tools.
 //  - No resources are discovered from the repository (extensions, skills, AGENTS files): repo text cannot
 //    reconfigure the agent. Instructions come from ATLAS role definitions only.
-//  - Sessions are in-memory; ATLAS's event log is the durable record.
-import type { AgentSession, ModelRuntime, ResourceLoader, ToolDefinition } from '@earendil-works/pi-coding-agent';
+//  - Sessions are saved per attempt under the ATLAS-owned agentDir, only so that an attempt lost to a daemon
+//    restart can continue its conversation. A session is deleted when its attempt ends; ATLAS's event log remains
+//    the durable record.
+import { existsSync, readdirSync, rmSync } from 'node:fs';
+import path from 'node:path';
+import type { AgentSession, ModelRuntime, ResourceLoader, SessionManager, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import type { AgentEvent, AgentHandle, AgentInput, AgentRuntime, PlanProposal, PlanRequest, RuntimeHealth } from '@atlas/contracts';
 import { EventQueue } from '@atlas/runtime-fake';
@@ -29,6 +33,23 @@ let sdkPromise: Promise<PiSdk> | null = null;
  * memory, which an idle daemon, or one that only runs the scripted runtime, never needs.
  */
 const sdk = (): Promise<PiSdk> => (sdkPromise ??= import('@earendil-works/pi-coding-agent'));
+
+const ATTEMPT_ID = /^att_[A-Za-z0-9]+$/;
+
+/**
+ * A crash can leave the last assistant turn with tool calls that never got a result. Record each one as failed with
+ * the reason, so the model knows the command did not finish (instead of a provider's generic placeholder).
+ */
+function closeInterruptedCalls(sm: SessionManager) {
+  const messages = sm.buildSessionContext().messages as { role: string; content?: unknown; toolCallId?: string }[];
+  const answered = new Set(messages.filter((m) => m.role === 'toolResult').map((m) => m.toolCallId));
+  const last = [...messages].reverse().find((m) => m.role === 'assistant');
+  const calls = Array.isArray(last?.content) ? (last.content as { type: string; id: string; name: string }[]).filter((c) => c.type === 'toolCall') : [];
+  for (const c of calls) {
+    if (answered.has(c.id)) continue;
+    sm.appendMessage({ role: 'toolResult', toolCallId: c.id, toolName: c.name, isError: true, timestamp: Date.now(), content: [{ type: 'text', text: 'Interrupted: ATLAS restarted before this call finished. It produced no result; run it again if you still need it.' }] });
+  }
+}
 
 interface Run { session: AgentSession; queue: EventQueue<AgentEvent>; done: Promise<void>; unsubscribe: () => void }
 
@@ -138,6 +159,13 @@ export class PiRuntime implements AgentRuntime {
         },
       }) as unknown as ToolDefinition);
 
+    // A resumed attempt forks the lost attempt's conversation into its own session (new id, new worktree as cwd);
+    // Pi closes tool calls the crash left without a result. Anything else starts an empty, file-backed session.
+    const from = input.resume && this.canResume(input.resume.attemptId) ? this.sessionFile(input.resume.attemptId) : null;
+    const sessionManager = from
+      ? SessionManager.forkFrom(from, input.cwd, this.sessionDir(input.attemptId))
+      : SessionManager.create(input.cwd, this.sessionDir(input.attemptId));
+    if (from) closeInterruptedCalls(sessionManager);
     const { session } = await createAgentSession({
       cwd: input.cwd,
       agentDir: this.opts.agentDir,
@@ -147,7 +175,7 @@ export class PiRuntime implements AgentRuntime {
       resourceLoader: resourceLoader(pi, input.instructions),
       tools: customTools.map((t) => t.name),
       customTools,
-      sessionManager: SessionManager.inMemory(input.cwd),
+      sessionManager,
       // No Pi telemetry or attribution headers (manual §43).
       settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: true, maxRetries: 2 }, enableInstallTelemetry: false, enableAnalytics: false }),
     });
@@ -193,7 +221,7 @@ export class PiRuntime implements AgentRuntime {
 
     const done = (async () => {
       try {
-        await session.prompt(input.prompt);
+        await session.prompt(from ? input.resume!.prompt : input.prompt);
         if (input.signal.aborted) queue.push({ type: 'error', kind: 'cancelled', message: 'Run cancelled' });
         else if (budgetHit) queue.push({ type: 'error', kind: 'budget_exceeded', message: `Budget exhausted (tool calls ${calls}/${input.budget.maxToolCalls}, tokens ${tokens}/${input.budget.maxTokens})` });
         else queue.push({ type: 'completed', summary: session.getLastAssistantText() ?? '' });
@@ -209,7 +237,7 @@ export class PiRuntime implements AgentRuntime {
 
     const id = `pi-${++this.seq}`;
     this.runs.set(id, { session, queue, done, unsubscribe });
-    return { id, runtime: 'pi' };
+    return { id, runtime: 'pi', resumed: !!from };
   }
 
   /**
@@ -267,9 +295,31 @@ Rules: at most ${req.maxTasks} tasks; no cycles; only tools listed for each role
 
   async interrupt(handle: AgentHandle) { await this.runs.get(handle.id)?.session.abort(); }
 
+  private sessionDir(attemptId: string): string {
+    if (!ATTEMPT_ID.test(attemptId)) throw new Error(`malformed attempt id ${attemptId}`);
+    return path.join(this.opts.agentDir, 'sessions', attemptId);
+  }
+
+  /** The saved conversation of an attempt, if Pi wrote one (it does once the model has answered). */
+  private sessionFile(attemptId: string): string | null {
+    const dir = this.sessionDir(attemptId);
+    if (!existsSync(dir)) return null;
+    const files = readdirSync(dir).filter((f) => f.endsWith('.jsonl')).sort();
+    return files.length ? path.join(dir, files[files.length - 1]) : null;
+  }
+
+  canResume(attemptId: string): boolean {
+    return ATTEMPT_ID.test(attemptId) && this.sessionFile(attemptId) !== null;
+  }
+
+  discard(attemptId: string): void {
+    if (ATTEMPT_ID.test(attemptId)) rmSync(this.sessionDir(attemptId), { recursive: true, force: true });
+  }
+
   async resume(): Promise<void> {
-    // In-memory Pi sessions do not survive a daemon restart; the scheduler starts a new attempt instead (manual §40).
-    throw new Error('Pi sessions are not resumable in v0.1; a new attempt is started.');
+    // A live run is not paused and resumed in place; after a restart the scheduler starts a new attempt that
+    // continues the saved conversation (AgentInput.resume).
+    throw new Error('Pi runs are continued by a new attempt with AgentInput.resume, not resumed in place.');
   }
 
   async dispose(handle: AgentHandle) {

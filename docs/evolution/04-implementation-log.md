@@ -320,3 +320,15 @@ The auditor also confirmed several fixes against new scenarios (could not break 
 - **Shim fix confirmed.** `npm.cmd` is now run as `node npm-cli.js`. CI run 38118446488 shows npm working inside the AppContainer: the bisection test passed.
 - **Next blocker.** `npm test` hangs inside the container, and a probe that spawns children never writes its pid file.
 - **Hypothesis:** libuv's piped child stdio needs a named pipe the AppContainer may not create. Diagnostics are on CI now.
+
+## Durable Pi sessions — ADR 0014
+- **What changed.** A daemon restart no longer throws away a running attempt's work. Pi sessions are now saved per attempt. On recovery:
+  - the lost worktree is committed, uncommitted edits included;
+  - the next attempt starts from that commit;
+  - the next attempt continues the lost conversation, using Pi's `forkFrom` into a new attempt and worktree.
+- **Found while testing:**
+  - **Unanswered tool calls.** A crash mid-command leaves a tool call with no result. The faux model received exactly that, and real providers would replace it with a generic "No result provided". The adapter now closes such calls itself, with a message saying the command was interrupted.
+  - **Cleanup leak.** Saved conversations for lost attempts whose task was no longer running were not deleted at recovery. Fixed.
+- **Tests:**
+  - 3 unit tests: crash mid-command, fresh fallback, path-like ids refused;
+  - 2 integration tests: a full mission across a daemon restart, verified, plus the case where the worktree is gone.

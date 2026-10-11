@@ -98,6 +98,8 @@ export class Orchestrator {
   private readonly stallAfterMs: number;
   readonly acceptance: AcceptanceStore;
   readonly skills: SkillLibrary;
+  /** Lost attempts whose conversation and files the next attempt continues, by task id (set by recover()). */
+  private readonly resumeFrom = new Map<string, { attemptId: string; number: number; commit: string; startCommit: string }>();
   private readonly exportKeys: ExportKeys;
 
   constructor(private readonly o: OrchestratorOptions) {
@@ -576,7 +578,9 @@ export class Orchestrator {
   private async runAttempt(m: Mission, w: Workspace, t: Task, def: ReturnType<typeof role>, plan: Plan, attempt: Attempt, number: number, missionSignal: AbortSignal, baseOverride?: string[]) {
     const dir = path.join(this.o.worktreeDir, m.id, `${t.key}-${number}`);
     const branch = `atlas/${m.id}/${t.key}-${number}`;
-    const bases = this.basesFor(m, t, baseOverride);
+    const resume = this.resumeFrom.get(t.id);
+    this.resumeFrom.delete(t.id);
+    const bases = resume ? [resume.commit] : this.basesFor(m, t, baseOverride);
     try {
       this.assertWorktreeCapacity(m.id);
     } catch (e) {
@@ -596,7 +600,8 @@ export class Orchestrator {
       this.setTask(t, 'failed', { errorKind: 'workspace_conflict', reason: message });
       return;
     }
-    const startCommit = await gitOk(dir, ['rev-parse', 'HEAD']);
+    // A resumed attempt is measured from where the lost attempt started, so its patch includes the restored work.
+    const startCommit = resume?.startCommit ?? await gitOk(dir, ['rev-parse', 'HEAD']);
     this.repo.updateTask(t.id, { worktree: dir, branch });
     this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'workspace.worktree', actor: SYSTEM('workspace'), payload: { action: 'created', path: dir, branch, base: m.baseCommit, startedFrom: bases } });
     if (!this.leases.acquire(dir, attempt.id)) throw new AtlasError('workspace_conflict', `Worktree ${dir} already has a writer`);
@@ -641,7 +646,7 @@ export class Orchestrator {
     const prompt = `Mission: ${m.title}\n\n${ctx.text}\n\nWork on task ${t.key} now.`;
 
     this.repo.updateAttempt(attempt.id, { state: 'running' });
-    this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'attempt.started', actor: SYSTEM('scheduler'), payload: { number, runtime: m.runtime, role: t.role, roleVersion: def.version, worktree: dir, branch, tools: permitted, depth: t.depth, contextArtifact: ctxArt.id, sandbox: isolation.mode }, artifactIds: [ctxArt.id] });
+    this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'attempt.started', actor: SYSTEM('scheduler'), payload: { number, runtime: m.runtime, role: t.role, roleVersion: def.version, worktree: dir, branch, tools: permitted, depth: t.depth, contextArtifact: ctxArt.id, sandbox: isolation.mode, startCommit, ...(resume ? { resumedFrom: { attemptId: resume.attemptId, number: resume.number, commit: resume.commit } } : {}) }, artifactIds: [ctxArt.id] });
 
     this.watchSignal(m.id, t.id, attempt.id);
     const agent = { kind: 'agent' as const, role: t.role, taskId: t.id };
@@ -652,7 +657,13 @@ export class Orchestrator {
       handle = await rt.start({
         missionId: m.id, taskId: t.id, attemptId: attempt.id, workspaceId: w.id, roleId: t.role, cwd: dir, instructions: def.instructions, prompt,
         permittedTools: permitted, contextRefs: [ctxArt.id], budget: def.budget, tools, signal: ac.signal,
+        resume: resume ? { attemptId: resume.attemptId, prompt: resumePrompt(t.key) } : undefined,
       });
+      if (resume) {
+        // The fork is the attempt's own copy now; the lost attempt's saved conversation is no longer needed.
+        rt.discard?.(resume.attemptId);
+        if (handle.resumed) this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'agent.message', actor: SYSTEM('recovery'), payload: { text: `Continuing the conversation of attempt ${resume.number}, which a daemon restart interrupted. The worktree holds that attempt's files as it left them.` } });
+      }
       for await (const ev of rt.stream(handle)) {
         const base = { missionId: m.id, taskId: t.id, attemptId: attempt.id, actor: agent };
         if (ev.type === 'message') this.emit({ ...base, type: 'agent.message', payload: { text: ev.text } });
@@ -672,6 +683,9 @@ export class Orchestrator {
     } finally {
       this.unwatchSignal(attempt.id);
       if (handle) await rt.dispose(handle).catch(() => {});
+      // Saved conversations exist for crash recovery only: once the attempt has an outcome, drop it. On shutdown it is
+      // kept, so the next start can continue it.
+      if (!this.stopping) rt.discard?.(attempt.id);
       for (const x of Object.values(extras)) await x.dispose().catch(() => {});
       missionSignal.removeEventListener('abort', onMission);
       this.taskAborts.delete(t.id);
@@ -1333,11 +1347,16 @@ export class Orchestrator {
       this.repo.updateAttempt(a.id, { state: 'lost', endedAt: nowIso(), error: 'Daemon restarted during the attempt' });
       this.emit({ missionId: a.missionId, taskId: a.taskId, attemptId: a.id, type: 'attempt.ended', actor: SYSTEM('recovery'), payload: { number: a.number, state: 'lost' } });
       const t = this.repo.task(a.taskId);
-      if (!t || t.state !== 'running') continue;
+      if (!t || t.state !== 'running') { this.o.runtimes[a.runtime]?.discard?.(a.id); continue; }
       // A subtask belongs to its parent's attempt; the parent restarts and delegates again if it needs to.
       if (t.parentTaskId) this.setTask(t, 'cancelled', { reason: 'Parent attempt lost in a daemon restart' });
-      else if (a.number < this.maxAttempts) this.setTask(t, 'ready', { reason: 'Restarting in a fresh worktree after daemon restart' });
+      else if (a.number < this.maxAttempts) {
+        const resume = await this.resumable(a, t).catch(() => null);
+        if (resume) this.resumeFrom.set(t.id, resume);
+        this.setTask(t, 'ready', { reason: resume ? `Continuing attempt ${a.number} after daemon restart` : 'Restarting in a fresh worktree after daemon restart' });
+      }
       else this.setTask(t, 'failed', { reason: 'Attempt lost and no retries left' });
+      if (!this.resumeFrom.has(t.id)) this.o.runtimes[a.runtime]?.discard?.(a.id);
     }
     for (const t of this.repo.missionsInState(['running']).flatMap((m) => this.repo.tasks(m.id))) {
       if (t.parentTaskId && !TERMINAL_TASK.has(t.state)) this.setTask(t, 'cancelled', { reason: 'Parent attempt lost in a daemon restart' });
@@ -1353,6 +1372,22 @@ export class Orchestrator {
     return { missions, lostAttempts, expiredApprovals };
   }
 
+  /**
+   * Can the next attempt continue a lost one? Only if the runtime saved its conversation and its worktree is still
+   * there. The worktree's current files, uncommitted edits included, are committed on the lost attempt's branch
+   * (nothing in it is destroyed) and become the next attempt's starting point.
+   */
+  private async resumable(a: Attempt, t: Task): Promise<{ attemptId: string; number: number; commit: string; startCommit: string } | null> {
+    const rt = this.o.runtimes[a.runtime];
+    if (!rt?.canResume?.(a.id) || !t.worktree || !existsSync(t.worktree)) return null;
+    const started = this.repo.eventsSince(a.missionId, 0, 100_000).find((e) => e.type === 'attempt.started' && e.attemptId === a.id);
+    const startCommit = typeof started?.payload.startCommit === 'string' ? started.payload.startCommit : null;
+    if (!startCommit || started?.payload.worktree !== t.worktree) return null;
+    await checkpoint(t.worktree, `ATLAS ${a.missionId} ${t.key} attempt ${a.number} (interrupted)`);
+    const commit = await gitOk(t.worktree, ['rev-parse', 'HEAD']);
+    return { attemptId: a.id, number: a.number, commit, startCommit };
+  }
+
   /** Abort everything (daemon shutdown). */
   async shutdown() {
     this.stopping = true;
@@ -1362,4 +1397,8 @@ export class Orchestrator {
     if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
     await Promise.allSettled(this.running.values());
   }
+}
+
+function resumePrompt(taskKey: string): string {
+  return `ATLAS restarted while you were working on task ${taskKey}. Your conversation is restored and your worktree holds your files exactly as you left them, uncommitted edits included. Any command that was running was stopped and did not finish, and approvals you were waiting for expired: run again what you still need. Continue the task.`;
 }

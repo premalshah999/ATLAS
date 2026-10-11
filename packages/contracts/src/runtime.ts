@@ -30,6 +30,12 @@ export interface AgentInput {
   budget: { maxToolCalls: number; maxTokens: number; wallClockMs: number };
   tools: ToolInvoker;
   signal: AbortSignal;
+  /**
+   * Continue the conversation of an attempt lost to a daemon restart (evolution R2: durable sessions). Set only when
+   * `canResume` said yes; the worktree then starts from a snapshot of that attempt's files, so the model's memory of
+   * its edits matches what it finds. A runtime that cannot honour it starts a fresh conversation with `prompt`.
+   */
+  resume?: { attemptId: string; prompt: string };
 }
 
 export type AgentEvent =
@@ -43,6 +49,8 @@ export type AgentEvent =
 export interface AgentHandle {
   id: string;
   runtime: RuntimeKind;
+  /** True when the run continues an earlier attempt's conversation (`AgentInput.resume`). */
+  resumed?: boolean;
 }
 
 export interface RuntimeHealth {
@@ -83,6 +91,10 @@ export interface AgentRuntime {
   interrupt(handle: AgentHandle): Promise<void>;
   resume(handle: AgentHandle, checkpoint: string): Promise<void>;
   dispose(handle: AgentHandle): Promise<void>;
+  /** Whether a conversation saved for this attempt survives and can be continued. Optional: absent means never. */
+  canResume?(attemptId: string): boolean;
+  /** Delete whatever the runtime saved for this attempt. Called once an attempt has ended or been resumed. */
+  discard?(attemptId: string): void;
 }
 
 /**
