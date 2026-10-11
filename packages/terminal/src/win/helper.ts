@@ -5,6 +5,12 @@
 //   atlas-sandbox.exe capsid <capability>    print the SID of a custom capability (used for toolchain ACLs)
 //   atlas-sandbox.exe run <container|-> [--net] [--cap NAME]... [--mem MB] [--pty COLSxROWS] [--parent PID] --cmdline <command line>
 //   --parent: when that process (the ATLAS daemon) exits, even by a crash, the job and every process in it are terminated.
+//   run - --restricted SIDLIST [--low] ...   restricted-token mode (ADR 0016, operator-approved experiment): the
+//     operator's token with the user and every group except a basic allowlist turned deny-only, all privileges
+//     removed, the restricting SIDs in SIDLIST (comma separated SIDs or the names everyone, users, authusers,
+//     interactive, logon, restricted), and with --low the low integrity level. Unlike an AppContainer it lets Node
+//     create the named pipes it needs for child stdio. Not used by ATLAS until it passes the sandbox test suite.
+//   atlas-sandbox.exe logonsid               print the logon SID of the current session
 //
 // The command line is built by ATLAS (argument quoting, cmd.exe escaping for .cmd shims) and used verbatim.
 // Container "-" runs without an AppContainer; only the operator's explicit unsandboxed opt-in uses it.
@@ -13,7 +19,7 @@
 // user's files except paths explicitly granted to the container SID, and no network unless --net adds the
 // internetClient/privateNetwork capabilities. The process is created suspended, placed in a Job Object that
 // kills the whole tree when the launcher exits, then resumed. --pty hosts it in a ConPTY.
-export const HELPER_VERSION = '4';
+export const HELPER_VERSION = '5';
 
 export const HELPER_SOURCE = String.raw`
 using System;
@@ -62,6 +68,13 @@ static class AtlasSandbox {
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
   [DllImport("kernel32.dll", SetLastError = true)] static extern int CreatePseudoConsole(COORD size, IntPtr input, IntPtr output, uint flags, out IntPtr hpc);
   [DllImport("kernel32.dll", SetLastError = true)] static extern void ClosePseudoConsole(IntPtr hpc);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr p, uint access, out IntPtr tok);
+  [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr t, int cls, IntPtr buf, int len, out int ret);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool CreateRestrictedToken(IntPtr existing, uint flags, int disableCount, SID_AND_ATTRIBUTES[] disable, int delPrivCount, IntPtr delPriv, int restrictCount, SID_AND_ATTRIBUTES[] restrict, out IntPtr newToken);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr t, int cls, IntPtr info, int len);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern int GetLengthSid(IntPtr sid);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessAsUser(IntPtr tok, string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
   [DllImport("kernelbase.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool DeriveCapabilitySidsFromName(string name, out IntPtr groupSids, out int groupCount, out IntPtr capSids, out int capCount);
 
   /** Every ATLAS container holds this capability; toolchain directories grant it read access once. */
@@ -82,7 +95,67 @@ static class AtlasSandbox {
     return sid;
   }
 
+  static string SidString(IntPtr sid) { string s; ConvertSidToStringSid(sid, out s); return s; }
+  static IntPtr Sid(string s) { IntPtr p; if (!ConvertStringSidToSid(s, out p)) Fail("bad SID " + s); return p; }
+
+  /** The groups of a token: (sid, attributes). */
+  static List<SID_AND_ATTRIBUTES> TokenGroups(IntPtr tok) {
+    int len; GetTokenInformation(tok, 2, IntPtr.Zero, 0, out len);
+    IntPtr buf = Marshal.AllocHGlobal(len);
+    if (!GetTokenInformation(tok, 2, buf, len, out len)) Fail("token groups: " + Marshal.GetLastWin32Error());
+    int n = Marshal.ReadInt32(buf); int sz = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+    var list = new List<SID_AND_ATTRIBUTES>();
+    for (int i = 0; i < n; i++) list.Add((SID_AND_ATTRIBUTES)Marshal.PtrToStructure(buf + IntPtr.Size + i * sz, typeof(SID_AND_ATTRIBUTES)));
+    return list;
+  }
+  static IntPtr TokenUser(IntPtr tok) {
+    int len; GetTokenInformation(tok, 1, IntPtr.Zero, 0, out len);
+    IntPtr buf = Marshal.AllocHGlobal(len);
+    if (!GetTokenInformation(tok, 1, buf, len, out len)) Fail("token user: " + Marshal.GetLastWin32Error());
+    return Marshal.ReadIntPtr(buf);
+  }
+  static IntPtr OwnToken() {
+    IntPtr tok; // DUPLICATE | QUERY | ASSIGN_PRIMARY | ADJUST_DEFAULT
+    if (!OpenProcessToken(GetCurrentProcess(), 0x8B, out tok)) Fail("open token: " + Marshal.GetLastWin32Error());
+    return tok;
+  }
+  static string LogonSid(IntPtr tok) {
+    foreach (var g in TokenGroups(tok)) if (((uint)g.Attributes & 0xC0000000u) == 0xC0000000u) return SidString(g.Sid);
+    return null;
+  }
+
+  /** Groups that stay usable for the normal access check; the user and every other group become deny-only. */
+  static readonly HashSet<string> KEEP = new HashSet<string> { "S-1-1-0", "S-1-5-32-545", "S-1-5-11", "S-1-5-4", "S-1-2-0", "S-1-2-1", "S-1-5-15" };
+
+  static IntPtr RestrictedToken(string sidList, bool low) {
+    IntPtr tok = OwnToken();
+    string logon = LogonSid(tok);
+    var disable = new List<SID_AND_ATTRIBUTES> { new SID_AND_ATTRIBUTES { Sid = TokenUser(tok) } };
+    foreach (var g in TokenGroups(tok)) {
+      string s = SidString(g.Sid);
+      if (s.StartsWith("S-1-16-") || KEEP.Contains(s) || s == logon) continue;
+      disable.Add(new SID_AND_ATTRIBUTES { Sid = g.Sid });
+    }
+    var restrict = new List<SID_AND_ATTRIBUTES>();
+    foreach (var raw in sidList.Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)) {
+      string s = raw == "everyone" ? "S-1-1-0" : raw == "users" ? "S-1-5-32-545" : raw == "authusers" ? "S-1-5-11" : raw == "interactive" ? "S-1-5-4" : raw == "restricted" ? "S-1-5-12" : raw == "logon" ? logon : raw;
+      if (s == null) Fail("this session has no logon SID");
+      restrict.Add(new SID_AND_ATTRIBUTES { Sid = Sid(s) });
+    }
+    IntPtr rt; // DISABLE_MAX_PRIVILEGE
+    if (!CreateRestrictedToken(tok, 0x1, disable.Count, disable.ToArray(), 0, IntPtr.Zero, restrict.Count, restrict.Count > 0 ? restrict.ToArray() : null, out rt)) Fail("restricted token: " + Marshal.GetLastWin32Error());
+    if (low) {
+      IntPtr lowSid = Sid("S-1-16-4096");
+      int sz = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
+      IntPtr tml = Marshal.AllocHGlobal(sz);
+      Marshal.StructureToPtr(new SID_AND_ATTRIBUTES { Sid = lowSid, Attributes = 0x20 }, tml, false); // SE_GROUP_INTEGRITY
+      if (!SetTokenInformation(rt, 25, tml, sz + GetLengthSid(lowSid))) Fail("integrity level: " + Marshal.GetLastWin32Error());
+    }
+    return rt;
+  }
+
   static int Main(string[] argv) {
+    if (argv.Length >= 1 && argv[0] == "logonsid") { string l = LogonSid(OwnToken()); if (l == null) Fail("no logon SID"); Console.WriteLine(l); return 0; }
     if (argv.Length >= 2 && argv[0] == "sid") {
       string s; ConvertSidToStringSid(ContainerSid(argv[1]), out s); Console.WriteLine(s); return 0;
     }
@@ -90,7 +163,7 @@ static class AtlasSandbox {
       string s; ConvertSidToStringSid(CapabilitySid(argv[1]), out s); Console.WriteLine(s); return 0;
     }
     if (argv.Length < 4 || argv[0] != "run") Fail("usage: atlas-sandbox run <container|-> [--net] [--mem MB] [--pty COLSxROWS] --cmdline <command line>");
-    string name = argv[1]; bool net = false; long memMb = 0; int parent = 0; short cols = 0, rows = 0; string line = null; var extraCaps = new List<string>();
+    string name = argv[1]; bool net = false, low = false; string restrictedSids = null; long memMb = 0; int parent = 0; short cols = 0, rows = 0; string line = null; var extraCaps = new List<string>();
     for (int i = 2; i < argv.Length; i++) {
       if (argv[i] == "--net") net = true;
       else if (argv[i] == "--mem") memMb = long.Parse(argv[++i]);
@@ -98,11 +171,15 @@ static class AtlasSandbox {
       else if (argv[i] == "--cmdline") line = argv[++i];
       else if (argv[i] == "--cap") extraCaps.Add(argv[++i]);
       else if (argv[i] == "--parent") parent = int.Parse(argv[++i]);
+      else if (argv[i] == "--restricted") restrictedSids = argv[++i];
+      else if (argv[i] == "--low") low = true;
       else Fail("unknown option " + argv[i]);
     }
     if (string.IsNullOrEmpty(line)) Fail("missing --cmdline");
     var cmd = new StringBuilder(line, 32768);
     bool contained = name != "-";
+    if (restrictedSids != null && contained) Fail("--restricted runs without an AppContainer: use - as the container");
+    IntPtr rtoken = restrictedSids != null ? RestrictedToken(restrictedSids, low) : IntPtr.Zero;
 
     IntPtr sid = contained ? ContainerSid(name) : IntPtr.Zero;
     var caps = new List<SID_AND_ATTRIBUTES>();
@@ -144,7 +221,11 @@ static class AtlasSandbox {
     if (!SetInformationJobObject(job, 9, ref lim, Marshal.SizeOf(lim))) Fail("job limits: " + Marshal.GetLastWin32Error());
 
     PROCESS_INFORMATION pi;
-    if (!CreateProcess(null, cmd, IntPtr.Zero, IntPtr.Zero, !pty, EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT, IntPtr.Zero, Environment.CurrentDirectory, ref si, out pi)) {
+    uint cflags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
+    bool started = rtoken != IntPtr.Zero
+      ? CreateProcessAsUser(rtoken, null, cmd, IntPtr.Zero, IntPtr.Zero, !pty, cflags, IntPtr.Zero, Environment.CurrentDirectory, ref si, out pi)
+      : CreateProcess(null, cmd, IntPtr.Zero, IntPtr.Zero, !pty, cflags, IntPtr.Zero, Environment.CurrentDirectory, ref si, out pi);
+    if (!started) {
       int err = Marshal.GetLastWin32Error();
       Console.Error.WriteLine("atlas-sandbox: cannot start " + line + " (error " + err + (err == 2 ? ": not found" : err == 5 ? ": access denied — the container cannot read this program" : "") + ")");
       return 127;
