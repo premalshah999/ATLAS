@@ -73,6 +73,26 @@ describe.skipIf(process.platform === 'win32')('orphaned processes after a crash'
     db.close();
   });
 
+  it('the leader died first: its surviving group members are reaped, nothing else (review finding 4)', async () => {
+    const db = openDb(path.join(tmpDir('atlas-journal-'), 'atlas.db'));
+    const journal = new Repo(db).processJournal();
+    // A leader that backgrounds a long-lived child and exits, like npm dying on EPIPE while its server runs.
+    const leader = spawn('/bin/sh', ['-c', 'sleep 300 >/dev/null 2>&1 & echo $!; sleep 0.3'], { detached: true, stdio: ['ignore', 'pipe', 'ignore'] });
+    const identity = processIdentity(leader.pid!)!;
+    const childPid = await new Promise<number>((r) => leader.stdout!.once('data', (b) => r(Number(String(b).trim()))));
+    journal.add({ pid: leader.pid!, identity, kind: 'command', command: 'sh', startedAt: new Date().toISOString() });
+    const bystander = spawn('/bin/sh', ['-c', 'sleep 300'], { detached: true, stdio: 'ignore' }); // another group
+    await new Promise((r) => leader.on('exit', r));
+    expect(isAlive(childPid)).toBe(true);
+    try {
+      const r = reapJournaled(journal);
+      expect(r.killed.map((k) => k.pid)).toEqual([childPid]);
+      for (let i = 0; i < 40 && isAlive(childPid); i++) await new Promise((res) => setTimeout(res, 50));
+      expect(isAlive(childPid)).toBe(false);
+      expect(isAlive(bystander.pid!)).toBe(true);
+    } finally { try { process.kill(-bystander.pid!, 'SIGKILL'); } catch { /* gone */ } try { process.kill(childPid, 'SIGKILL'); } catch { /* gone */ } db.close(); }
+  });
+
   it('finished commands leave nothing in the journal', async () => {
     const { run, setProcessJournal } = await import('@atlas/terminal');
     const db = openDb(path.join(tmpDir('atlas-journal-'), 'atlas.db'));

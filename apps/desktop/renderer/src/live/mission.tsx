@@ -35,7 +35,7 @@ export function MissionView({ missionId }: { missionId: string }) {
   const finished = m.state === 'completed' || m.state === 'failed';
   const patchCount = snap.artifacts.filter((a) => a.kind === 'patch').length;
   const hasBrowser = events.some((e) => e.type === 'browser.step') || snap.checks.some((c) => /^(api|browser):/.test(c.name));
-  const stalled = useMemo(() => stalledTasks(events), [events]);
+  const stalled = stalledTasks(events);
   const hasDesktop = events.some((e) => e.type.startsWith('desktop.')) || snap.tasks.some((t) => t.role === 'desktop_operator');
 
   return (

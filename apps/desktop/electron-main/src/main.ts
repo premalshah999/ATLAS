@@ -14,6 +14,10 @@ const rendererIndex = path.join(__dirname, '..', 'dist', 'index.html');
 const EXTERNAL_ALLOW = [/^https:\/\/(www\.)?github\.com\//, /^https:\/\/pi\.dev\//, /^https:\/\/code\.claude\.com\//];
 
 if (process.env.ATLAS_USER_DATA) app.setPath('userData', process.env.ATLAS_USER_DATA);
+// One app per profile: a second instance focuses the first instead of starting a second daemon on the same data.
+const primary = app.requestSingleInstanceLock();
+if (!primary) app.quit();
+app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
 const dataDir = () => path.join(app.getPath('userData'), 'data');
 const logFile = () => path.join(app.getPath('userData'), 'logs', 'main.log');
 function log(msg: string) {
@@ -164,6 +168,7 @@ function createWindow() {
 // Process-wide sandbox. `--no-sandbox` is honored only for root CI containers; renderers keep sandbox: true regardless.
 if (!app.commandLine.hasSwitch('no-sandbox')) app.enableSandbox();
 app.whenReady().then(() => {
+  if (!primary) return;
   // Deny every permission request (camera, notifications, …) from web content.
   session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
   // Manual §43: no unexplained outbound traffic. Chromium otherwise downloads Hunspell dictionaries from Google.

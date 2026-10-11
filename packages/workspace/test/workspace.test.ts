@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { checkpoint, createWorktree, diffSince, inspectRepo, Leases, removeWorktree, resolveInside } from '../src';
+import { checkpoint, createWorktree, diffSince, inspectRepo, Leases, removeWorktree, resolveInside, retireWorktree } from '../src';
 import { sampleRepo, sh, tmpDir } from '../../../tests/helpers';
 
 describe('resolveInside', () => {
@@ -76,5 +76,51 @@ describe('resolveInside: cross-platform forms', () => {
   });
   it.skipIf(process.platform !== 'win32')('refuses reserved device names and alternate data streams on Windows', () => {
     for (const p of ['CON', 'nul.txt', 'src/aux', 'COM1', 'file.txt:secret']) expect(() => resolveInside(root, p), p).toThrow(/Reserved/);
+  });
+});
+
+describe('retireWorktree keeps what it cannot preserve (P1-3 review findings 1-3)', () => {
+  async function wt() {
+    const repo = sampleRepo();
+    const dir = path.join(tmpDir(), 'wt');
+    await createWorktree(repo, dir, 'atlas/t/w', 'HEAD');
+    writeFileSync(path.join(dir, 'work.txt'), 'precious');
+    return { repo, dir };
+  }
+
+  it('a path git refuses to snapshot: the worktree and branch stay, nothing is lost', async () => {
+    const { repo, dir } = await wt();
+    mkdirSync(path.join(dir, 'GIT~1'));
+    writeFileSync(path.join(dir, 'GIT~1', 'x'), 'x'); // rejected by core.protectNTFS
+    const r = await retireWorktree(repo, dir, 'atlas/t/w', 'refs/atlas/preserved/t/w');
+    expect(r.retained).toMatch(/could not be snapshotted/);
+    expect(readFileSync(path.join(dir, 'work.txt'), 'utf8')).toBe('precious');
+    expect(sh(repo, 'git', ['branch', '--list', 'atlas/t/w'])).toContain('atlas/t/w');
+  });
+
+  it('a nested repository (agent ran git init): kept, because a gitlink would lose its files', async () => {
+    const { repo, dir } = await wt();
+    mkdirSync(path.join(dir, 'sub'));
+    sh(path.join(dir, 'sub'), 'git', ['init', '-q']);
+    writeFileSync(path.join(dir, 'sub', 'g'), 'nested work');
+    sh(path.join(dir, 'sub'), 'git', ['add', 'g']);
+    sh(path.join(dir, 'sub'), 'git', ['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'n']);
+    const r = await retireWorktree(repo, dir, 'atlas/t/w', 'refs/atlas/preserved/t/w');
+    expect(r.retained).toMatch(/nested repository.*sub/);
+    expect(existsSync(path.join(dir, 'sub', 'g'))).toBe(true);
+  });
+
+  it('a normal dirty worktree is preserved and removed, and the user\'s other worktrees are untouched', async () => {
+    const { repo, dir } = await wt();
+    const mine = path.join(tmpDir(), 'mine');
+    sh(repo, 'git', ['worktree', 'add', '-q', '-b', 'user-branch', mine, 'HEAD']);
+    const moved = `${mine}-moved`;
+    sh(tmpDir(), 'mv', [mine, moved]); // e.g. an unmounted drive: `git worktree prune` would drop its metadata
+    const r = await retireWorktree(repo, dir, 'atlas/t/w', 'refs/atlas/preserved/t/w');
+    expect(r.retained).toBeNull();
+    expect(r.refs.map((x) => x.what).sort()).toEqual(['branch', 'uncommitted']);
+    expect(sh(repo, 'git', ['show', 'refs/atlas/preserved/t/w/uncommitted:work.txt'])).toBe('precious');
+    expect(existsSync(dir)).toBe(false);
+    expect(sh(repo, 'git', ['worktree', 'list', '--porcelain'])).toContain(mine);
   });
 });

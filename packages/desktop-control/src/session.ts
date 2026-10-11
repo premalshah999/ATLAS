@@ -10,7 +10,7 @@ import path from 'node:path';
 import { xwdToPng } from './xwd';
 import { newId, nowIso, type DesktopAction, type DesktopController, type DesktopSessionInfo } from '@atlas/contracts';
 import { classifyCommand } from '@atlas/policy';
-import { sanitizedEnv, startProcess, wrapCommand, type ProcessHandle, type SandboxSpec } from '@atlas/terminal';
+import { journalStart, sanitizedEnv, startProcess, wrapCommand, type ProcessHandle, type SandboxSpec } from '@atlas/terminal';
 
 export type Controller = DesktopController;
 
@@ -41,6 +41,7 @@ export class DesktopSession {
   /** Every input actually emitted, by whom. Tests and the audit log use this as ground truth. */
   readonly inputLog: InputRecord[] = [];
   private xvfb: ChildProcess | null = null;
+  private unjournal: () => void = () => {};
   private fbdir: string | null = null;
   private apps: ProcessHandle[] = [];
   readonly startedAt = nowIso();
@@ -68,6 +69,8 @@ export class DesktopSession {
     this.fbdir = mkdtempSync(path.join(os.tmpdir(), 'atlas-fb-'));
     this.xvfb = spawn(which('Xvfb') ?? 'Xvfb', [this.display, '-screen', '0', `${this.width}x${this.height}x24`, '-nolisten', 'tcp', '-noreset', '-fbdir', this.fbdir], { stdio: 'ignore', detached: true });
     this.xvfb.unref();
+    // Detached and unref'd, so it would outlive a daemon crash forever: journal it for the reaper (P0-4 review).
+    this.unjournal = journalStart(this.xvfb.pid, 'service', `Xvfb ${this.display}`);
     const sock = `/tmp/.X11-unix/X${this.display.slice(1)}`;
     for (let i = 0; i < 100 && !existsSync(sock); i++) await new Promise((r) => setTimeout(r, 50));
     if (!existsSync(sock)) throw new Error('Virtual display did not start');
@@ -208,6 +211,7 @@ export class DesktopSession {
     this.apps = [];
     if (this.xvfb?.pid) { try { process.kill(-this.xvfb.pid, 'SIGTERM'); } catch { try { this.xvfb.kill('SIGTERM'); } catch { /* gone */ } } }
     this.xvfb = null;
+    this.unjournal();
     if (this.fbdir) { rmSync(this.fbdir, { recursive: true, force: true }); this.fbdir = null; }
   }
 

@@ -80,4 +80,15 @@ describe('delete and retention', () => {
     expect(await h.orch.purgeOlderThan(30)).toEqual([id]);
     expect(h.repo.mission(id)).toBeNull();
   });
+
+  it('never purges a cancelled, undecided mission automatically (P1-3 review finding 8)', async () => {
+    const root = sampleRepo();
+    const h = makeOrchestrator();
+    const id = await startMission(h, root);
+    await h.orch.cancelMission(id);
+    await h.orch.settle(id);
+    h.repo.db.prepare('UPDATE missions SET updated_at = ? WHERE id = ?').run('2000-01-01T00:00:00.000Z', id);
+    expect(await h.orch.purgeOlderThan(30)).toEqual([]);
+    expect(h.repo.mission(id)).not.toBeNull();
+  });
 });

@@ -14,6 +14,7 @@ import { DeployManager, stagingStage } from '@atlas/deploy';
 import { createDesktopTool, DesktopManager, desktopSupport } from '@atlas/desktop-control';
 import { loadConfig } from '@atlas/workspace';
 import { createLogger, type Logger } from './log';
+import { lockDataDir } from './lock';
 
 export interface ServiceOptions { dataDir: string; version: string; apiKeys?: Record<string, string>; model?: string; deploySecrets?: Record<string, Record<string, string>> }
 
@@ -87,7 +88,11 @@ export class DaemonService {
   onTerminal(fn: (sessionId: string, data?: string, exit?: number | null) => void) { this.terminalSink = fn; }
   private retentionTimer: NodeJS.Timeout | null = null;
 
+  private unlock: () => void = () => {};
+
   async start() {
+    // Before touching any process: a second daemon on this data directory must not reap the first one's work.
+    this.unlock = lockDataDir(this.o.dataDir);
     // Reap processes a crashed predecessor left running, before anything new starts (identity-checked).
     const reaped = reapJournaled(this.repo.processJournal());
     if (reaped.killed.length || reaped.stale) this.log.warn('reaped orphaned processes', { killed: reaped.killed, stale: reaped.stale });
@@ -123,6 +128,7 @@ export class DaemonService {
     await this.deploy.shutdown();
     await this.orch.shutdown();
     setProcessJournal(null);
+    this.unlock();
     this.db.close();
   }
 

@@ -8,7 +8,7 @@ import {
   type ToolResult, type Workspace,
 } from '@atlas/contracts';
 import type { ArtifactStore, Repo } from '@atlas/storage';
-import { checkpoint, diffSince, git, gitOk, inspectRepo, Leases, retireWorktree, type PreservedRef } from '@atlas/workspace';
+import { checkpoint, diffSince, git, gitOk, inspectRepo, Leases, retireWorktree, type RetireResult } from '@atlas/workspace';
 import { detectSandbox, openPty, ptySupported, run, sanitizedEnv, startProcess, type PtyHandle, type SandboxSpec } from '@atlas/terminal';
 import { assertMission, assertTask, TERMINAL_TASK } from './states';
 import { defaultPlan, validatePlan } from './plan';
@@ -174,12 +174,16 @@ export class Orchestrator {
   importMission(file: string) { return importMission(this.repo, this.artifacts, file); }
   async deleteMission(missionId: string) { await deleteMission(this.repo, this.artifacts, missionId, this.o.worktreeDir); }
 
-  /** Delete decided/archived/cancelled missions not updated for `days` days. Returns the ids removed. */
+  /**
+   * Delete decided or archived missions not updated for `days` days. Returns the ids removed. Cancelled and
+   * undecided missions are never purged automatically: their worktrees can hold work nobody chose to drop
+   * (P1-3 review finding 8); only an explicit delete removes them.
+   */
   async purgeOlderThan(days: number): Promise<string[]> {
     if (!days || days < 1) return [];
     const cutoff = new Date(Date.now() - days * 86_400_000).toISOString();
     const out: string[] = [];
-    for (const m of this.repo.missionsOlderThan(cutoff)) { await this.deleteMission(m.id).then(() => out.push(m.id)).catch(() => {}); }
+    for (const m of this.repo.missionsOlderThan(cutoff).filter((x) => x.decision || x.archived)) { await this.deleteMission(m.id).then(() => out.push(m.id)).catch(() => {}); }
     return out;
   }
 
@@ -713,7 +717,11 @@ export class Orchestrator {
     const writers = topoOrder(tasks).map((id) => tasks.find((t) => t.id === id)!).filter((t) => ROLES[t.role].writes && t.state === 'done' && t.checkpoint);
     const dir = path.join(this.o.worktreeDir, m.id, 'integration');
     const branch = `atlas/${m.id}/integration`;
-    if (existsSync(dir)) this.recordPreserved(m.id, await retireWorktree(w.root, dir, branch, `refs/atlas/preserved/${m.id}/integration-${Date.now()}`));
+    if (existsSync(dir)) {
+      const r = await retireWorktree(w.root, dir, branch, `refs/atlas/preserved/${m.id}/integration-${Date.now()}`);
+      this.recordPreserved(m.id, r);
+      if (r.retained) return { ok: false, message: `The previous integration worktree could not be preserved, so it was not replaced. ${r.retained}` };
+    }
     const r = await worktreeFromBases(w.root, dir, branch, [m.baseCommit!]);
     if (!r.ok) return { ok: false, message: r.message };
     for (const t of writers) {
@@ -1074,7 +1082,6 @@ export class Orchestrator {
     const w = this.repo.workspace(m.workspaceId)!;
     // Task worktrees go away, but nothing in them is destroyed: dirty state and branch tips are kept under
     // refs/atlas/preserved/<mission>/… (P1-3). Lost attempts' worktrees are covered by the attempt records.
-    const preserved: PreservedRef[] = [];
     const attemptDirs = new Set<string>();
     for (const t of this.repo.tasks(missionId)) {
       if (t.worktree) attemptDirs.add(t.worktree);
@@ -1085,20 +1092,19 @@ export class Orchestrator {
     for (const dir of attemptDirs) {
       if (!existsSync(dir)) continue;
       const name = path.basename(dir);
-      preserved.push(...await retireWorktree(w.root, dir, `atlas/${m.id}/${name}`, `refs/atlas/preserved/${m.id}/${name}`));
+      this.recordPreserved(m.id, await retireWorktree(w.root, dir, `atlas/${m.id}/${name}`, `refs/atlas/preserved/${m.id}/${name}`));
     }
     const integDir = path.join(this.o.worktreeDir, m.id, 'integration');
     const kept: string[] = [];
     if (m.integrationBranch) {
-      if (decision === 'accept') { preserved.push(...await retireWorktree(w.root, integDir, null, `refs/atlas/preserved/${m.id}/integration`)); kept.push(m.integrationBranch); }
+      if (decision === 'accept') { this.recordPreserved(m.id, await retireWorktree(w.root, integDir, null, `refs/atlas/preserved/${m.id}/integration`)); kept.push(m.integrationBranch); }
       else {
         // Keep the rejected result reachable under a private ref (not a branch) so it can be restored later.
         if (m.integrationCommit) await gitOk(w.root, ['update-ref', `refs/atlas/rejected/${m.id}`, m.integrationCommit]);
-        preserved.push(...await retireWorktree(w.root, integDir, null, `refs/atlas/preserved/${m.id}/integration`));
+        this.recordPreserved(m.id, await retireWorktree(w.root, integDir, null, `refs/atlas/preserved/${m.id}/integration`));
         await git(w.root, ['branch', '-D', m.integrationBranch]);
       }
     }
-    this.recordPreserved(missionId, preserved);
     for (const st of this.o.stages ?? []) await (st as ReleaseStage & { onDecision?: (m: Mission, d: string) => Promise<void> }).onDecision?.(m, decision).catch(() => {});
     this.repo.updateMission(missionId, { decision: decision === 'accept' ? 'accepted' : 'rejected' });
     this.emit({ missionId, type: 'mission.decision', actor: OPERATOR, payload: { decision, branches: kept, commit: m.integrationCommit, note: decision === 'accept' ? `Changes kept on ${kept.join(', ')} at ${m.integrationCommit?.slice(0, 7)}; merge them when ready.` : 'Worktrees and branches removed. Your checkout was not modified.' } });
@@ -1127,9 +1133,10 @@ export class Orchestrator {
     return this.mission(missionId);
   }
 
-  private recordPreserved(missionId: string, refs: PreservedRef[]) {
-    if (!refs.length) return;
-    this.emit({ missionId, type: 'workspace.worktree', actor: SYSTEM('workspace'), payload: { action: 'preserved', refs } });
+  /** Recorded per worktree as it is retired, so a failure later in a loop cannot hide refs already written. */
+  private recordPreserved(missionId: string, r: RetireResult) {
+    if (r.refs.length) this.emit({ missionId, type: 'workspace.worktree', actor: SYSTEM('workspace'), payload: { action: 'preserved', refs: r.refs } });
+    if (r.retained) this.emit({ missionId, type: 'workspace.worktree', actor: SYSTEM('workspace'), payload: { action: 'retained', reason: r.retained } });
   }
 
   /* ---------------- recovery (manual §40) ---------------- */

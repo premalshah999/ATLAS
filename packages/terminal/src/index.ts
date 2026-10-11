@@ -5,7 +5,7 @@ import { redact } from '@atlas/contracts';
 import { wrapCommand, type SandboxSpec } from './sandbox';
 import { windowsCommand } from './win/appcontainer';
 import { journalStart } from './journal';
-export { setProcessJournal, reapJournaled, processIdentity } from './journal';
+export { setProcessJournal, reapJournaled, processIdentity, journalStart } from './journal';
 
 /**
  * Windows cannot start .cmd/.bat shims (npm, pnpm…) without cmd.exe; resolve PATH/PATHEXT and escape safely.
@@ -178,7 +178,14 @@ export function startProcess(o: { command: string; args: string[]; cwd: string; 
   child.stderr!.on('data', take);
   child.on('error', (e) => { spawnError = e.message; exit = { code: null }; });
   const unjournal = journalStart(child.pid, 'service', [o.command, ...o.args].join(' '));
-  const done = new Promise<void>((r) => child.on('close', (code) => { exit = { code }; unjournal(); cleanup?.(); r(); }));
+  const done = new Promise<void>((r) => child.on('close', (code) => {
+    exit = { code };
+    unjournal();
+    // Like run(): children a service left behind die with it (review finding 4).
+    if (child.pid && process.platform !== 'win32') { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* group already empty */ } }
+    cleanup?.();
+    r();
+  }));
   return {
     pid: child.pid ?? null,
     get spawnError() { return spawnError; },

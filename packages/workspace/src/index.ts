@@ -1,5 +1,5 @@
 // Repository manager (manual §18–19): inspection, per-task worktrees, checkpoints and diffs.
-import { mkdirSync, mkdtempSync, existsSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { git, gitOk } from './git';
@@ -50,14 +50,30 @@ export async function createWorktree(repoRoot: string, dir: string, branch: stri
   await gitOk(repoRoot, ['worktree', 'add', '-b', branch, dir, base]);
 }
 
+/** The worktree's own admin directory (<repo>/.git/worktrees/<name>), read from its `.git` file. */
+function adminDir(dir: string): string | null {
+  try {
+    const f = path.join(dir, '.git');
+    if (!statSync(f).isFile()) return null;
+    const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(f, 'utf8'));
+    return m ? path.resolve(dir, m[1].trim()) : null;
+  } catch { return null; }
+}
+
 export async function removeWorktree(repoRoot: string, dir: string, branch: string | null): Promise<void> {
+  const admin = adminDir(dir);
   await git(repoRoot, ['worktree', 'remove', '--force', dir]);
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
-  await git(repoRoot, ['worktree', 'prune']);
+  // Only this worktree's metadata. `git worktree prune` would also drop the user's own worktrees that are
+  // temporarily missing (an unmounted drive, a moved directory): never run it on the user's repository.
+  if (admin && existsSync(admin) && path.basename(path.dirname(admin)) === 'worktrees') rmSync(admin, { recursive: true, force: true });
   if (branch) await git(repoRoot, ['branch', '-D', branch]);
 }
 
 export interface PreservedRef { ref: string; sha: string; what: 'uncommitted' | 'branch' }
+
+/** Work a snapshot cannot hold. The worktree must then be kept, not removed. */
+export class PreserveError extends Error {}
 
 /**
  * Keep a worktree's work reachable before it is removed (evolution P1-3, concept from agent-orchestrator and
@@ -70,20 +86,26 @@ export async function preserveWorktree(repoRoot: string, dir: string, branch: st
   if (existsSync(dir)) {
     const status = await git(dir, ['status', '--porcelain', '--untracked-files=all']);
     const head = await git(dir, ['rev-parse', '--verify', 'HEAD']);
-    if (status.code === 0 && status.out.trim() && head.code === 0) {
+    if (status.code !== 0 || head.code !== 0) throw new PreserveError(`its state could not be read: ${(status.code !== 0 ? status : head).out.slice(0, 200)}`);
+    if (status.out.trim()) {
       const index = path.join(mkdtempSync(path.join(os.tmpdir(), 'atlas-idx-')), 'index');
       const env = { GIT_INDEX_FILE: index };
       try {
         const steps = [await git(dir, ['read-tree', 'HEAD'], 30_000, env), await git(dir, ['add', '-A'], 120_000, env)];
         const tree = await git(dir, ['write-tree'], 30_000, env);
-        if (steps.every((r) => r.code === 0) && tree.code === 0) {
-          const commit = await git(dir, ['commit-tree', tree.out.trim(), '-p', head.out.trim(), '-m', `ATLAS: preserved uncommitted work from ${path.basename(dir)}`]);
-          if (commit.code === 0) {
-            const ref = `${refBase}/uncommitted`;
-            await gitOk(repoRoot, ['update-ref', ref, commit.out.trim()]);
-            out.push({ ref, sha: commit.out.trim(), what: 'uncommitted' });
-          }
-        }
+        const failed = [...steps, tree].find((r) => r.code !== 0);
+        if (failed) throw new PreserveError(`uncommitted changes could not be snapshotted: ${failed.out.slice(0, 200)}`);
+        // A nested repository (an agent ran `git init`, `create-vite`, `cargo new`) is recorded only as a gitlink:
+        // its files and history are not in this object store, so a snapshot would silently lose them.
+        const links = async (t: string) => (await git(dir, ['ls-tree', '-r', '-z', t], 60_000, env)).out.split('\0').filter((l) => l.startsWith('160000 '));
+        const atHead = new Set(await links('HEAD'));
+        const fresh = (await links(tree.out.trim())).filter((l) => !atHead.has(l));
+        if (fresh.length) throw new PreserveError(`it contains a nested repository that a snapshot cannot hold: ${fresh.map((l) => l.split('\t')[1]).join(', ')}`);
+        const commit = await git(dir, ['commit-tree', tree.out.trim(), '-p', head.out.trim(), '-m', `ATLAS: preserved uncommitted work from ${path.basename(dir)}`]);
+        if (commit.code !== 0) throw new PreserveError(`uncommitted changes could not be committed: ${commit.out.slice(0, 200)}`);
+        const ref = `${refBase}/uncommitted`;
+        await gitOk(repoRoot, ['update-ref', ref, commit.out.trim()]);
+        out.push({ ref, sha: commit.out.trim(), what: 'uncommitted' });
       } finally { rmSync(path.dirname(index), { recursive: true, force: true }); }
     }
   }
@@ -98,11 +120,21 @@ export async function preserveWorktree(repoRoot: string, dir: string, branch: st
   return out;
 }
 
-/** Preserve, then remove. Use this wherever work might still be in the worktree. */
-export async function retireWorktree(repoRoot: string, dir: string, branch: string | null, refBase: string): Promise<PreservedRef[]> {
-  const kept = await preserveWorktree(repoRoot, dir, branch, refBase);
+export interface RetireResult { refs: PreservedRef[]; /** Why the worktree was kept on disk instead of removed. */ retained: string | null }
+
+/**
+ * Preserve, then remove. Use this wherever work might still be in the worktree. When the work cannot be
+ * preserved completely, nothing is removed (not the directory, not the branch) and the reason is returned.
+ */
+export async function retireWorktree(repoRoot: string, dir: string, branch: string | null, refBase: string): Promise<RetireResult> {
+  let refs: PreservedRef[];
+  try { refs = await preserveWorktree(repoRoot, dir, branch, refBase); }
+  catch (e) {
+    if (e instanceof PreserveError) return { refs: [], retained: `${path.basename(dir)} was kept at ${dir}: ${e.message}` };
+    throw e;
+  }
   await removeWorktree(repoRoot, dir, branch);
-  return kept;
+  return { refs, retained: null };
 }
 
 /** Delete every ref under a prefix (used when a mission is deleted). */
