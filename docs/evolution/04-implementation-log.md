@@ -365,3 +365,4 @@ The auditor also confirmed several fixes against new scenarios (could not break 
   3. Documenting Windows as unsupported for running project code.
 
   This choice needs an ADR and evidence from the next run.
+- **Hypothesis confirmed (CI run 38130392107).** A pipe in the global namespace is refused inside the container, and the same pipe under `LOCAL\` is created. libuv offers no way to change its pipe names, so piped children cannot work in an AppContainer. The options and a recommendation are in ADR 0016 (proposed; the operator decides).
