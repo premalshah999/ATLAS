@@ -2,7 +2,7 @@
 export const EventType = [
   'mission.created', 'mission.state', 'mission.decision',
   'plan.proposed', 'plan.rejected', 'plan.approved',
-  'task.state', 'attempt.started', 'attempt.ended',
+  'task.state', 'attempt.started', 'attempt.ended', 'attempt.stalled',
   'agent.message', 'agent.tool_call', 'agent.tool_result', 'agent.usage',
   'policy.decision', 'approval.requested', 'approval.decided',
   'process.started', 'process.output', 'process.exited',

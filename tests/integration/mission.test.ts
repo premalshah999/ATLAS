@@ -246,6 +246,24 @@ describe('cancellation and recovery', () => {
   });
 });
 
+describe('stall watchdog (evolution P1-6)', () => {
+  it('a silent attempt is flagged once as stalled, not stopped; a pending approval is not a stall', async () => {
+    const steps = [{ wait: 900 }, { tool: 'write_file', args: { path: 'NOTE.md', content: 'x' } }, { tool: 'shell_exec', args: { command: 'node', args: ['-e', '1'] } }, { claim: 'done' }];
+    const h = makeOrchestrator({ scripts: [forTask('implement', steps as any)], stallAfterMs: 250 });
+    const id = await startMission(h, sampleRepo());
+    const stalled = await waitFor(() => h.events.find((e) => e.type === 'attempt.stalled'));
+    expect(stalled.payload.silentForMs).toBeGreaterThanOrEqual(250);
+    // While the approval for `node -e` is pending (well past the threshold), no second stall is reported.
+    const a = await waitFor(() => h.repo.approvals(id).find((x) => x.status === 'pending'));
+    await new Promise((r) => setTimeout(r, 800));
+    expect(h.events.filter((e) => e.type === 'attempt.stalled')).toHaveLength(1);
+    h.orch.respondApproval(a.id, 'approve');
+    await h.orch.settle(id);
+    // The stalled attempt was not killed: it finished its work.
+    expect(h.repo.attempts(id)[0].state).toBe('succeeded');
+  });
+});
+
 describe('verification cannot be redefined by the agent (evolution P0-3, incl. independent-review bypasses)', () => {
   const BROKEN = "export function slugify() { return 'nope'; }\n";
   const pkgWith = (root: string, edit: (p: any) => void) => { const p = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')); edit(p); return JSON.stringify(p, null, 2); };

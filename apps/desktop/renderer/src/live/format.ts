@@ -46,6 +46,7 @@ export function describeEvent(e: AtlasEvent): Row | null {
     case 'task.state': return p.from === null ? null : { title: `Task ${p.key}: ${stateWord(p.to).toLowerCase()}`, detail: p.reason ?? p.errorKind, tone: p.to === 'failed' ? 'danger' : 'muted', kind: p.to === 'failed' ? 'error' : 'activity', who };
     case 'attempt.started': return { title: `${roleName(p.role)} started attempt ${p.number}`, detail: `Isolated worktree on ${p.branch}`, meta: p.roleVersion, tone: 'muted', kind: 'delegation', who };
     case 'attempt.ended': return p.state === 'succeeded' ? null : { title: `Attempt ${p.number} ${p.state}`, detail: p.message, tone: p.state === 'lost' ? 'warning' : 'danger', kind: 'error', who };
+    case 'attempt.stalled': return { title: 'No signal', detail: `No events from this attempt for ${Math.round(Number(p.silentForMs) / 1000)} s. It is still running.`, tone: 'warning', kind: 'error', who };
     case 'agent.message': return p.claim
       ? { title: 'Agent summary — a claim, not evidence', detail: p.text, tone: 'muted', kind: 'decision', who }
       : { title: p.text, tone: 'muted', kind: 'activity', who };
@@ -105,3 +106,12 @@ export const ago = (iso: string) => {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
 };
+
+/** Tasks whose attempt has produced nothing since the watchdog flagged it (evolution P1-6): shown as "No signal". */
+export function stalledTasks(events: readonly AtlasEvent[]): Set<string> {
+  const last = new Map<string, AtlasEvent>();
+  for (const e of events) if (e.attemptId) last.set(e.attemptId, e);
+  const out = new Set<string>();
+  for (const e of last.values()) if (e.type === 'attempt.stalled' && e.taskId) out.add(e.taskId);
+  return out;
+}

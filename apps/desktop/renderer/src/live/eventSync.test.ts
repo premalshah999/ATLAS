@@ -25,3 +25,13 @@ describe('mission event sync', () => {
     expect(mergeInOrder(a, [ev(2), ev(3), ev(5)]).map((e) => e.seq)).toEqual([1, 2, 3]);
   });
 });
+
+describe('stalledTasks (P1-6)', () => {
+  const ev = (seq: number, type: string, attemptId: string | null, taskId: string | null) => ({ missionId: 'm', seq, type, ts: '', actor: { kind: 'operator' }, taskId, attemptId, payload: {}, artifactIds: [] }) as any;
+  it('flags a task only while the stall is the latest event of its attempt', async () => {
+    const { stalledTasks } = await import('./format');
+    expect([...stalledTasks([ev(1, 'attempt.started', 'a1', 't1'), ev(2, 'attempt.stalled', 'a1', 't1')])]).toEqual(['t1']);
+    expect([...stalledTasks([ev(1, 'attempt.stalled', 'a1', 't1'), ev(2, 'agent.message', 'a1', 't1')])]).toEqual([]);
+    expect([...stalledTasks([ev(1, 'attempt.stalled', 'a1', 't1'), ev(2, 'mission.state', null, null)])]).toEqual(['t1']);
+  });
+});

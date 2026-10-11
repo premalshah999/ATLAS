@@ -8,7 +8,7 @@ import { BrowserPanel, BudgetMeter, DeployPanel, DesktopPanel, Findings, TaskGra
 import { go, refreshLists } from './store';
 import { call } from './api';
 import { useMission } from './useMission';
-import { describeEvent, fmtMs, markOf, missionStatus, resultWord, roleMark, roleName, stateWord, time, type Row } from './format';
+import { describeEvent, fmtMs, markOf, missionStatus, resultWord, roleMark, roleName, stalledTasks, stateWord, time, type Row } from './format';
 import { toast } from './toast';
 
 const ACTIVE = new Set(['planning', 'running', 'verifying']);
@@ -35,6 +35,7 @@ export function MissionView({ missionId }: { missionId: string }) {
   const finished = m.state === 'completed' || m.state === 'failed';
   const patchCount = snap.artifacts.filter((a) => a.kind === 'patch').length;
   const hasBrowser = events.some((e) => e.type === 'browser.step') || snap.checks.some((c) => /^(api|browser):/.test(c.name));
+  const stalled = useMemo(() => stalledTasks(events), [events]);
   const hasDesktop = events.some((e) => e.type.startsWith('desktop.')) || snap.tasks.some((t) => t.role === 'desktop_operator');
 
   return (
@@ -119,7 +120,7 @@ export function MissionView({ missionId }: { missionId: string }) {
             <PanelHead label="Budget" />
             <BudgetMeter snap={snap} />
             <PanelHead label="Tasks" count={snap.tasks.length} />
-            <div className="lv-tasks">{snap.tasks.map((t) => <TaskRow key={t.id} t={t} attempts={snap.attempts.filter((a) => a.taskId === t.id).length} />)}</div>
+            <div className="lv-tasks">{snap.tasks.map((t) => <TaskRow key={t.id} t={t} stalled={stalled.has(t.id)} attempts={snap.attempts.filter((a) => a.taskId === t.id).length} />)}</div>
             <ProcessPane events={events} />
           </aside>
         </div>
@@ -266,11 +267,12 @@ function ApprovalCard({ a }: { a: Approval }) {
   );
 }
 
-function TaskRow({ t, attempts }: { t: Task; attempts: number }) {
+function TaskRow({ t, attempts, stalled }: { t: Task; attempts: number; stalled: boolean }) {
   return (
     <div className="lv-task">
       <Status s={statusKey(t.state === 'done' ? 'completed' : t.state === 'running' ? 'running' : t.state === 'failed' ? 'failed' : 'draft')} label={stateWord(t.state)} />
       <span className="at-trunc" style={{ fontWeight: 500 }}>{t.title}</span>
+      {stalled && t.state === 'running' && <Tip label="This attempt has produced no events for a while. It is still running; stop it if it is stuck."><span><Badge tone="warning" data-testid="no-signal">No signal</Badge></span></Tip>}
       <span style={{ flex: 1 }} />
       {t.state === 'running' && <Button size="sm" variant="ghost" onClick={() => void call('task.cancel', { taskId: t.id })}>Stop</Button>}
       <span className="at-mono at-subtle lv-small">{attempts > 1 ? `attempt ${attempts}` : ''}</span>

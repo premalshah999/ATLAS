@@ -37,6 +37,11 @@ export interface OrchestratorOptions {
   stages?: ReleaseStage[];
   /** Factories for service-backed tools (browser_action, desktop_action, inspect_logs), one instance per attempt. */
   toolFactories?: Record<string, (ctx: ToolFactoryContext) => ExtraTool>;
+  /**
+   * Watchdog (evolution P1-6): a running attempt with no event for this long, and no approval pending, is flagged
+   * `attempt.stalled` ("No signal" in the UI). It is not stopped: the operator decides. Default 120 s.
+   */
+  stallAfterMs?: number;
 }
 
 export interface ExtraTool { invoke(args: unknown, signal: AbortSignal): Promise<ToolResult>; dispose(): Promise<void> }
@@ -69,12 +74,42 @@ export class Orchestrator {
   private readonly maxAttempts: number;
   private readonly approvalTtlMs: number;
   private stopping = false;
+  /** Running attempts and when each last produced an event (watchdog, P1-6). */
+  private readonly signals = new Map<string, { missionId: string; taskId: string; last: number; flagged: boolean }>();
+  private watchdog: NodeJS.Timeout | null = null;
+  private readonly stallAfterMs: number;
 
   constructor(private readonly o: OrchestratorOptions) {
     this.repo = o.repo;
     this.artifacts = o.artifacts;
     this.maxAttempts = o.maxAttempts ?? 2;
     this.approvalTtlMs = o.approvalTtlMs ?? 15 * 60_000;
+    this.stallAfterMs = o.stallAfterMs ?? 120_000;
+    this.repo.onEvent((e) => {
+      const s = e.attemptId ? this.signals.get(e.attemptId) : undefined;
+      if (s && e.type !== 'attempt.stalled') { s.last = Date.now(); s.flagged = false; }
+    });
+  }
+
+  private watchSignal(missionId: string, taskId: string, attemptId: string) {
+    this.signals.set(attemptId, { missionId, taskId, last: Date.now(), flagged: false });
+    this.watchdog ??= setInterval(() => this.checkSignals(), Math.max(50, Math.min(5000, this.stallAfterMs / 4)));
+    this.watchdog.unref?.();
+  }
+
+  private unwatchSignal(attemptId: string) {
+    this.signals.delete(attemptId);
+    if (!this.signals.size && this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
+  }
+
+  private checkSignals(now = Date.now()) {
+    for (const [attemptId, s] of this.signals) {
+      if (s.flagged || now - s.last < this.stallAfterMs) continue;
+      // Waiting for the operator is not a stall.
+      if (this.repo.approvals(s.missionId).some((a) => a.status === 'pending' && a.taskId === s.taskId)) continue;
+      s.flagged = true;
+      this.emit({ missionId: s.missionId, taskId: s.taskId, attemptId, type: 'attempt.stalled', actor: SYSTEM('watchdog'), payload: { silentForMs: now - s.last, thresholdMs: this.stallAfterMs } });
+    }
   }
 
   /** Swap a runtime (e.g. after credentials change). Running attempts keep the instance they started with. */
@@ -527,6 +562,7 @@ export class Orchestrator {
     this.repo.updateAttempt(attempt.id, { state: 'running' });
     this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'attempt.started', actor: SYSTEM('scheduler'), payload: { number, runtime: m.runtime, role: t.role, roleVersion: def.version, worktree: dir, branch, tools: permitted, depth: t.depth, contextArtifact: ctxArt.id, sandbox: isolation.mode }, artifactIds: [ctxArt.id] });
 
+    this.watchSignal(m.id, t.id, attempt.id);
     const agent = { kind: 'agent' as const, role: t.role, taskId: t.id };
     let outcome: Outcome = { kind: 'error', errorKind: 'internal', message: 'Runtime ended without a result' };
     let tokens = 0;
@@ -553,6 +589,7 @@ export class Orchestrator {
     } catch (e) {
       outcome = { kind: 'error', errorKind: ac.signal.aborted ? 'cancelled' : 'internal', message: (e as Error).message };
     } finally {
+      this.unwatchSignal(attempt.id);
       if (handle) await rt.dispose(handle).catch(() => {});
       for (const x of Object.values(extras)) await x.dispose().catch(() => {});
       missionSignal.removeEventListener('abort', onMission);
@@ -1138,6 +1175,7 @@ export class Orchestrator {
     for (const id of [...this.terminals.keys()]) await this.closeTerminal(id).catch(() => {});
     for (const ac of this.aborts.values()) ac.abort();
     for (const t of this.budgetTimers.values()) clearTimeout(t);
+    if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
     await Promise.allSettled(this.running.values());
   }
 }
