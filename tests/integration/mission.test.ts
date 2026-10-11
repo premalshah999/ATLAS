@@ -224,26 +224,39 @@ describe('cancellation and recovery', () => {
   });
 
   it('after a daemon crash, lost attempts are recorded and the mission completes in a fresh attempt', async () => {
+    // Each step has its own deadline, so an intermittent hang (seen on loaded CI runners) names the step and state.
+    let where = 'start';
+    const state = (h: ReturnType<typeof makeOrchestrator>, id: string) => JSON.stringify({ mission: h.repo.mission(id)?.state, tasks: h.repo.tasks(id).map((t) => [t.key, t.state]), attempts: h.repo.attempts(id).map((a) => a.state), approvals: h.repo.approvals(id).map((a) => [a.tool, a.status]), last: h.events.slice(-6).map((e) => e.type) });
+    const step = async <T>(label: string, p: Promise<T>, ms = 20_000): Promise<T> => {
+      where = label;
+      let t: NodeJS.Timeout | undefined;
+      try { return await Promise.race([p, new Promise<T>((_, rej) => { t = setTimeout(() => rej(new Error(`step "${label}" did not finish in ${ms} ms`)), ms); })]); }
+      finally { clearTimeout(t); }
+    };
     const root = sampleRepo();
     const slow = new FakeRuntime([{ name: 'hang', matches: () => true, steps: () => [{ tool: 'shell_exec', args: { command: 'node', args: ['-e', 'setInterval(()=>{},1000)'] } }] }]);
     const first = makeOrchestrator({ runtime: slow });
-    const id = await startMission(first, root);
-    const a = await waitFor(() => first.repo.approvals(id).find((x) => x.status === 'pending'));
-    first.orch.respondApproval(a.id, 'approve');
-    await waitFor(() => first.events.find((e) => e.type === 'process.started'));
-    // Simulate a crash: stop the process without any state cleanup, then reopen the same data directory.
-    await first.orch.shutdown();
-    first.db.close();
+    const id = await step('start mission', startMission(first, root));
+    try {
+      const a = await step('approval requested', waitFor(() => first.repo.approvals(id).find((x) => x.status === 'pending')));
+      first.orch.respondApproval(a.id, 'approve');
+      await step('command started', waitFor(() => first.events.find((e) => e.type === 'process.started')));
+      // Simulate a crash: stop the process without any state cleanup, then reopen the same data directory.
+      await step('first shutdown', first.orch.shutdown());
+      first.db.close();
+    } catch (e) { throw new Error(`${(e as Error).message} at ${where}: ${state(first, id)}`); }
 
     const second = makeOrchestrator({ dataDir: first.dataDir });
-    const r = await second.orch.recover();
-    expect(r).toMatchObject({ missions: [id], lostAttempts: 1 });
-    await second.orch.settle(id);
+    try {
+      const r = await step('recover', second.orch.recover());
+      expect(r).toMatchObject({ missions: [id], lostAttempts: 1 });
+      await step('settle after recovery', second.orch.settle(id), 30_000);
+    } catch (e) { throw new Error(`${(e as Error).message} at ${where}: ${state(second, id)}`); }
     const attempts = second.repo.attempts(id);
     expect(attempts.map((x) => x.state)).toEqual(['lost', 'succeeded', 'succeeded']); // coder (lost, then fresh), reviewer
-    expect(second.repo.mission(id)!.state).toBe('completed');
+    expect(second.repo.mission(id)!.state, explainChecks(second, id)).toBe('completed');
     expect(replay(second.repo.eventsSince(id, 0)).mission).toBe('completed');
-  });
+  }, 90_000);
 });
 
 describe('stall watchdog (evolution P1-6)', () => {

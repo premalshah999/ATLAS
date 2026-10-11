@@ -49,7 +49,9 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
     const shell = existsSync('/bin/bash') ? '/bin/bash' : '/bin/sh';
     const start = `stty cols ${cols} rows ${rows}; exec ${shell}${shell.endsWith('bash') ? ' --norc' : ''} -i`;
     const inner = process.platform === 'darwin'
-      ? { command: '/usr/bin/script', args: ['-q', '/dev/null', '/bin/sh', '-c', start] }
+      // Node's stdio pipes are socketpairs on macOS; BSD script exits when tcgetattr on stdin fails with
+      // EOPNOTSUPP (it tolerates only ENOTTY). `cat |` gives script a real pipe as stdin.
+      ? { command: '/bin/sh', args: ['-c', 'cat | /usr/bin/script -q /dev/null /bin/sh -c "$1"', 'atlas-pty', start] }
       : { command: '/usr/bin/script', args: ['-qfec', start, '/dev/null'] };
     cmd = inner.command; args = inner.args;
     if (o.sandbox) ({ command: cmd, args, env, cleanup } = wrapCommand(inner.command, inner.args, o.cwd, o.sandbox, env));

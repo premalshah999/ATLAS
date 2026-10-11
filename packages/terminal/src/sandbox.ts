@@ -221,6 +221,10 @@ function wrapWindows(command: string, args: string[], spec: SandboxSpec, env: Re
     ...env, ...net.env,
     USERPROFILE: home, HOME: home, APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
     TEMP: path.join(home, 'Temp'), TMP: path.join(home, 'Temp'), npm_config_cache: path.join(home, 'npm-cache'),
+    // An AppContainer cannot lstat the drive root, and Node's JS realpath walks every ancestor of the entry
+    // script and of each module. Keeping symlinked paths as given avoids that walk (granting rights on C:\ would
+    // mean changing a system ACL).
+    NODE_OPTIONS: '--preserve-symlinks --preserve-symlinks-main',
   };
   const cmd = win.windowsCommand(command, args, envOut);
   return { command: helper, args: ['run', name, ...(spec.network ? ['--net'] : []), ...caps.flatMap((c) => ['--cap', c]), '--cmdline', cmd.line], env: envOut };

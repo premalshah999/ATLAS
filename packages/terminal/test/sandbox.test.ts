@@ -75,6 +75,16 @@ console.log('done');`);
     expect(Number(r.output.trim()), r.output).toBeLessThan(10);
   });
 
+  // Windows bisection for package-manager shims: cmd.exe itself, then the npm.cmd shim, inside the AppContainer.
+  it.skipIf(process.platform !== 'win32')('windows: cmd.exe and the npm shim run inside the AppContainer', async () => {
+    const root = tmpDir();
+    const sb = { root, writable: true, network: false };
+    const c = await run({ command: 'cmd.exe', args: ['/d', '/c', 'echo CMD-OK & cd & where node & where npm'], cwd: root, timeoutMs: 60_000, sandbox: sb });
+    expect(c.output, `cmd.exe: ${c.output} ${c.spawnError ?? ''}`).toContain('CMD-OK');
+    const n = await run({ command: 'npm', args: ['--version'], cwd: root, timeoutMs: 60_000, sandbox: sb });
+    expect(n.output, `npm --version: ${n.output} ${n.spawnError ?? ''} (cmd.exe said: ${c.output})`).toMatch(/\d+\.\d+\.\d+/);
+  });
+
   it('runs a real project test suite inside the sandbox', async () => {
     const repo = sampleRepo();
     const r = await run({ command: 'npm', args: ['test'], cwd: repo, timeoutMs: 120_000, sandbox: { root: repo, writable: true, network: false } });
