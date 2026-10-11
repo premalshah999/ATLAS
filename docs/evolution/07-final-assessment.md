@@ -57,5 +57,5 @@ ATLAS was evolved, not rewritten. Its identity is preserved: the Electron + Reac
 1. **Windows: decide ADR 0016.** Root cause found: an AppContainer cannot create the named pipes Node uses for piped child stdio. Options are a restricted-token sandbox, consent-gated unsandboxed runs, or documenting the limit. Previously: **Windows AppContainer toolchain access.** Finish the diagnosis the CI bisection has started (the toolchain capability ACL is not in effect). Then grant only the directories of the programs actually used, not every `PATH` entry.
 2. ~~Signed exports~~: done. Per-installation Ed25519 key; imports show signer and trust.
 3. ~~Dev-tool upgrades~~: done, with a full regression run. One build-time advisory remains, with no upstream fix (see [06](06-security-review.md)).
-4. **ESLint `react-hooks` rule.** It would have caught the one regression this evolution shipped locally and then fixed.
+4. ~~ESLint `react-hooks` rule~~: done. `rules-of-hooks` is an error in the renderer, and a conditional hook fails lint. `exhaustive-deps` is a warning (13 existing, mostly intentional).
 5. **Live-model reality run.** A Pi mission against a real provider in a disposable environment, with credentials the operator supplies.
