@@ -28,4 +28,14 @@ export default defineWorkspace([
       pool: 'forks',
     },
   },
+  {
+    test: {
+      // Real model calls (needs a provider key in the environment; skipped otherwise). Never part of CI.
+      name: 'live',
+      include: ['tests/live/**/*.live.test.ts'],
+      environment: 'node',
+      testTimeout: 20 * 60_000,
+      pool: 'forks',
+    },
+  },
 ]);

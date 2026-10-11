@@ -23,7 +23,8 @@
     "screenshots": "pnpm build && playwright test -c tests/e2e-electron/screenshots.config.ts",
     "eval": "vitest run --project eval",
     "metrics": "pnpm build && playwright test -c tests/e2e-electron/metrics.config.ts",
-    "lab:skills": "vite-node evals/skills-lab.ts"
+    "lab:skills": "vite-node evals/skills-lab.ts",
+    "test:live": "vitest run --project live"
   },
   "devDependencies": {
     "@atlas/browser": "workspace:*",
