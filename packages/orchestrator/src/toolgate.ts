@@ -144,7 +144,7 @@ export class ToolGate implements ToolInvoker {
     if (!parsed.success) return this.fail('invalid_args', `Invalid arguments: ${parsed.error.issues.map((i) => `${i.path.join('.')} ${i.message}`).join('; ')}`);
     const args = parsed.data as Record<string, any>;
 
-    const decision = evaluate({ role: this.ctx.role, tool: name, args, mode: this.ctx.mode });
+    const decision = evaluate({ role: this.ctx.role, tool: name, args, mode: this.ctx.mode, sandboxed: this.ctx.isolation.mode !== 'unsandboxed' });
     const action = describe(name, args);
     this.emit('policy.decision', { tool: name, action, decision: decision.decision, capability: decision.capability, risk: decision.risk, reason: decision.reason });
     if (decision.decision === 'deny') return this.fail('policy_denied', `Denied by policy: ${decision.reason}`);

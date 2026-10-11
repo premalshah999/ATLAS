@@ -3,25 +3,25 @@ import { approvalUsable, classifyCommand, evaluate } from '../src';
 
 describe('policy.evaluate', () => {
   it('allows safe reads and test runs for a coder', () => {
-    expect(evaluate({ role: 'coder', tool: 'read_file', args: { path: 'a' }, mode: 'ask_risky' }).decision).toBe('allow');
-    expect(evaluate({ role: 'coder', tool: 'shell_exec', args: { command: 'npm', args: ['test'] }, mode: 'ask_risky' }).decision).toBe('allow');
-    expect(evaluate({ role: 'coder', tool: 'write_file', args: { path: 'a', content: '' }, mode: 'ask_risky' }).decision).toBe('allow');
+    expect(evaluate({ role: 'coder', tool: 'read_file', args: { path: 'a' }, mode: 'ask_risky', sandboxed: true }).decision).toBe('allow');
+    expect(evaluate({ role: 'coder', tool: 'shell_exec', args: { command: 'npm', args: ['test'] }, mode: 'ask_risky', sandboxed: true }).decision).toBe('allow');
+    expect(evaluate({ role: 'coder', tool: 'write_file', args: { path: 'a', content: '' }, mode: 'ask_risky', sandboxed: true }).decision).toBe('allow');
   });
   it('asks for privileged commands', () => {
     for (const [command, args] of [['npm', ['install', 'left-pad']], ['curl', ['https://example.com']], ['git', ['push']], ['rm', ['-rf', 'src']], ['bash', ['-c', 'echo hi']]] as const) {
-      expect(evaluate({ role: 'coder', tool: 'shell_exec', args: { command, args: [...args] }, mode: 'ask_risky' }).decision, command).toBe('ask');
+      expect(evaluate({ role: 'coder', tool: 'shell_exec', args: { command, args: [...args] }, mode: 'ask_risky', sandboxed: true }).decision, command).toBe('ask');
     }
   });
   it('denies forbidden executables, unknown tools and capabilities a role lacks', () => {
-    expect(evaluate({ role: 'coder', tool: 'shell_exec', args: { command: 'sudo', args: ['ls'] }, mode: 'ask_risky' }).decision).toBe('deny');
-    expect(evaluate({ role: 'coder', tool: 'shell_exec', args: { command: 'ls;rm', args: [] }, mode: 'ask_risky' }).decision).toBe('deny');
-    expect(evaluate({ role: 'coder', tool: 'deploy_production', args: {}, mode: 'ask_risky' }).decision).toBe('deny');
-    expect(evaluate({ role: 'reviewer', tool: 'write_file', args: { path: 'a', content: '' }, mode: 'ask_risky' }).decision).toBe('deny');
-    expect(evaluate({ role: 'tester', tool: 'shell_exec', args: { command: 'npm', args: ['install'] }, mode: 'ask_risky' }).decision).toBe('deny');
+    expect(evaluate({ role: 'coder', tool: 'shell_exec', args: { command: 'sudo', args: ['ls'] }, mode: 'ask_risky', sandboxed: true }).decision).toBe('deny');
+    expect(evaluate({ role: 'coder', tool: 'shell_exec', args: { command: 'ls;rm', args: [] }, mode: 'ask_risky', sandboxed: true }).decision).toBe('deny');
+    expect(evaluate({ role: 'coder', tool: 'deploy_production', args: {}, mode: 'ask_risky', sandboxed: true }).decision).toBe('deny');
+    expect(evaluate({ role: 'reviewer', tool: 'write_file', args: { path: 'a', content: '' }, mode: 'ask_risky', sandboxed: true }).decision).toBe('deny');
+    expect(evaluate({ role: 'tester', tool: 'shell_exec', args: { command: 'npm', args: ['install'] }, mode: 'ask_risky', sandboxed: true }).decision).toBe('deny');
   });
   it('plan-only mode denies writes; ask_all_writes prompts for them', () => {
-    expect(evaluate({ role: 'coder', tool: 'write_file', args: { path: 'a', content: '' }, mode: 'plan_only' }).decision).toBe('deny');
-    expect(evaluate({ role: 'coder', tool: 'write_file', args: { path: 'a', content: '' }, mode: 'ask_all_writes' }).decision).toBe('ask');
+    expect(evaluate({ role: 'coder', tool: 'write_file', args: { path: 'a', content: '' }, mode: 'plan_only', sandboxed: true }).decision).toBe('deny');
+    expect(evaluate({ role: 'coder', tool: 'write_file', args: { path: 'a', content: '' }, mode: 'ask_all_writes', sandboxed: true }).decision).toBe('ask');
   });
   it('git subcommands are classified by effect', () => {
     expect(classifyCommand('git', ['status']).capability).toBe('shell.safe');
@@ -43,18 +43,18 @@ describe('approvals', () => {
 
 describe('desktop and deploy capabilities', () => {
   it('desktop input belongs to desktop_operator only', () => {
-    expect(evaluate({ role: 'desktop_operator', tool: 'desktop_action', args: {}, mode: 'ask_risky' }).decision).toBe('allow');
+    expect(evaluate({ role: 'desktop_operator', tool: 'desktop_action', args: {}, mode: 'ask_risky', sandboxed: true }).decision).toBe('allow');
     for (const role of ['coder', 'reviewer', 'tester', 'browser_qa', 'orchestrator', 'deployment_verifier'] as const) {
-      expect(evaluate({ role, tool: 'desktop_action', args: {}, mode: 'ask_risky' }).decision).toBe('deny');
+      expect(evaluate({ role, tool: 'desktop_action', args: {}, mode: 'ask_risky', sandboxed: true }).decision).toBe('deny');
     }
   });
   it('desktop_operator gets no shell, writes or deploys', () => {
     for (const tool of ['shell_exec', 'write_file', 'staging_deploy']) {
-      expect(evaluate({ role: 'desktop_operator', tool, args: { command: 'ls' }, mode: 'ask_risky' }).decision).toBe('deny');
+      expect(evaluate({ role: 'desktop_operator', tool, args: { command: 'ls' }, mode: 'ask_risky', sandboxed: true }).decision).toBe('deny');
     }
   });
   it('staging deploys are never an agent tool', () => {
-    expect(evaluate({ role: 'deployment_verifier', tool: 'staging_deploy', args: {}, mode: 'ask_risky' }).decision).toBe('deny');
+    expect(evaluate({ role: 'deployment_verifier', tool: 'staging_deploy', args: {}, mode: 'ask_risky', sandboxed: true }).decision).toBe('deny');
   });
 });
 
@@ -85,4 +85,24 @@ describe('argument forms that run programs (evolution P1-1)', () => {
   ];
   it.each(privileged)('%s %j needs approval', (c, a) => { expect(classifyCommand(c, a).capability).toBe('shell.privileged'); });
   it.each(safe)('%s %j stays safe', (c, a) => { expect(classifyCommand(c, a).capability).toBe('shell.safe'); });
+});
+
+describe('without an OS sandbox (evolution P1-2)', () => {
+  const ev = (command: string, args: string[], sandboxed: boolean, role: 'coder' | 'tester' = 'coder') => evaluate({ role, tool: 'shell_exec', args: { command, args }, mode: 'ask_risky', sandboxed });
+  it.each([
+    ['npm', ['test']], ['pnpm', ['run', 'build']], ['yarn', ['t']], ['node', ['scripts/x.js']], ['npx', ['vitest']], ['tsc', ['--noEmit']],
+  ] as const)('%s %s runs project code: allowed sandboxed, asks unsandboxed', (cmd, args) => {
+    expect(ev(cmd, [...args], true).decision).toBe('allow');
+    const d = ev(cmd, [...args], false);
+    expect(d.decision).toBe('ask');
+    expect(d.reason).toMatch(/No OS sandbox/);
+  });
+  it.each([['cat', ['a']], ['git', ['status']], ['npm', ['ls']], ['rg', ['x']], ['ls', []]] as const)('%s %s reads only: still allowed unsandboxed', (cmd, args) => {
+    expect(ev(cmd, [...args], false).decision).toBe('allow');
+  });
+  it('run_tests asks unsandboxed, for a tester too (the role still holds the capability)', () => {
+    const d = evaluate({ role: 'tester', tool: 'run_tests', args: {}, mode: 'ask_risky', sandboxed: false });
+    expect(d).toMatchObject({ decision: 'ask', capability: 'shell.safe' });
+    expect(evaluate({ role: 'tester', tool: 'run_tests', args: {}, mode: 'ask_risky', sandboxed: true }).decision).toBe('allow');
+  });
 });

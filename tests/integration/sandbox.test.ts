@@ -6,7 +6,7 @@ import path from 'node:path';
 import { detectSandbox } from '@atlas/terminal';
 import type { FakeScript } from '@atlas/runtime-fake';
 import { sampleRepo } from '../helpers';
-import { makeOrchestrator, startMission, waitFor } from './harness';
+import { autoDecide, makeOrchestrator, startMission, waitFor } from './harness';
 
 const hasSandbox = detectSandbox().kind === 'bwrap';
 
@@ -67,6 +67,25 @@ describe('without a sandbox', () => {
     } finally { delete process.env.ATLAS_SANDBOX; detectSandbox(true); }
   });
 
+  it('without a sandbox, agent commands that run project code need approval; a denial means they never run', async () => {
+    process.env.ATLAS_SANDBOX = 'none';
+    detectSandbox(true);
+    try {
+      const root = sampleRepo();
+      const h = makeOrchestrator();
+      h.repo.setSetting('execution.allowUnsandboxed', true);
+      const id = await startMission(h, root);
+      const stops = ['run_tests', 'shell_exec'].map((t) => autoDecide(h, id, t, 'deny'));
+      await h.orch.settle(id);
+      stops.forEach((s) => s());
+      const denied = h.repo.approvals(id).filter((a) => /No OS sandbox/.test(a.reason));
+      expect(denied.length).toBeGreaterThan(0);
+      expect(denied.every((a) => a.status === 'denied')).toBe(true);
+      // No agent process started: the only commands that ran are the gate's own checks (operator opt-in).
+      expect(h.events.filter((e) => e.type === 'process.started' && e.attemptId)).toEqual([]);
+    } finally { delete process.env.ATLAS_SANDBOX; detectSandbox(true); }
+  });
+
   it('runs unsandboxed only when the operator explicitly allowed it', async () => {
     process.env.ATLAS_SANDBOX = 'none';
     detectSandbox(true);
@@ -75,8 +94,14 @@ describe('without a sandbox', () => {
       const h = makeOrchestrator();
       h.repo.setSetting('execution.allowUnsandboxed', true);
       const id = await startMission(h, root);
+      // P1-2: without a sandbox, agent commands that run project code wait for the operator, even "safe" ones.
+      const stops = ['run_tests', 'shell_exec'].map((t) => autoDecide(h, id, t));
       await h.orch.settle(id);
+      stops.forEach((s) => s());
       expect(h.repo.mission(id)!.outcome).toMatch(/^Verified/);
+      const asked = h.repo.approvals(id);
+      expect(asked.length).toBeGreaterThan(0);
+      expect(asked.every((a) => /No OS sandbox/.test(a.reason) || a.capability === 'shell.privileged')).toBe(true);
       expect(h.events.filter((e) => e.type === 'process.started').every((e) => e.payload.sandboxed === false)).toBe(true);
     } finally { delete process.env.ATLAS_SANDBOX; detectSandbox(true); }
   });

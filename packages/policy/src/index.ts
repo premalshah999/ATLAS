@@ -30,7 +30,11 @@ export const ROLE_GRANTS: Record<AgentRole, readonly Capability[]> = {
  */
 const NEVER: ReadonlySet<Capability> = new Set(['deploy.production', 'secrets.use', 'deploy.staging']);
 
-export interface ShellClass { capability: 'shell.safe' | 'shell.privileged' | null; risk: Risk; reason: string; /** Needs network egress inside the sandbox (granted only with approval). */ network?: boolean }
+export interface ShellClass {
+  capability: 'shell.safe' | 'shell.privileged' | null; risk: Risk; reason: string;
+  /** Needs network egress inside the sandbox (granted only with approval). */ network?: boolean;
+  /** Runs code from the project (scripts, test files, local tools): arbitrary code as the user when unsandboxed. */ runsProjectCode?: boolean;
+}
 
 const SAFE_EXEC = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'rg', 'find', 'echo', 'pwd', 'diff', 'sort', 'uniq', 'tsc', 'node', 'true', 'false', 'test']);
 const DENY_EXEC = new Set(['sudo', 'su', 'doas', 'mkfs', 'dd', 'shutdown', 'reboot', 'launchctl', 'systemctl', 'security', 'osascript',
@@ -57,6 +61,9 @@ const GIT_EXEC_ARG = /^(--output(=|$)|-O|--open-files-in-pager(=|$)|--ext-diff$|
 const GIT_BRANCH_WRITE = new Set(['-d', '-D', '--delete', '-m', '-M', '--move', '-c', '-C', '--copy', '-f', '--force', '-u', '--set-upstream-to', '--unset-upstream', '--edit-description', '--track', '-t', '--no-track', '--create-reflog']);
 const PKG_OVERRIDE = /^--(script-shell|userconfig|globalconfig|prefix|node-options|shell|config)(=|$)/;
 const SAFE_PKG = new Set(['test', 't', 'run', 'exec', 'ls', 'list', 'why', 'outdated']);
+const PKG_READONLY = new Set(['ls', 'list', 'why', 'outdated']);
+/** Safe-listed programs that execute project files (node runs them, tsc loads the project's compiler and config). */
+const PROJECT_CODE_EXEC = new Set(['node', 'tsc']);
 
 /** Classify a command given as an argument array. Never parses a shell string. */
 export function classifyCommand(command: string, args: readonly string[]): ShellClass {
@@ -89,8 +96,8 @@ export function classifyCommand(command: string, args: readonly string[]): Shell
     const override = args.find((a) => PKG_OVERRIDE.test(a));
     if (override) return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} ${override.split('=')[0]} changes which programs run` };
     if (exe !== 'npx' && sub === 'exec') return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} exec runs an arbitrary program` };
-    if (exe !== 'npx' && SAFE_PKG.has(sub)) return { capability: 'shell.safe', risk: 'low', reason: `${exe} ${sub} runs a project script` };
-    if (exe === 'npx' && ['vitest', 'jest', 'tsc', 'eslint', 'prettier', 'mocha'].includes(sub)) return { capability: 'shell.safe', risk: 'low', reason: `npx ${sub} runs a local dev tool` };
+    if (exe !== 'npx' && SAFE_PKG.has(sub)) return { capability: 'shell.safe', risk: 'low', reason: `${exe} ${sub} runs a project script`, runsProjectCode: !PKG_READONLY.has(sub) };
+    if (exe === 'npx' && ['vitest', 'jest', 'tsc', 'eslint', 'prettier', 'mocha'].includes(sub)) return { capability: 'shell.safe', risk: 'low', reason: `npx ${sub} runs a local dev tool`, runsProjectCode: true };
     return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} ${sub || ''} may install packages or run install scripts`.replace(/\s+/g, ' '), network: true };
   }
   if (exe === 'node' && args.some((a) => a === '-e' || a === '--eval' || a === '-p' || a === '--print')) {
@@ -99,7 +106,7 @@ export function classifyCommand(command: string, args: readonly string[]): Shell
   if (SAFE_EXEC.has(exe)) {
     const danger = args.find((a) => (EXEC_ARGS[exe] ?? []).some((re) => re.test(a)));
     if (danger) return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} ${danger.split('=')[0]} can run a program or write outside the expected output` };
-    return { capability: 'shell.safe', risk: 'low', reason: `${exe} is on the safe list` };
+    return { capability: 'shell.safe', risk: 'low', reason: `${exe} is on the safe list`, runsProjectCode: PROJECT_CODE_EXEC.has(exe) };
   }
   return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} is not on the safe list` };
 }
@@ -125,10 +132,15 @@ export interface EvaluateInput {
   tool: string;
   args: Record<string, unknown>;
   mode: ApprovalMode;
+  /**
+   * Whether the command runs inside an OS sandbox. Without one (the operator's explicit opt-in), "safe" commands that
+   * run project code are arbitrary code as the user, so they need approval (evolution P1-2).
+   */
+  sandboxed: boolean;
 }
 
 /** Evaluate a proposed tool call before execution, independent of any prompt. Unknown ⇒ deny. */
-export function evaluate({ role, tool, args, mode }: EvaluateInput): PolicyDecision {
+export function evaluate({ role, tool, args, mode, sandboxed }: EvaluateInput): PolicyDecision {
   const mapped = TOOL_CAPABILITY[tool];
   if (!mapped) return { decision: 'deny', capability: null, risk: 'high', reason: `Unknown tool "${tool}"` };
 
@@ -136,13 +148,14 @@ export function evaluate({ role, tool, args, mode }: EvaluateInput): PolicyDecis
   let risk: Risk = 'low';
   let why = '';
   let network = false;
+  let projectCode = tool === 'run_tests';
   if (mapped === 'shell') {
     const command = typeof args.command === 'string' ? args.command : '';
     const argv = Array.isArray(args.args) ? args.args.map(String) : [];
     if (!command) return { decision: 'deny', capability: null, risk: 'high', reason: 'shell_exec requires a command' };
     const c = classifyCommand(command, argv);
     if (!c.capability) return { decision: 'deny', capability: null, risk: c.risk, reason: c.reason };
-    capability = c.capability; risk = c.risk; why = c.reason; network = !!c.network;
+    capability = c.capability; risk = c.risk; why = c.reason; network = !!c.network; projectCode = !!c.runsProjectCode;
   } else {
     capability = mapped;
     if (capability === 'fs.write') risk = 'low';
@@ -155,6 +168,7 @@ export function evaluate({ role, tool, args, mode }: EvaluateInput): PolicyDecis
     return { decision: 'deny', capability, risk, reason: 'Mission runs in plan-only mode: no writes or privileged commands' };
   }
   if (capability === 'shell.privileged') return { decision: 'ask', capability, risk, reason: why || 'Privileged command', network };
+  if (!sandboxed && projectCode) return { decision: 'ask', capability, risk: 'elevated', reason: `No OS sandbox: ${why || 'the project test command'} runs project code as your user` };
   if (capability === 'fs.write' && mode === 'ask_all_writes') return { decision: 'ask', capability, risk, reason: 'Approval mode requires approval for every write' };
   return { decision: 'allow', capability, risk, reason: why || `${capability} granted to ${role}` };
 }

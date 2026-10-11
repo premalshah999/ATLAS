@@ -64,7 +64,7 @@ export function Settings() {
             {settings?.sandbox.kind === 'none' && (
               <div className="lv-callout" style={{ marginTop: 0 }}>
                 <div style={{ flex: 1 }}>
-                  <b>Allow unsandboxed execution.</b> Repository scripts and approved commands would run as your user and could read your files and credentials. Only enable this for repositories you fully trust.
+                  <b>Allow unsandboxed execution.</b> Verification checks would run repository scripts as your user, and could read your files and credentials. Agent commands that run project code (tests, scripts, node) would each ask for your approval first. Only enable this for repositories you fully trust.
                   <div className="at-row" style={{ gap: 8, marginTop: 8 }}>
                     {settings.values['execution.allowUnsandboxed']
                       ? <><Badge tone="danger">unsandboxed execution allowed</Badge><Button size="sm" onClick={() => void setUnsandboxed(false)}>Turn off</Button></>
