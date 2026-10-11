@@ -24,6 +24,12 @@ jobs:
           sudo apt-get install -y -q bubblewrap xvfb xdotool x11-utils imagemagick
           # Ubuntu 24.04 restricts unprivileged user namespaces; bubblewrap needs them.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - name: Desktop tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install --cask xquartz
+          brew install xdotool
+          echo /opt/X11/bin >> "$GITHUB_PATH"
       - run: pnpm install --frozen-lockfile
       - name: Browser for QA checks
         run: pnpm exec playwright install chromium
@@ -35,8 +41,10 @@ jobs:
         run: pnpm typecheck
       - if: success() || failure()
         run: pnpm test
+        env: { ATLAS_REQUIRE_DESKTOP: "${{ runner.os != 'Windows' && '1' || '' }}" }
       - if: success() || failure()
         run: pnpm test:integration
+        env: { ATLAS_REQUIRE_DESKTOP: "${{ runner.os != 'Windows' && '1' || '' }}" }
       - if: success() || failure()
         run: ATLAS_EVAL_OUT=evals/out pnpm eval
       - uses: actions/upload-artifact@v4

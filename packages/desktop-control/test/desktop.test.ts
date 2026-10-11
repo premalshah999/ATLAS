@@ -12,6 +12,12 @@ const sandbox = detectSandbox();
 const owner = () => ({ missionId: 'msn_test', taskId: 'tsk_test', worktree: mkdtempSync(path.join(os.tmpdir(), 'atlas-dsk-')) });
 const pointer = (s: DesktopSession) => execFileSync('xdotool', ['getmouselocation'], { env: { PATH: process.env.PATH!, DISPLAY: s.display } }).toString();
 
+// CI sets ATLAS_REQUIRE_DESKTOP on runners that install Xvfb and xdotool (Linux; macOS with XQuartz), so the suites
+// below cannot pass by skipping there.
+it.runIf(process.env.ATLAS_REQUIRE_DESKTOP === '1')('desktop control is available on this runner', () => {
+  expect(support, support.detail).toMatchObject({ ok: true });
+});
+
 describe.skipIf(!support.ok)('virtual desktop control', () => {
   const events: string[] = [];
   const mgr = new DesktopManager({ session: (i, change, by) => events.push(`${change}:${by}:${i.controller}`) });
