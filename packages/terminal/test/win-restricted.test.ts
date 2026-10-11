@@ -3,7 +3,7 @@
 // printed as a table. This test asserts nothing about the outcome; it gathers the evidence for the decision, and the
 // chosen mode must then pass the full sandbox suite before ATLAS uses it.
 import { execFileSync, spawnSync } from 'node:child_process';
-import { rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -90,10 +90,19 @@ describe.skipIf(process.platform !== 'win32')('ADR 0016: restricted-token varian
         const line = (r.stdout ?? '').split(/\r?\n/).find((l) => l.startsWith('RESULT ')) ?? '';
         report.push(`--- ${label}: exit ${r.status}${r.error ? ' ' + (r.error as NodeJS.ErrnoException).code : ''}\n${line || `(no result) stdout: ${(r.stdout ?? '').slice(0, 300)} stderr: ${(r.stderr ?? '').slice(0, 300)}`}`);
       }
+      // Round 4 (CI run 38161018218): piped children still failed with EPERM after the default-DACL change. The helper
+      // replays libuv's Win32 steps under the restricted token and prints each result.
+      // The helper lives in the user's profile, which the restricted token cannot read: run a copy inside the root.
+      const ptExe = path.join(root, 'pt.exe');
+      copyFileSync(helper, ptExe);
+      for (const [label, sids] of [['A', `everyone,users,authusers,logon,${custom}`], ['H', `everyone,users,authusers,${custom}`]] as const) {
+        const r = spawnSync(helper, ['run', '-', '--restricted', sids, '--low', '--cmdline', `${win.quoteArg(ptExe)} pipetest`], { cwd: root, encoding: 'utf8', timeout: 30_000 });
+        report.push(`--- pipetest ${label}: exit ${r.status}\n${(r.stdout ?? '').trim()}\n${(r.stderr ?? '').trim().slice(0, 300)}`);
+      }
     } finally {
       rmSync(homeCanary, { force: true });
     }
     console.log(`[restricted]\n${report.join('\n')}`);
-    expect(report.length).toBe(variants.length + 1);
+    expect(report.length).toBe(variants.length + 3);
   }, 300_000);
 });

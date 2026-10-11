@@ -11,6 +11,8 @@
 //     interactive, logon, restricted), and with --low the low integrity level. Unlike an AppContainer it lets Node
 //     create the named pipes it needs for child stdio. Not used by ATLAS until it passes the sandbox test suite.
 //   atlas-sandbox.exe logonsid               print the logon SID of the current session
+//   atlas-sandbox.exe pipetest               diagnostic (ADR 0016): the Win32 steps libuv takes for a piped child,
+//                                             each with its error code; meant to run under --restricted
 //
 // The command line is built by ATLAS (argument quoting, cmd.exe escaping for .cmd shims) and used verbatim.
 // Container "-" runs without an AppContainer; only the operator's explicit unsandboxed opt-in uses it.
@@ -19,7 +21,7 @@
 // user's files except paths explicitly granted to the container SID, and no network unless --net adds the
 // internetClient/privateNetwork capabilities. The process is created suspended, placed in a Job Object that
 // kills the whole tree when the launcher exits, then resumed. --pty hosts it in a ConPTY.
-export const HELPER_VERSION = '6';
+export const HELPER_VERSION = '7';
 
 export const HELPER_SOURCE = String.raw`
 using System;
@@ -75,6 +77,17 @@ static class AtlasSandbox {
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr t, int cls, IntPtr info, int len);
   [DllImport("advapi32.dll", SetLastError = true)] static extern int GetLengthSid(IntPtr sid);
   [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, int rev, out IntPtr sd, IntPtr size);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateNamedPipe(string name, uint openMode, uint pipeMode, uint maxInst, uint outBuf, uint inBuf, uint timeout, IntPtr sa);
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool SetHandleInformation(IntPtr h, uint mask, uint flags);
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetProcessWindowStation();
+  [DllImport("user32.dll", SetLastError = true)] static extern IntPtr GetThreadDesktop(uint threadId);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("advapi32.dll", SetLastError = true)] static extern uint GetSecurityInfo(IntPtr h, int type, uint info, IntPtr owner, IntPtr group, out IntPtr dacl, IntPtr sacl, out IntPtr sd);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern uint SetSecurityInfo(IntPtr h, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern uint SetEntriesInAcl(int count, EXPLICIT_ACCESS[] entries, IntPtr oldAcl, out IntPtr newAcl);
+  [StructLayout(LayoutKind.Sequential)] struct TRUSTEE { public IntPtr pMultipleTrustee; public int MultipleTrusteeOperation; public int TrusteeForm; public int TrusteeType; public IntPtr ptstrName; }
+  [StructLayout(LayoutKind.Sequential)] struct EXPLICIT_ACCESS { public uint grfAccessPermissions; public int grfAccessMode; public uint grfInheritance; public TRUSTEE Trustee; }
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetSecurityDescriptorDacl(IntPtr sd, out bool present, out IntPtr dacl, out bool defaulted);
   [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessAsUser(IntPtr tok, string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
   [DllImport("kernelbase.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool DeriveCapabilitySidsFromName(string name, out IntPtr groupSids, out int groupCount, out IntPtr capSids, out int capCount);
@@ -150,6 +163,9 @@ static class AtlasSandbox {
     // default DACL. The inherited one grants the user SID, which is deny-only here, so the process could not open its
     // own pipes (CI run 38158723502: piped children failed with EPERM). Grant SYSTEM, the logon SID and the
     // sandbox's own restricting SIDs instead, as Chromium's sandbox does.
+    var own = new List<IntPtr>();
+    foreach (var r in restrict) { string rs = SidString(r.Sid); if (rs != "S-1-1-0" && rs != "S-1-5-32-545" && rs != "S-1-5-11" && rs != "S-1-5-4" && rs != "S-1-5-12" && rs != logon) own.Add(r.Sid); }
+    GrantWindowObjects(own);
     var sddl = new StringBuilder("D:(A;;GA;;;SY)");
     if (logon != null) sddl.Append("(A;;GA;;;" + logon + ")");
     foreach (var r in restrict) { string rs = SidString(r.Sid); if (rs != "S-1-1-0" && rs != "S-1-5-32-545" && rs != "S-1-5-11" && rs != "S-1-5-4" && rs != logon) sddl.Append("(A;;GA;;;" + rs + ")"); }
@@ -167,7 +183,51 @@ static class AtlasSandbox {
     return rt;
   }
 
+  /**
+   * A restricted token passes an access check only if its restricting SIDs are granted too. The window station and
+   * desktop grant the logon SID; to keep the logon SID out of the restricting list (it is granted on every task's
+   * root, so it would let one sandbox open another's), the sandbox's own SIDs are added to both (CI run 38161018218,
+   * variant H: DLL initialization failed without it). Chromium's sandbox does the same.
+   */
+  static void GrantWindowObjects(List<IntPtr> sids) {
+    if (sids.Count == 0) return;
+    foreach (var h in new[] { GetProcessWindowStation(), GetThreadDesktop(GetCurrentThreadId()) }) {
+      IntPtr dacl, sd;
+      if (GetSecurityInfo(h, 7, 4, IntPtr.Zero, IntPtr.Zero, out dacl, IntPtr.Zero, out sd) != 0) Fail("window object security: " + Marshal.GetLastWin32Error()); // SE_WINDOW_OBJECT, DACL
+      var entries = new EXPLICIT_ACCESS[sids.Count];
+      for (int i = 0; i < sids.Count; i++) entries[i] = new EXPLICIT_ACCESS { grfAccessPermissions = 0x10000000, grfAccessMode = 1, grfInheritance = 0, Trustee = new TRUSTEE { TrusteeForm = 0, TrusteeType = 0, ptstrName = sids[i] } };
+      IntPtr acl;
+      uint e = SetEntriesInAcl(entries.Length, entries, dacl, out acl);
+      if (e != 0) Fail("window object ACL: " + e);
+      e = SetSecurityInfo(h, 7, 4, IntPtr.Zero, IntPtr.Zero, acl, IntPtr.Zero);
+      if (e != 0) Fail("set window object ACL: " + e);
+    }
+  }
+
+  /** Replays libuv's piped-child steps and prints each Win32 result (ADR 0016 diagnostic). */
+  static int PipeTest() {
+    string name = @"\\.\pipe\atlas-pt-" + System.Diagnostics.Process.GetCurrentProcess().Id;
+    IntPtr bad = (IntPtr)(-1);
+    // libuv: PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | WRITE_DAC | FILE_FLAG_FIRST_PIPE_INSTANCE, default security.
+    IntPtr srv = CreateNamedPipe(name, 0x3 | 0x40000000 | 0x40000 | 0x80000, 0, 1, 65536, 65536, 0, IntPtr.Zero);
+    Console.WriteLine("PIPETEST server " + (srv == bad ? "ERR " + Marshal.GetLastWin32Error() : "ok"));
+    if (srv == bad) return 1;
+    IntPtr cli = CreateFile(name, 0x80000000 | 0x100, 0, IntPtr.Zero, 3, 0, IntPtr.Zero); // GENERIC_READ | FILE_WRITE_ATTRIBUTES
+    Console.WriteLine("PIPETEST client-read " + (cli == bad ? "ERR " + Marshal.GetLastWin32Error() : "ok"));
+    if (cli == bad) return 1;
+    SetHandleInformation(cli, 1, 1);
+    var si = new STARTUPINFOEX(); si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES; si.StartupInfo.hStdInput = cli; si.StartupInfo.hStdOutput = GetStdHandle(-11); si.StartupInfo.hStdError = GetStdHandle(-12);
+    PROCESS_INFORMATION pi;
+    var cmd = new StringBuilder("\"" + System.Reflection.Assembly.GetExecutingAssembly().Location + "\" logonsid");
+    bool ok = CreateProcess(null, cmd, IntPtr.Zero, IntPtr.Zero, true, CREATE_UNICODE_ENVIRONMENT, IntPtr.Zero, Environment.CurrentDirectory, ref si, out pi);
+    Console.WriteLine("PIPETEST child-with-pipe " + (ok ? "ok" : "ERR " + Marshal.GetLastWin32Error()));
+    if (ok) { WaitForSingleObject(pi.hProcess, 5000); uint code; GetExitCodeProcess(pi.hProcess, out code); Console.WriteLine("PIPETEST child-exit " + code); }
+    return 0;
+  }
+
   static int Main(string[] argv) {
+    if (argv.Length >= 1 && argv[0] == "pipetest") return PipeTest();
     if (argv.Length >= 1 && argv[0] == "logonsid") { string l = LogonSid(OwnToken()); if (l == null) Fail("no logon SID"); Console.WriteLine(l); return 0; }
     if (argv.Length >= 2 && argv[0] == "sid") {
       string s; ConvertSidToStringSid(ContainerSid(argv[1]), out s); Console.WriteLine(s); return 0;
