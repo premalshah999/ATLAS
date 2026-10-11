@@ -23,7 +23,7 @@
 // user's files except paths explicitly granted to the container SID, and no network unless --net adds the
 // internetClient/privateNetwork capabilities. The process is created suspended, placed in a Job Object that
 // kills the whole tree when the launcher exits, then resumed. --pty hosts it in a ConPTY.
-export const HELPER_VERSION = '7';
+export const HELPER_VERSION = '8';
 
 export const HELPER_SOURCE = String.raw`
 using System;
@@ -89,6 +89,7 @@ static class AtlasSandbox {
   [DllImport("advapi32.dll", SetLastError = true)] static extern uint SetSecurityInfo(IntPtr h, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
   [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint GetNamedSecurityInfo(string name, int type, uint info, IntPtr owner, IntPtr group, out IntPtr dacl, IntPtr sacl, out IntPtr sd);
   [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint SetNamedSecurityInfo(string name, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool ConvertSecurityDescriptorToStringSecurityDescriptor(IntPtr sd, int rev, uint info, out string sddl, IntPtr len);
   [DllImport("advapi32.dll", SetLastError = true)] static extern uint SetEntriesInAcl(int count, EXPLICIT_ACCESS[] entries, IntPtr oldAcl, out IntPtr newAcl);
   [StructLayout(LayoutKind.Sequential)] struct TRUSTEE { public IntPtr pMultipleTrustee; public int MultipleTrusteeOperation; public int TrusteeForm; public int TrusteeType; public IntPtr ptstrName; }
   [StructLayout(LayoutKind.Sequential)] struct EXPLICIT_ACCESS { public uint grfAccessPermissions; public int grfAccessMode; public uint grfInheritance; public TRUSTEE Trustee; }
@@ -232,6 +233,10 @@ static class AtlasSandbox {
     IntPtr srv = CreateNamedPipe(name, 0x3 | 0x40000000 | 0x40000 | 0x80000, 0, 1, 65536, 65536, 0, IntPtr.Zero);
     Console.WriteLine("PIPETEST server " + (srv == bad ? "ERR " + Marshal.GetLastWin32Error() : "ok"));
     if (srv == bad) return 1;
+    // CI run 38162335938: the client open was denied (5). Print the security the pipe actually got: DACL and label.
+    IntPtr pdacl, psd; string text;
+    uint se = GetSecurityInfo(srv, 6, 4 | 0x10, IntPtr.Zero, IntPtr.Zero, out pdacl, IntPtr.Zero, out psd); // SE_KERNEL_OBJECT; DACL | LABEL
+    Console.WriteLine("PIPETEST pipe-security " + (se != 0 ? "ERR " + se : ConvertSecurityDescriptorToStringSecurityDescriptor(psd, 1, 4 | 0x10, out text, IntPtr.Zero) ? text : "ERR " + Marshal.GetLastWin32Error()));
     IntPtr cli = CreateFile(name, 0x80000000 | 0x100, 0, IntPtr.Zero, 3, 0, IntPtr.Zero); // GENERIC_READ | FILE_WRITE_ATTRIBUTES
     Console.WriteLine("PIPETEST client-read " + (cli == bad ? "ERR " + Marshal.GetLastWin32Error() : "ok"));
     if (cli == bad) return 1;

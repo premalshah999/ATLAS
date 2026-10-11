@@ -366,3 +366,18 @@ The auditor also confirmed several fixes against new scenarios (could not break 
 
   This choice needs an ADR and evidence from the next run.
 - **Hypothesis confirmed (CI run 38130392107).** A pipe in the global namespace is refused inside the container, and the same pipe under `LOCAL\` is created. libuv offers no way to change its pipe names, so piped children cannot work in an AppContainer. The options and a recommendation are in ADR 0016 (proposed; the operator decides).
+
+## Windows restricted-token experiment (ADR 0016, operator-approved), rounds 1–5
+- **Design.** The helper gained `run - --restricted SIDLIST [--low]`: the operator's token, with the user and all groups except a basic allowlist made deny-only, no privileges, and restricting SIDs. It also gained `grant` (ACEs for SIDs that are not accounts) and `pipetest`, a diagnostic. Nothing in ATLAS uses this mode yet.
+- **Shown so far** (CI runs 38156630914 through 38162335938), for variant **H** (everyone, users, authenticated users and a per-root SID; low integrity; the own SID granted on the window station and desktop):
+  - home and outside canaries are unreadable;
+  - **another task's root is unreadable**;
+  - writes land only in the root (outside it and in `C:\Users\Public` they are denied);
+  - global named pipes can be created.
+- **Not working yet:**
+  - **Piped child processes.** `pipetest` shows the pipe server is created, but opening its client end is denied (error 5). The next run prints the pipe's actual DACL and integrity label.
+  - **Network** is not blocked by any variant. The operator accepted this, with a proxy guard and a "network not enforced" label.
+- **Ruled out:**
+  - capability SIDs as restricting SIDs (error 87);
+  - restricting lists without Everyone, where Node cannot start;
+  - the logon SID in the restricting list, which lets one task read another's root.
