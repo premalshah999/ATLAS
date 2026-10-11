@@ -86,7 +86,7 @@ export function grant(sid: string, target: string, mode: 'rw' | 'rx'): void {
   if (granted.has(key) || !existsSync(p)) return;
   const dir = statSync(p).isDirectory();
   const perm = mode === 'rw' ? 'M' : 'RX';
-  execFileSync('icacls', [p, '/grant:r', `*${sid}:${dir ? '(OI)(CI)' : ''}${perm}`, '/C', '/Q'], { stdio: 'ignore', windowsHide: true, timeout: 300_000 });
+  execFileSync('icacls', [p, '/grant:r', `*${sid}:${dir ? '(OI)(CI)' : ''}${perm}`, '/C', '/Q'], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, timeout: 300_000 });
   granted.add(key);
 }
 
@@ -109,12 +109,14 @@ function persistentGrant(sid: string, p: string): void {
 }
 
 /** Toolchain directories (node, git, npm…) get read access for the ATLAS toolchain capability, once per machine. */
+export const grantFailures: string[] = [];
 export function grantToolchain(dirs: string[]): void {
   const cap = toolchainCapabilitySid();
   for (const d of dirs) {
     const p = real(d);
     if (!existsSync(p) || alreadyReadable(p)) continue;
-    try { persistentGrant(cap, p); } catch { /* not ours to change; commands from it fail visibly with access denied */ }
+    // Not ours to change: commands from it fail visibly with access denied, and the reason is kept for diagnosis.
+    try { persistentGrant(cap, p); } catch (e) { grantFailures.push(`${p}: ${String((e as { stderr?: Buffer }).stderr ?? (e as Error).message).slice(0, 300)}`); }
   }
 }
 

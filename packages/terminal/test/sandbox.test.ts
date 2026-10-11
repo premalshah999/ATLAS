@@ -97,11 +97,10 @@ console.log('done');`);
     const sb = { root, writable: true, network: false };
     const nodeDir = path.dirname(process.execPath);
     const steps: [string, string, string[]][] = [
-      ['env', 'cmd.exe', ['/d', '/c', 'echo CMD-OK & echo PATH=%PATH% & echo COMSPEC=%COMSPEC% & cd']],
-      ['list node dir', 'cmd.exe', ['/d', '/c', `dir /b "${path.join(nodeDir, 'npm.cmd')}" "${path.join(nodeDir, 'node.exe')}"`]],
-      ['node by path', 'cmd.exe', ['/d', '/c', `"${path.join(nodeDir, 'node.exe')}" --version`]],
-      ['nested cmd (FOR /F)', 'cmd.exe', ['/d', '/c', 'for /f "delims=" %F in (\'echo NESTED-OK\') do @echo %F']],
-      ['npm prefix script', 'cmd.exe', ['/d', '/c', `"${path.join(nodeDir, 'node.exe')}" "${path.join(nodeDir, 'node_modules', 'npm', 'bin', 'npm-prefix.js')}"`]],
+      ['env', 'cmd.exe', ['/d', '/c', 'echo CMD-OK & cd']],
+      ['list node dir', 'cmd.exe', ['/d', '/c', 'dir', '/b', nodeDir]],
+      ['node by path', path.join(nodeDir, 'node.exe'), ['--version']],
+      ['node reads a file in its dir', path.join(nodeDir, 'node.exe'), ['-e', `require('fs').readdirSync(${JSON.stringify(nodeDir)}); console.log('READ-OK')`]],
       ['npm', 'npm', ['--version']],
     ];
     const report: string[] = [];
@@ -111,6 +110,11 @@ console.log('done');`);
       last = r.output;
       report.push(`--- ${label}: exit ${r.exitCode} ${r.spawnError ?? ''}\n${r.output.trim()}`);
     }
+    const { execFileSync } = await import('node:child_process');
+    const win = await import('../src/win/appcontainer');
+    let acl = '';
+    try { acl = execFileSync('icacls', [nodeDir], { encoding: 'utf8' }); } catch (e) { acl = String(e); }
+    report.push(`--- toolchain capability ${win.toolchainCapabilitySid()}\n--- icacls ${nodeDir}\n${acl}\n--- grant failures\n${win.grantFailures.join('\n') || '(none)'}`);
     expect(last, report.join('\n')).toMatch(/\d+\.\d+\.\d+/);
   });
 
