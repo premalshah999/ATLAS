@@ -5,13 +5,13 @@ import { Orchestrator, type Executors, type OrchestratorOptions } from '@atlas/o
 import { FakeRuntime, sampleSlugifyScript, type FakeScript } from '@atlas/runtime-fake';
 import { tmpDir } from '../helpers';
 
-export function makeOrchestrator(opts: { scripts?: FakeScript[]; runtime?: AgentRuntime; executors?: Executors; dataDir?: string; approvalTtlMs?: number; planner?: (req: PlanRequest) => unknown; stages?: ReleaseStage[]; toolFactories?: OrchestratorOptions['toolFactories']; stallAfterMs?: number } = {}) {
+export function makeOrchestrator(opts: { scripts?: FakeScript[]; runtime?: AgentRuntime; executors?: Executors; dataDir?: string; approvalTtlMs?: number; planner?: (req: PlanRequest) => unknown; stages?: ReleaseStage[]; toolFactories?: OrchestratorOptions['toolFactories']; stallAfterMs?: number; diskFree?: (dir: string) => number } = {}) {
   const dataDir = opts.dataDir ?? tmpDir('atlas-data-');
   const db = openDb(path.join(dataDir, 'atlas.db'));
   const repo = new Repo(db);
   const artifacts = new ArtifactStore(db, path.join(dataDir, 'artifacts'));
   const runtime = opts.runtime ?? new FakeRuntime(opts.scripts ?? [sampleSlugifyScript], 0, opts.planner);
-  const orch = new Orchestrator({ repo, artifacts, runtimes: { fake: runtime }, worktreeDir: path.join(dataDir, 'worktrees'), executors: opts.executors, approvalTtlMs: opts.approvalTtlMs, stages: opts.stages, toolFactories: opts.toolFactories, factsDir: path.join(dataDir, 'facts'), stallAfterMs: opts.stallAfterMs });
+  const orch = new Orchestrator({ repo, artifacts, runtimes: { fake: runtime }, worktreeDir: path.join(dataDir, 'worktrees'), executors: opts.executors, approvalTtlMs: opts.approvalTtlMs, stages: opts.stages, toolFactories: opts.toolFactories, factsDir: path.join(dataDir, 'facts'), stallAfterMs: opts.stallAfterMs, diskFree: opts.diskFree });
   const events: AtlasEvent[] = [];
   repo.onEvent((e) => events.push(e));
   return { orch, repo, artifacts, db, dataDir, events };

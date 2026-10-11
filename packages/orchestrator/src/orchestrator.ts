@@ -20,7 +20,7 @@ import { buildContext, repoMap } from './context';
 import { mergeInto, topoOrder, worktreeFromBases } from './integration';
 import { blockingFindings, makeFinding, type FindingArgs } from './findings';
 import { deleteMission, exportMission, importMission } from './archive';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 
 export interface OrchestratorOptions {
   repo: Repo;
@@ -42,6 +42,8 @@ export interface OrchestratorOptions {
    * `attempt.stalled` ("No signal" in the UI). It is not stopped: the operator decides. Default 120 s.
    */
   stallAfterMs?: number;
+  /** Free bytes on the volume holding `dir` (injectable for tests). Default: statfs. */
+  diskFree?: (dir: string) => number;
 }
 
 export interface ExtraTool { invoke(args: unknown, signal: AbortSignal): Promise<ToolResult>; dispose(): Promise<void> }
@@ -506,10 +508,34 @@ export class Orchestrator {
     }
   }
 
+  /**
+   * Pre-create guards (evolution P1-4): retries and delegation must not fill the disk or pile up worktrees.
+   * Below the free-space floor, or at the per-mission cap, no worktree is created and the task fails with a reason.
+   */
+  private assertWorktreeCapacity(missionId: string) {
+    const parent = path.join(this.o.worktreeDir, missionId);
+    mkdirSync(parent, { recursive: true });
+    const cap = this.repo.setting('worktrees.maxPerMission', 40);
+    const count = readdirSync(parent, { withFileTypes: true }).filter((d) => d.isDirectory()).length;
+    if (count >= cap) throw new AtlasError('resource_limit', `This mission already has ${count} worktrees (limit ${cap}). Decide or delete finished work first.`);
+    const floor = this.repo.setting('worktrees.minFreeMiB', 1024) * 1024 * 1024;
+    const free = (this.o.diskFree ?? ((d: string) => { const s = statfsSync(d); return Number(s.bavail) * Number(s.bsize); }))(parent);
+    if (free < floor) throw new AtlasError('resource_limit', `Only ${Math.floor(free / 1024 / 1024)} MiB free where worktrees live (${parent}); ATLAS keeps at least ${Math.round(floor / 1024 / 1024)} MiB free.`);
+  }
+
   private async runAttempt(m: Mission, w: Workspace, t: Task, def: ReturnType<typeof role>, plan: Plan, attempt: Attempt, number: number, missionSignal: AbortSignal, baseOverride?: string[]) {
     const dir = path.join(this.o.worktreeDir, m.id, `${t.key}-${number}`);
     const branch = `atlas/${m.id}/${t.key}-${number}`;
     const bases = this.basesFor(m, t, baseOverride);
+    try {
+      this.assertWorktreeCapacity(m.id);
+    } catch (e) {
+      const message = (e as Error).message;
+      this.repo.updateAttempt(attempt.id, { state: 'failed', endedAt: nowIso(), error: message });
+      this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'attempt.ended', actor: SYSTEM('scheduler'), payload: { number, state: 'failed', errorKind: 'resource_limit', message } });
+      this.setTask(t, 'failed', { errorKind: 'resource_limit', reason: message });
+      return;
+    }
     try {
       const r = await worktreeFromBases(w.root, dir, branch, bases);
       if (!r.ok) throw new AtlasError('workspace_conflict', `Dependencies conflict: ${r.message}`);
@@ -722,6 +748,7 @@ export class Orchestrator {
       this.recordPreserved(m.id, r);
       if (r.retained) return { ok: false, message: `The previous integration worktree could not be preserved, so it was not replaced. ${r.retained}` };
     }
+    try { this.assertWorktreeCapacity(m.id); } catch (e) { return { ok: false, message: (e as Error).message }; }
     const r = await worktreeFromBases(w.root, dir, branch, [m.baseCommit!]);
     if (!r.ok) return { ok: false, message: r.message };
     for (const t of writers) {

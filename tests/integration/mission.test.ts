@@ -259,6 +259,29 @@ describe('cancellation and recovery', () => {
   }, 90_000);
 });
 
+describe('resource guards (evolution P1-4)', () => {
+  it('below the free-disk floor no worktree is created and the task fails with the reason', async () => {
+    const h = makeOrchestrator({ diskFree: () => 200 * 1024 * 1024 });
+    const id = await startMission(h, sampleRepo());
+    await h.orch.settle(id);
+    const t = h.repo.tasks(id).find((x) => x.key === 'implement')!;
+    expect(t.state).toBe('failed');
+    expect(h.events.find((e) => e.type === 'attempt.ended')!.payload).toMatchObject({ errorKind: 'resource_limit', message: expect.stringMatching(/Only 200 MiB free/) });
+    expect(h.events.filter((e) => e.type === 'workspace.worktree' && e.payload.action === 'created')).toEqual([]);
+  });
+
+  it('at the per-mission worktree cap no further worktree is created', async () => {
+    const h = makeOrchestrator();
+    h.repo.setSetting('worktrees.maxPerMission', 1);
+    const id = await startMission(h, sampleRepo());
+    await h.orch.settle(id);
+    // The coder's worktree is the one allowed; the reviewer's (or the integration's) is refused with a reason.
+    expect(h.events.filter((e) => e.type === 'workspace.worktree' && e.payload.action === 'created')).toHaveLength(1);
+    expect(JSON.stringify(h.events.filter((e) => e.type === 'attempt.ended' || e.type === 'integration.result').map((e) => e.payload))).toMatch(/limit 1/);
+    expect(h.repo.mission(id)!.verdict).not.toBe('verified');
+  });
+});
+
 describe('stall watchdog (evolution P1-6)', () => {
   it('a silent attempt is flagged once as stalled, not stopped; a pending approval is not a stall', async () => {
     const steps = [{ wait: 900 }, { tool: 'write_file', args: { path: 'NOTE.md', content: 'x' } }, { tool: 'shell_exec', args: { command: 'node', args: ['-e', '1'] } }, { claim: 'done' }];
