@@ -12,11 +12,12 @@ import { tmpDir } from '../../../tests/helpers';
 
 const PROBE = String.raw`
 const fs = require('fs'), net = require('net'), cp = require('child_process');
-const [home, outside, pub] = process.argv.slice(2);
+const [home, outside, pub, otherRoot] = process.argv.slice(2);
 const out = {};
 const tryDo = (k, f) => { try { out[k] = f(); } catch (e) { out[k] = 'ERR ' + (e.code || e.message); } };
 tryDo('readHome', () => 'READ ' + fs.readFileSync(home, 'utf8'));
 tryDo('readOutside', () => 'READ ' + fs.readFileSync(outside + '/canary.txt', 'utf8'));
+tryDo('readOtherTask', () => 'READ ' + fs.readFileSync(otherRoot + '/secret.txt', 'utf8'));
 tryDo('writeRoot', () => { fs.writeFileSync('w.txt', 'x'); return 'WROTE'; });
 tryDo('writeOutside', () => { fs.writeFileSync(outside + '/x.txt', 'x'); return 'WROTE'; });
 tryDo('writePublic', () => { fs.writeFileSync(pub, 'x'); fs.unlinkSync(pub); return 'WROTE'; });
@@ -56,6 +57,11 @@ describe.skipIf(process.platform !== 'win32')('ADR 0016: restricted-token varian
     const grantAny = (target: string, sid: string, rights: string, inherit: boolean) => execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
       `$a = Get-Acl -LiteralPath '${target}'; $r = New-Object System.Security.AccessControl.FileSystemAccessRule([System.Security.Principal.SecurityIdentifier]'${sid}', '${rights}', '${inherit ? 'ContainerInherit,ObjectInherit' : 'None'}', 'None', 'Allow'); $a.AddAccessRule($r); Set-Acl -LiteralPath '${target}' -AclObject $a`], { stdio: 'pipe' });
     for (const sid of [logon, custom, capSid]) grantAny(root, sid, 'Modify', true);
+    // Another task's root, granted like ours but to a different own SID: a sandbox must not read it.
+    const otherRoot = tmpDir();
+    writeFileSync(path.join(otherRoot, 'secret.txt'), 'OTHER-TASK');
+    const otherSid = custom.replace(/-(\d+)$/, (_m, n) => `-${Number(n) + 1}`);
+    for (const sid of [logon, otherSid]) grantAny(otherRoot, sid, 'Modify', true);
     execFileSync('icacls', [root, '/setintegritylevel', '(OI)(CI)low', '/C', '/Q'], { stdio: 'pipe' });
     // Round 1, variant E: Node started under the restricted token, then failed realpath (lstat EPERM) on an ancestor
     // in the user profile. Read-attributes only (no listing, not inherited) on each ancestor lets it resolve paths.
@@ -63,7 +69,11 @@ describe.skipIf(process.platform !== 'win32')('ADR 0016: restricted-token varian
       for (let d = path.dirname(root); path.dirname(d) !== d; d = path.dirname(d)) grantAny(d, sid, 'ReadAttributes', false);
     }
     const pub = path.join(process.env.PUBLIC ?? 'C:\\Users\\Public', `atlas-r-${process.pid}.txt`);
+    // Round 3 (CI run 38158723502): C and D could not start Node (no Everyone in the restricting list); G confirmed
+    // capability SIDs are rejected as restricting SIDs. H drops the logon SID, which every task's root is granted,
+    // so the restricting check can only pass through the task's own SID.
     const variants: [string, string, boolean][] = [
+      ['H everyone+users+authusers+own (no logon), low', `everyone,users,authusers,${custom}`, true],
       ['A everyone+users+authusers+logon+own, low', `everyone,users,authusers,logon,${custom}`, true],
       ['B everyone+users+authusers+logon+own, medium', `everyone,users,authusers,logon,${custom}`, false],
       ['C users+logon+own, low', `users,logon,${custom}`, true],
@@ -75,7 +85,7 @@ describe.skipIf(process.platform !== 'win32')('ADR 0016: restricted-token varian
     const report: string[] = [`logon SID ${logon}; own SID ${custom}`];
     try {
       for (const [label, sids, low] of variants) {
-        const cmdline = `${win.quoteArg(process.execPath)} probe.cjs ${win.quoteArg(homeCanary)} ${win.quoteArg(outside)} ${win.quoteArg(pub)}`;
+        const cmdline = `${win.quoteArg(process.execPath)} probe.cjs ${win.quoteArg(homeCanary)} ${win.quoteArg(outside)} ${win.quoteArg(pub)} ${win.quoteArg(otherRoot)}`;
         const r = spawnSync(helper, ['run', '-', '--restricted', sids || ',', ...(low ? ['--low'] : []), '--cmdline', cmdline], { cwd: root, encoding: 'utf8', timeout: 40_000 });
         const line = (r.stdout ?? '').split(/\r?\n/).find((l) => l.startsWith('RESULT ')) ?? '';
         report.push(`--- ${label}: exit ${r.status}${r.error ? ' ' + (r.error as NodeJS.ErrnoException).code : ''}\n${line || `(no result) stdout: ${(r.stdout ?? '').slice(0, 300)} stderr: ${(r.stderr ?? '').slice(0, 300)}`}`);

@@ -19,7 +19,7 @@
 // user's files except paths explicitly granted to the container SID, and no network unless --net adds the
 // internetClient/privateNetwork capabilities. The process is created suspended, placed in a Job Object that
 // kills the whole tree when the launcher exits, then resumed. --pty hosts it in a ConPTY.
-export const HELPER_VERSION = '5';
+export const HELPER_VERSION = '6';
 
 export const HELPER_SOURCE = String.raw`
 using System;
@@ -74,6 +74,8 @@ static class AtlasSandbox {
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool CreateRestrictedToken(IntPtr existing, uint flags, int disableCount, SID_AND_ATTRIBUTES[] disable, int delPrivCount, IntPtr delPriv, int restrictCount, SID_AND_ATTRIBUTES[] restrict, out IntPtr newToken);
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool SetTokenInformation(IntPtr t, int cls, IntPtr info, int len);
   [DllImport("advapi32.dll", SetLastError = true)] static extern int GetLengthSid(IntPtr sid);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool ConvertStringSecurityDescriptorToSecurityDescriptor(string sddl, int rev, out IntPtr sd, IntPtr size);
+  [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetSecurityDescriptorDacl(IntPtr sd, out bool present, out IntPtr dacl, out bool defaulted);
   [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessAsUser(IntPtr tok, string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
   [DllImport("kernelbase.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool DeriveCapabilitySidsFromName(string name, out IntPtr groupSids, out int groupCount, out IntPtr capSids, out int capCount);
 
@@ -144,6 +146,17 @@ static class AtlasSandbox {
     }
     IntPtr rt; // DISABLE_MAX_PRIVILEGE
     if (!CreateRestrictedToken(tok, 0x1, disable.Count, disable.ToArray(), 0, IntPtr.Zero, restrict.Count, restrict.Count > 0 ? restrict.ToArray() : null, out rt)) Fail("restricted token: " + Marshal.GetLastWin32Error());
+    // Objects the process creates without inherited ACEs (the named pipes libuv makes for child stdio) get the token's
+    // default DACL. The inherited one grants the user SID, which is deny-only here, so the process could not open its
+    // own pipes (CI run 38158723502: piped children failed with EPERM). Grant SYSTEM, the logon SID and the
+    // sandbox's own restricting SIDs instead, as Chromium's sandbox does.
+    var sddl = new StringBuilder("D:(A;;GA;;;SY)");
+    if (logon != null) sddl.Append("(A;;GA;;;" + logon + ")");
+    foreach (var r in restrict) { string rs = SidString(r.Sid); if (rs != "S-1-1-0" && rs != "S-1-5-32-545" && rs != "S-1-5-11" && rs != "S-1-5-4" && rs != logon) sddl.Append("(A;;GA;;;" + rs + ")"); }
+    IntPtr sd, dacl; bool present, defaulted;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl.ToString(), 1, out sd, IntPtr.Zero) || !GetSecurityDescriptorDacl(sd, out present, out dacl, out defaulted)) Fail("default DACL: " + Marshal.GetLastWin32Error());
+    IntPtr tdd = Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(tdd, dacl);
+    if (!SetTokenInformation(rt, 6, tdd, IntPtr.Size)) Fail("set default DACL: " + Marshal.GetLastWin32Error()); // TokenDefaultDacl
     if (low) {
       IntPtr lowSid = Sid("S-1-16-4096");
       int sz = Marshal.SizeOf(typeof(SID_AND_ATTRIBUTES));
