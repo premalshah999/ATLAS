@@ -101,6 +101,10 @@ console.log('done');`);
       ['list node dir', 'cmd.exe', ['/d', '/c', 'dir', '/b', nodeDir]],
       ['node by path', path.join(nodeDir, 'node.exe'), ['--version']],
       ['node reads a file in its dir', path.join(nodeDir, 'node.exe'), ['-e', `require('fs').readdirSync(${JSON.stringify(nodeDir)}); console.log('READ-OK')`]],
+      // Child processes from inside the container: piped stdio needs a named pipe (libuv), inherited stdio does not.
+      ['child, stdio pipe', path.join(nodeDir, 'node.exe'), ['-e', "const r = require('child_process').spawnSync(process.execPath, ['-e', 'console.log(1)'], { stdio: 'pipe' }); console.log('PIPE', r.status, r.error && r.error.code, String(r.stdout || '').trim())"]],
+      ['child, stdio inherit', path.join(nodeDir, 'node.exe'), ['-e', "const r = require('child_process').spawnSync(process.execPath, ['-e', 'console.log(2)'], { stdio: 'inherit' }); console.log('INHERIT', r.status, r.error && r.error.code)"]],
+      ['named pipe server', path.join(nodeDir, 'node.exe'), ['-e', "const s = require('net').createServer(); s.on('error', (e) => { console.log('NAMEDPIPE', e.code); process.exit(0); }); s.listen('\\\\.\\pipe\\atlas-probe-' + process.pid, () => { console.log('NAMEDPIPE ok'); s.close(); });"]],
       ['npm', 'npm', ['--version']],
     ];
     const report: string[] = [];
@@ -116,6 +120,8 @@ console.log('done');`);
     try { acl = execFileSync('icacls', [nodeDir], { encoding: 'utf8' }); } catch (e) { acl = String(e); }
     report.push(`--- toolchain capability ${win.toolchainCapabilitySid()}\n--- icacls ${nodeDir}\n${acl}\n--- grant failures\n${win.grantFailures.join('\n') || '(none)'}`);
     expect(last, report.join('\n')).toMatch(/\d+\.\d+\.\d+/);
+    // Always print the report: the child-process lines are the evidence for the next Windows step.
+    console.log(report.join('\n'));
   });
 
   it('runs a real project test suite inside the sandbox', async () => {
