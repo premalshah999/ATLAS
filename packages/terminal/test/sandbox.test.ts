@@ -167,3 +167,18 @@ it('reports sandbox availability for this platform', () => {
   if (process.env.CI) expect(info.kind, info.detail).not.toBe('none');
   mkdirSync(tmpDir(), { recursive: true });
 });
+
+// Windows (P0-4 review finding 6): the helper's Job Object must not outlive the daemon. `--parent` names the
+// process to watch; when it dies, by a crash or otherwise, everything in the job is terminated.
+it.skipIf(process.platform !== 'win32')('windows: the sandbox helper ends its job when the daemon dies', async () => {
+  const { spawn } = await import('node:child_process');
+  const { ensureHelper } = await import('../src/win/appcontainer');
+  const fakeDaemon = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  const helper = spawn(ensureHelper(), ['run', '-', '--parent', String(fakeDaemon.pid), '--cmdline', `"${process.execPath}" -e "setInterval(()=>{},1000)"`], { stdio: 'ignore' });
+  const exited = new Promise<number | null>((r) => helper.on('exit', (c) => r(c)));
+  await new Promise((r) => setTimeout(r, 1500));
+  expect(helper.exitCode).toBeNull(); // still running while the daemon lives
+  fakeDaemon.kill('SIGKILL');
+  const code = await Promise.race([exited, new Promise<string>((r) => setTimeout(() => r('timeout'), 10_000))]);
+  expect(code).toBe(137);
+}, 30_000);

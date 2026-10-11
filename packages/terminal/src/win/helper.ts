@@ -3,7 +3,8 @@
 //
 //   atlas-sandbox.exe sid <container>        print the AppContainer SID (creating the profile)
 //   atlas-sandbox.exe capsid <capability>    print the SID of a custom capability (used for toolchain ACLs)
-//   atlas-sandbox.exe run <container|-> [--net] [--cap NAME]... [--mem MB] [--pty COLSxROWS] --cmdline <command line>
+//   atlas-sandbox.exe run <container|-> [--net] [--cap NAME]... [--mem MB] [--pty COLSxROWS] [--parent PID] --cmdline <command line>
+//   --parent: when that process (the ATLAS daemon) exits, even by a crash, the job and every process in it are terminated.
 //
 // The command line is built by ATLAS (argument quoting, cmd.exe escaping for .cmd shims) and used verbatim.
 // Container "-" runs without an AppContainer; only the operator's explicit unsandboxed opt-in uses it.
@@ -12,7 +13,7 @@
 // user's files except paths explicitly granted to the container SID, and no network unless --net adds the
 // internetClient/privateNetwork capabilities. The process is created suspended, placed in a Job Object that
 // kills the whole tree when the launcher exits, then resumed. --pty hosts it in a ConPTY.
-export const HELPER_VERSION = '3';
+export const HELPER_VERSION = '4';
 
 export const HELPER_SOURCE = String.raw`
 using System;
@@ -57,6 +58,8 @@ static class AtlasSandbox {
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateProcess(IntPtr h, uint code);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool CreatePipe(out IntPtr r, out IntPtr w, IntPtr sa, int size);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool TerminateJobObject(IntPtr job, uint code);
   [DllImport("kernel32.dll", SetLastError = true)] static extern int CreatePseudoConsole(COORD size, IntPtr input, IntPtr output, uint flags, out IntPtr hpc);
   [DllImport("kernel32.dll", SetLastError = true)] static extern void ClosePseudoConsole(IntPtr hpc);
   [DllImport("kernelbase.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool DeriveCapabilitySidsFromName(string name, out IntPtr groupSids, out int groupCount, out IntPtr capSids, out int capCount);
@@ -87,13 +90,14 @@ static class AtlasSandbox {
       string s; ConvertSidToStringSid(CapabilitySid(argv[1]), out s); Console.WriteLine(s); return 0;
     }
     if (argv.Length < 4 || argv[0] != "run") Fail("usage: atlas-sandbox run <container|-> [--net] [--mem MB] [--pty COLSxROWS] --cmdline <command line>");
-    string name = argv[1]; bool net = false; long memMb = 0; short cols = 0, rows = 0; string line = null; var extraCaps = new List<string>();
+    string name = argv[1]; bool net = false; long memMb = 0; int parent = 0; short cols = 0, rows = 0; string line = null; var extraCaps = new List<string>();
     for (int i = 2; i < argv.Length; i++) {
       if (argv[i] == "--net") net = true;
       else if (argv[i] == "--mem") memMb = long.Parse(argv[++i]);
       else if (argv[i] == "--pty") { var p = argv[++i].Split('x'); cols = short.Parse(p[0]); rows = short.Parse(p[1]); }
       else if (argv[i] == "--cmdline") line = argv[++i];
       else if (argv[i] == "--cap") extraCaps.Add(argv[++i]);
+      else if (argv[i] == "--parent") parent = int.Parse(argv[++i]);
       else Fail("unknown option " + argv[i]);
     }
     if (string.IsNullOrEmpty(line)) Fail("missing --cmdline");
@@ -147,6 +151,12 @@ static class AtlasSandbox {
     }
     if (!AssignProcessToJobObject(job, pi.hProcess)) { TerminateProcess(pi.hProcess, 1); Fail("cannot assign the process to a job: " + Marshal.GetLastWin32Error()); }
     ResumeThread(pi.hThread);
+    if (parent > 0) {
+      // SYNCHRONIZE only. If the daemon is already gone, nothing must keep running.
+      IntPtr hParent = OpenProcess(0x00100000, false, parent);
+      if (hParent == IntPtr.Zero) { TerminateJobObject(job, 137); return 137; }
+      new Thread(() => { WaitForSingleObject(hParent, 0xFFFFFFFF); TerminateJobObject(job, 137); Environment.Exit(137); }) { IsBackground = true }.Start();
+    }
 
     if (pty) {
       CloseHandle(inR); CloseHandle(outW);

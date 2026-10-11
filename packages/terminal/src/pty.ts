@@ -80,7 +80,7 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
       args = [...w.args.slice(0, 2), '--pty', `${cols}x${rows}`, ...w.args.slice(2)];
     } else {
       cmd = ensureHelper();
-      args = ['run', '-', '--pty', `${cols}x${rows}`, '--cmdline', windowsCommand(shell, shellArgs, env).line];
+      args = ['run', '-', '--pty', `${cols}x${rows}`, '--parent', String(process.pid), '--cmdline', windowsCommand(shell, shellArgs, env).line];
     }
   } else {
     const shell = existsSync('/bin/bash') ? '/bin/bash' : '/bin/sh';

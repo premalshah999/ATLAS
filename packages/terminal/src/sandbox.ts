@@ -245,5 +245,5 @@ function wrapWindows(command: string, args: string[], spec: SandboxSpec, env: Re
     NODE_OPTIONS: '--preserve-symlinks --preserve-symlinks-main',
   };
   const cmd = win.windowsCommand(command, args, envOut);
-  return { command: helper, args: ['run', name, ...(spec.network ? ['--net'] : []), ...caps.flatMap((c) => ['--cap', c]), '--cmdline', cmd.line], env: envOut };
+  return { command: helper, args: ['run', name, ...(spec.network ? ['--net'] : []), ...caps.flatMap((c) => ['--cap', c]), '--parent', String(process.pid), '--cmdline', cmd.line], env: envOut };
 }
