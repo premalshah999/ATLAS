@@ -42,6 +42,9 @@ export const Requests = {
   'terminal.open': z.object({ missionId: Id, target: z.union([Id, z.literal('integration')]), cols: z.number().int().min(20).max(400), rows: z.number().int().min(5).max(200) }).strict(),
   'terminal.input': z.object({ sessionId: Id, data: z.string().max(65_536) }).strict(),
   'terminal.close': z.object({ sessionId: Id }).strict(),
+  'terminal.list': missionRef,
+  'terminal.attach': z.object({ sessionId: Id }).strict(),
+  'terminal.resize': z.object({ sessionId: Id, cols: z.number().int().min(20).max(400), rows: z.number().int().min(5).max(200) }).strict(),
   'deployment.list': z.object({ target: z.string().max(100).optional() }).strict(),
   'deployment.rollback': z.object({ deploymentId: Id }).strict(),
   'deploy.targets': z.object({ workspaceId: Id }).strict(),
@@ -87,7 +90,7 @@ export type DaemonOutbound =
   | { kind: 'res'; id: number; ok: true; data: unknown }
   | { kind: 'res'; id: number; ok: false; error: { kind: string; message: string } }
   | { kind: 'event'; event: import('./events').AtlasEvent }
-  | { kind: 'terminal'; sessionId: string; data?: string; exit?: number | null }
+  | { kind: 'terminal'; sessionId: string; data?: string; seq?: number; exit?: number | null }
   | { kind: 'ready'; pid: number; recovered: { missions: string[]; lostAttempts: number; expiredApprovals: number } };
 
 export type Method = keyof typeof Requests;

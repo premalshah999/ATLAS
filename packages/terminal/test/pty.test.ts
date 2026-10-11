@@ -27,6 +27,18 @@ describe.skipIf(!ptySupported().ok || detectSandbox().kind !== 'bwrap')('operato
     expect(out).toContain('WRITE-DENIED');
   });
 
+  it('resizes the shell\'s terminal from outside the sandbox (P1-5)', async () => {
+    const dir = tmpDir();
+    let out = '';
+    let code: number | null | undefined;
+    const p = openPty({ cwd: dir, cols: 80, rows: 24, sandbox: { root: dir, writable: true, network: false }, onData: (t) => { out += t; }, onExit: (c) => { code = c; } });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(await p.resize(132, 43)).toBe(true);
+    p.write('stty size; exit\n');
+    for (let i = 0; i < 100 && code === undefined; i++) await new Promise((r) => setTimeout(r, 50));
+    expect(out).toContain('43 132');
+  });
+
   it('close() ends the session', async () => {
     const dir = tmpDir();
     let code: number | null | undefined;

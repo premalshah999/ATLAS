@@ -56,6 +56,19 @@ test('staging deploy, task graph, browser steps, terminal, export and read-only 
     await page.locator('.lv-term').click();
     await page.keyboard.type('ls\n');
     await expect(page.locator('.lv-term')).toContainText('package.json', { timeout: 15_000 });
+    // P1-5: switching away unmounts the view, not the shell. Coming back re-attaches with the history intact.
+    await page.locator('.lv-term').click();
+    await page.keyboard.type('export ATLAS_KEPT=still-here\n');
+    await page.getByRole('tab', { name: /Deploy/ }).click();
+    await expect(page.getByTestId('deployment-row').first()).toBeVisible();
+    await page.getByRole('tab', { name: /Terminal/ }).click();
+    await expect(page.locator('.lv-term')).toContainText('package.json', { timeout: 15_000 });
+    await expect(page.getByTestId('open-terminal')).toHaveCount(0);
+    await page.locator('.lv-term').click();
+    await page.keyboard.type('echo "$ATLAS_KEPT-$((40+2))"\n');
+    await expect(page.locator('.lv-term')).toContainText('still-here-42', { timeout: 15_000 });
+    await page.getByTestId('close-terminal').click();
+    await expect(page.getByTestId('open-terminal')).toBeVisible();
 
     await page.getByTestId('mission-menu').click();
     await page.getByRole('menuitem', { name: /Export audit log/ }).click();

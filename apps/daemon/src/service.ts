@@ -84,8 +84,8 @@ export class DaemonService {
   }
 
   onEvent(fn: (e: AtlasEvent) => void) { return this.repo.onEvent(fn); }
-  private terminalSink: (sessionId: string, data?: string, exit?: number | null) => void = () => {};
-  onTerminal(fn: (sessionId: string, data?: string, exit?: number | null) => void) { this.terminalSink = fn; }
+  private terminalSink: (sessionId: string, data?: string, exit?: number | null, seq?: number) => void = () => {};
+  onTerminal(fn: (sessionId: string, data?: string, exit?: number | null, seq?: number) => void) { this.terminalSink = fn; }
   private retentionTimer: NodeJS.Timeout | null = null;
 
   private unlock: () => void = () => {};
@@ -148,9 +148,12 @@ export class DaemonService {
       case 'finding.update': return this.orch.updateFinding(p.findingId, p.status);
       case 'workspace.facts.get': return { text: this.orch.facts(p.workspaceId) ?? '' };
       case 'workspace.facts.set': this.orch.setFacts(p.workspaceId, p.text); return { text: p.text };
-      case 'terminal.open': return this.orch.openTerminal(p.missionId, p.target, { cols: p.cols, rows: p.rows }, { onData: (id, t) => this.terminalSink(id, t), onExit: (id, c) => this.terminalSink(id, undefined, c) });
+      case 'terminal.open': return this.orch.openTerminal(p.missionId, p.target, { cols: p.cols, rows: p.rows }, { onData: (id, t, seq) => this.terminalSink(id, t, undefined, seq), onExit: (id, c) => this.terminalSink(id, undefined, c) });
       case 'terminal.input': this.orch.terminalInput(p.sessionId, p.data); return null;
       case 'terminal.close': await this.orch.closeTerminal(p.sessionId); return null;
+      case 'terminal.list': return this.orch.listTerminals(p.missionId);
+      case 'terminal.attach': return this.orch.attachTerminal(p.sessionId);
+      case 'terminal.resize': return this.orch.resizeTerminal(p.sessionId, p.cols, p.rows);
       case 'deployment.list': return this.repo.deployments({ target: p.target });
       case 'deployment.rollback': {
         const d = this.repo.deployment(p.deploymentId);

@@ -1,7 +1,7 @@
 // Interactive pseudoterminals for operator sessions (manual §20). The PTY is allocated by the system
 // `script` utility inside the sandbox, so no native Node module is needed for any Electron ABI.
-import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFile, execFileSync, spawn } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { redact } from '@atlas/contracts';
 import { killTree, sanitizedEnv } from './index';
 import { wrapCommand, type SandboxSpec } from './sandbox';
@@ -13,6 +13,42 @@ export interface PtyHandle {
   write(data: string): void;
   close(): Promise<void>;
   transcript(): string;
+  /** Change the window size of the shell's terminal. Resolves false where it is not supported (Windows). */
+  resize(cols: number, rows: number): Promise<boolean>;
+}
+
+/**
+ * The terminal device of the interactive shell under `root` (a descendant of the `script` process). On Linux the
+ * /proc fd link is used as the path, so it works across the sandbox's mount namespace and private devpts.
+ */
+function shellTty(root: number): string | null {
+  if (process.platform === 'linux') {
+    const kids = new Map<number, number[]>();
+    for (const n of readdirSync('/proc')) {
+      if (!/^\d+$/.test(n)) continue;
+      try {
+        const st = readFileSync(`/proc/${n}/stat`, 'utf8');
+        const ppid = Number(st.slice(st.lastIndexOf(')') + 2).split(' ')[1]);
+        kids.set(ppid, [...(kids.get(ppid) ?? []), Number(n)]);
+      } catch { /* exited */ }
+    }
+    const queue = [...(kids.get(root) ?? [])];
+    while (queue.length) {
+      const pid = queue.shift()!;
+      try { if (/^\/dev\/pts\/\d+$/.test(readlinkSync(`/proc/${pid}/fd/0`))) return `/proc/${pid}/fd/0`; } catch { /* no access */ }
+      queue.push(...(kids.get(pid) ?? []));
+    }
+    return null;
+  }
+  if (process.platform === 'darwin') {
+    const rows = execFileSync('/bin/ps', ['-A', '-o', 'pid=,ppid=,tty='], { encoding: 'utf8', timeout: 3000 }).split('\n').map((l) => l.trim().split(/\s+/)).filter((r) => r.length >= 3);
+    const queue = [root];
+    while (queue.length) {
+      const pid = queue.shift()!;
+      for (const [p, pp, tty] of rows) if (Number(pp) === pid) { if (tty && tty !== '??') return `/dev/${tty}`; queue.push(Number(p)); }
+    }
+  }
+  return null;
 }
 
 export function ptySupported(): { ok: boolean; detail: string } {
@@ -70,6 +106,14 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
     pid: child.pid ?? null,
     write: (data) => { if (!exited) child.stdin!.write(data); },
     transcript: () => transcript,
+    resize: async (c, r) => {
+      if (exited || !child.pid || process.platform === 'win32') return false;
+      const tty = shellTty(child.pid);
+      if (!tty) return false;
+      const size = ['rows', String(Math.max(5, Math.min(200, Math.floor(r)))), 'cols', String(Math.max(20, Math.min(400, Math.floor(c))))];
+      // TIOCSWINSZ on the shell's terminal; the kernel sends SIGWINCH to its foreground job.
+      return new Promise((resolve) => execFile(process.platform === 'darwin' ? '/bin/stty' : 'stty', [process.platform === 'darwin' ? '-f' : '-F', tty, ...size], { timeout: 3000 }, (err) => resolve(!err)));
+    },
     close: async () => {
       if (exited || !child.pid) return;
       killTree(child.pid, 'SIGHUP');

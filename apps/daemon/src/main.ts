@@ -24,7 +24,7 @@ async function main() {
   const svc = new DaemonService({ dataDir, version: process.env.ATLAS_VERSION ?? '0.0.0', apiKeys, model: process.env.ATLAS_MODEL || undefined, deploySecrets });
   const io = port();
   svc.onEvent((event) => io.send({ kind: 'event', event }));
-  svc.onTerminal((sessionId, data, exit) => io.send({ kind: 'terminal', sessionId, ...(data !== undefined ? { data } : {}), ...(exit !== undefined ? { exit } : {}) }));
+  svc.onTerminal((sessionId, data, exit, seq) => io.send({ kind: 'terminal', sessionId, ...(data !== undefined ? { data, seq } : {}), ...(exit !== undefined ? { exit } : {}) }));
   io.on(async (msg) => {
     if (!msg || msg.kind !== 'req' || typeof msg.id !== 'number' || typeof msg.method !== 'string') return;
     try {

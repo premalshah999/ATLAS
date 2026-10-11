@@ -9,7 +9,7 @@ interface Bridge {
   invoke(method: Method, params?: unknown): Promise<unknown>;
   onEvent(fn: (e: AtlasEvent) => void): () => void;
   onStatus(fn: (s: DaemonStatus) => void): () => void;
-  onTerminal(fn: (t: { sessionId: string; data?: string; exit?: number | null }) => void): () => void;
+  onTerminal(fn: (t: { sessionId: string; data?: string; seq?: number; exit?: number | null }) => void): () => void;
   e2e?: { crashDaemon(): Promise<void> };
 }
 
@@ -63,9 +63,12 @@ type Results = {
   'finding.update': Finding;
   'workspace.facts.get': { text: string };
   'workspace.facts.set': { text: string };
-  'terminal.open': { sessionId: string; writable: boolean; worktree: string };
+  'terminal.open': { sessionId: string; writable: boolean; worktree: string; target: string };
   'terminal.input': null;
   'terminal.close': null;
+  'terminal.list': { sessionId: string; target: string; writable: boolean; worktree: string; startedAt: string }[];
+  'terminal.attach': { sessionId: string; target: string; writable: boolean; worktree: string; snapshot: string; seq: number };
+  'terminal.resize': { resized: boolean };
   'deployment.list': Deployment[];
   'deployment.rollback': { ok: boolean; message: string; to: Deployment | null; revisionConfirmed: boolean | null };
   'deploy.targets': { target: string; provider: 'local' | 'command'; allowed: boolean; live: Deployment | null }[];

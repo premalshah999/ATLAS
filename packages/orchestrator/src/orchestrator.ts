@@ -59,6 +59,13 @@ export interface ToolFactoryContext {
   setting: StageContext['setting'];
 }
 
+export interface TerminalIo { onData(sessionId: string, text: string, seq: number): void; onExit(sessionId: string, code: number | null): void }
+interface TerminalSession {
+  pty: PtyHandle; missionId: string; target: string; dir: string; writable: boolean; startedAt: number;
+  /** Characters emitted so far (monotonic). */ seq: number;
+  pending: string; timer: NodeJS.Timeout | null; io: TerminalIo; flush?: () => void;
+}
+
 const SYSTEM = (component: string) => ({ kind: 'system' as const, component });
 const OPERATOR = { kind: 'operator' as const };
 type Outcome = { kind: 'completed'; summary: string } | { kind: 'error'; errorKind: string; message: string };
@@ -174,7 +181,7 @@ export class Orchestrator {
 
   exportMission(missionId: string, file: string) { return exportMission(this.repo, this.artifacts, missionId, file); }
   importMission(file: string) { return importMission(this.repo, this.artifacts, file); }
-  async deleteMission(missionId: string) { await deleteMission(this.repo, this.artifacts, missionId, this.o.worktreeDir); }
+  async deleteMission(missionId: string) { await this.closeMissionTerminals(missionId); await deleteMission(this.repo, this.artifacts, missionId, this.o.worktreeDir); }
 
   /**
    * Delete decided or archived missions not updated for `days` days. Returns the ids removed. Cancelled and
@@ -992,15 +999,19 @@ export class Orchestrator {
 
   /* ---------------- operator terminals (manual §20, §27) ---------------- */
 
-  private readonly terminals = new Map<string, { pty: PtyHandle; missionId: string; dir: string; writable: boolean; startedAt: number }>();
+  private readonly terminals = new Map<string, TerminalSession>();
 
   /**
    * Open an interactive terminal in a task or integration worktree. Writes are serialized with agents:
    * if an agent holds the worktree, the operator's session is read-only.
+   *
+   * Sessions live in the daemon (evolution P1-5, decision D5): the UI attaches and detaches; closing a tab does not
+   * end the shell. Output is coalesced (≤ 8 ms or 16 KB per push) and numbered by `seq`, the count of characters
+   * emitted so far, so a re-attaching view can apply the snapshot and then only later chunks.
    */
-  async openTerminal(missionId: string, target: string, size: { cols: number; rows: number }, io: { onData(sessionId: string, text: string): void; onExit(sessionId: string, code: number | null): void }) {
+  async openTerminal(missionId: string, target: string, size: { cols: number; rows: number }, io: TerminalIo) {
     const m = this.repo.mission(missionId);
-    if (!m || m.archived) throw new AtlasError('invalid_request', 'Unknown or archived mission');
+    if (!m || m.archived || m.decision) throw new AtlasError('invalid_request', 'Unknown, archived or decided mission');
     const pty = ptySupported();
     if (!pty.ok) throw new AtlasError('invalid_request', pty.detail);
     const dir = target === 'integration' ? path.join(this.o.worktreeDir, m.id, 'integration') : this.repo.task(target)?.worktree;
@@ -1010,14 +1021,47 @@ export class Orchestrator {
     const sessionId = newId('trm');
     const writable = this.leases.acquire(dir, `operator:${sessionId}`);
     const spec = this.sandboxSpec(iso, dir) ?? undefined;
-    const handle = openPty({
+    const session: TerminalSession = { pty: null!, missionId, target, dir, writable, startedAt: Date.now(), seq: 0, pending: '', timer: null, io };
+    const flush = () => {
+      if (session.timer) { clearTimeout(session.timer); session.timer = null; }
+      if (!session.pending) return;
+      const data = session.pending;
+      session.pending = '';
+      session.io.onData(sessionId, data, session.seq);
+    };
+    session.flush = flush;
+    session.pty = openPty({
       cwd: dir, cols: size.cols, rows: size.rows, sandbox: spec ? { ...spec, writable, limits: undefined } : undefined,
-      onData: (t) => io.onData(sessionId, t),
-      onExit: (code) => { void this.closeTerminal(sessionId, code); io.onExit(sessionId, code); },
+      onData: (t) => {
+        session.seq += t.length;
+        session.pending += t;
+        if (session.pending.length >= 16_384) flush();
+        else session.timer ??= setTimeout(flush, 8);
+      },
+      onExit: (code) => { flush(); void this.closeTerminal(sessionId, code); session.io.onExit(sessionId, code); },
     });
-    this.terminals.set(sessionId, { pty: handle, missionId, dir, writable, startedAt: Date.now() });
+    this.terminals.set(sessionId, session);
     this.emit({ missionId, type: 'operator.terminal', actor: OPERATOR, payload: { action: 'opened', sessionId, worktree: dir, writable, sandboxed: !!spec } });
-    return { sessionId, writable, worktree: dir };
+    return { sessionId, writable, worktree: dir, target };
+  }
+
+  /** Open sessions of a mission, for a view that mounts again. */
+  listTerminals(missionId: string) {
+    return [...this.terminals.entries()].filter(([, t]) => t.missionId === missionId).map(([sessionId, t]) => ({ sessionId, target: t.target, writable: t.writable, worktree: t.dir, startedAt: new Date(t.startedAt).toISOString() }));
+  }
+
+  /** Snapshot for (re)attaching: everything still buffered, and the seq it ends at. Later pushes have a larger seq. */
+  attachTerminal(sessionId: string) {
+    const t = this.terminals.get(sessionId);
+    if (!t) throw new AtlasError('invalid_request', 'Terminal session ended');
+    t.flush?.();
+    return { sessionId, target: t.target, writable: t.writable, worktree: t.dir, snapshot: t.pty.transcript(), seq: t.seq };
+  }
+
+  async resizeTerminal(sessionId: string, cols: number, rows: number) {
+    const t = this.terminals.get(sessionId);
+    if (!t) throw new AtlasError('invalid_request', 'Terminal session ended');
+    return { resized: await t.pty.resize(cols, rows) };
   }
 
   terminalInput(sessionId: string, data: string) {
@@ -1030,11 +1074,16 @@ export class Orchestrator {
     const t = this.terminals.get(sessionId);
     if (!t) return;
     this.terminals.delete(sessionId);
+    t.flush?.();
     await t.pty.close();
     if (t.writable) this.leases.release(t.dir, `operator:${sessionId}`);
     // Human interventions are first-class events with their transcript as evidence (manual §2).
     const art = this.artifacts.put({ missionId: t.missionId, taskId: null, kind: 'transcript', name: `Operator terminal ${sessionId}`, content: t.pty.transcript() });
     this.emit({ missionId: t.missionId, type: 'operator.terminal', actor: OPERATOR, payload: { action: 'closed', sessionId, exitCode: code, durationMs: Date.now() - t.startedAt }, artifactIds: [art.id] });
+  }
+
+  private async closeMissionTerminals(missionId: string) {
+    for (const [id, t] of [...this.terminals]) if (t.missionId === missionId) await this.closeTerminal(id).catch(() => {});
   }
 
   /* ---------------- approvals ---------------- */
@@ -1107,6 +1156,8 @@ export class Orchestrator {
     if (m.decision) throw new AtlasError('invalid_request', `Mission already ${m.decision}`);
     if (decision === 'accept' && !m.integrationCommit) throw new AtlasError('invalid_request', 'Nothing to accept: the mission produced no integrated change');
     const w = this.repo.workspace(m.workspaceId)!;
+    // Operator terminals end with the decision (their transcripts are recorded), before their worktrees go away.
+    await this.closeMissionTerminals(missionId);
     // Task worktrees go away, but nothing in them is destroyed: dirty state and branch tips are kept under
     // refs/atlas/preserved/<mission>/… (P1-3). Lost attempts' worktrees are covered by the attempt records.
     const attemptDirs = new Set<string>();
