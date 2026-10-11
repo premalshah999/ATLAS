@@ -160,6 +160,7 @@ export class DaemonService {
       case 'mission.cancel': return this.orch.cancelMission(p.missionId);
       case 'mission.decide': return this.orch.decide(p.missionId, p.decision);
       case 'mission.restore': return this.orch.restore(p.missionId);
+      case 'mission.approveDefinition': return this.orch.approveDefinitionChange(p.missionId);
       case 'task.cancel': return this.orch.cancelTask(p.taskId);
       case 'roles.list': return Object.values(ROLES).map((r) => ({ id: r.id, version: r.version, title: r.title, tools: r.tools, writes: r.writes, modelPreference: r.modelPreference, budget: r.budget, capabilities: ROLE_GRANTS[r.id], instructions: r.instructions }));
       case 'desktop.list': return { support: desktopSupport(), enabled: this.repo.setting('desktop.enabled', false), sessions: this.desktop.list() };

@@ -62,7 +62,7 @@ describe('without a sandbox', () => {
       const id = await startMission(h, root);
       await h.orch.settle(id);
       expect(h.events.some((e) => e.type === 'process.started')).toBe(false);
-      expect(h.repo.checks(id)[0]).toMatchObject({ name: 'tests', result: 'inconclusive' });
+      expect(h.repo.checks(id).find((c) => c.name === 'tests')).toMatchObject({ name: 'tests', result: 'inconclusive' });
       expect(h.repo.mission(id)!.state).toBe('failed');
     } finally { delete process.env.ATLAS_SANDBOX; detectSandbox(true); }
   });

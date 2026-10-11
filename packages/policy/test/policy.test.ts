@@ -69,3 +69,20 @@ describe('Windows command names', () => {
     for (const c of ['runas.exe', 'reg', 'icacls.exe', 'cmdkey', 'schtasks.exe', 'CheckNetIsolation.exe']) expect(classifyCommand(c, []).capability, c).toBeNull();
   });
 });
+
+describe('argument forms that run programs (evolution P1-1)', () => {
+  const privileged: [string, string[]][] = [
+    ['git', ['-ccore.fsmonitor=touch /tmp/x', 'status']], ['git', ['-c', 'core.pager=sh', 'log']], ['git', ['--exec-path=/tmp', 'status']], ['git', ['-p', 'log']],
+    ['git', ['grep', '-Osh', 'x']], ['git', ['grep', '--open-files-in-pager=sh', 'x']], ['git', ['diff', '--ext-diff']], ['git', ['log', '--output=/tmp/x']],
+    ['git', ['show', '--textconv', 'HEAD:x']], ['git', ['branch', 'evil']], ['git', ['branch', '-D', 'main']],
+    ['find', ['.', '-exec', 'sh', '-c', 'id', ';']], ['find', ['.', '-delete']], ['sort', ['--compress-program=sh', 'f']], ['sort', ['-o', 'x', 'f']],
+    ['rg', ['--pre', 'sh', 'x']], ['rg', ['--pre=sh', 'x']], ['node', ['--require', './evil.js', 'x.js']],
+    ['pnpm', ['exec', 'sh', '-c', 'id']], ['npm', ['exec', '--', 'bash']], ['npm', ['test', '--script-shell=/bin/sh']], ['npm', ['--userconfig=/tmp/rc', 'test']],
+  ];
+  const safe: [string, string[]][] = [
+    ['git', ['status']], ['git', ['log', '--oneline', '-5']], ['git', ['diff', 'HEAD~1']], ['git', ['grep', '-n', 'slugify']], ['git', ['branch', '--list']], ['git', ['branch', '-a']],
+    ['find', ['.', '-name', '*.ts']], ['rg', ['-n', 'TODO']], ['sort', ['file.txt']], ['node', ['test.js']], ['npm', ['test']], ['pnpm', ['run', 'test']],
+  ];
+  it.each(privileged)('%s %j needs approval', (c, a) => { expect(classifyCommand(c, a).capability).toBe('shell.privileged'); });
+  it.each(safe)('%s %j stays safe', (c, a) => { expect(classifyCommand(c, a).capability).toBe('shell.safe'); });
+});

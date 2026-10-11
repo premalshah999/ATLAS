@@ -59,6 +59,7 @@ type Results = {
   'mission.delete': { deleted: string };
   'mission.reverify': Mission;
   'mission.restore': Mission;
+  'mission.approveDefinition': Mission;
   'finding.update': Finding;
   'workspace.facts.get': { text: string };
   'workspace.facts.set': { text: string };

@@ -57,3 +57,16 @@ describe('replay', () => {
     expect(() => replay([events[0], events[2]])).toThrow(/gap/);
   });
 });
+
+describe('noTestsRan', () => {
+  it('recognises empty runs of common runners and ignores real ones', async () => {
+    const { noTestsRan } = await import('../src/verification');
+    expect(noTestsRan('# tests 0\n# pass 0\n')).toMatch(/0 tests/);
+    expect(noTestsRan('No tests found, exiting with code 0')).toMatch(/jest/);
+    expect(noTestsRan('No test files found, exiting with code 0')).toMatch(/vitest/);
+    expect(noTestsRan('\n  0 passing (2ms)\n')).toMatch(/mocha/);
+    expect(noTestsRan('============ no tests ran in 0.01s ============')).toMatch(/pytest/);
+    expect(noTestsRan('# tests 5\n# pass 5\n')).toBeNull();
+    expect(noTestsRan('  12 passing (40ms)')).toBeNull();
+  });
+});

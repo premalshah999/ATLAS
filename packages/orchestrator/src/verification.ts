@@ -40,7 +40,7 @@ export type Verdict = 'verified' | 'unverified' | 'failed';
  * Checks that gate release but are not evidence the software works: a clean review, an approval.
  * They can block; they can never on their own make a result "verified".
  */
-export const GATE_ONLY = new Set(['review']);
+export const GATE_ONLY = new Set(['review', 'verification-definition']);
 
 /** Aggregate checks. Only `pass` satisfies a required check; missing checks never count as success. */
 export function gate(checks: Pick<CheckRecord, 'name' | 'required' | 'result' | 'reason'>[]): { verdict: Verdict; summary: string } {
@@ -50,7 +50,8 @@ export function gate(checks: Pick<CheckRecord, 'name' | 'required' | 'result' | 
     return { verdict: 'failed', summary: `Blocked: ${failedReq.map((c) => `${c.name} ${label(c.result)}`).join(', ')}` };
   }
   const evidence = checks.filter((c) => c.result === 'pass' && !GATE_ONLY.has(c.name));
-  const gates = checks.filter((c) => c.result === 'pass' && GATE_ONLY.has(c.name));
+  // An unchanged verification definition is the normal case; say nothing about it in the summary.
+  const gates = checks.filter((c) => c.result === 'pass' && GATE_ONLY.has(c.name) && c.name !== 'verification-definition');
   const other = checks.filter((c) => !c.required && c.result !== 'pass');
   const tail = [...gates.map((c) => `${c.name} passed`), ...other.map((c) => `${c.name} ${label(c.result)}`)];
   if (!evidence.length) {
@@ -62,4 +63,20 @@ export function gate(checks: Pick<CheckRecord, 'name' | 'required' | 'result' | 
 
 export function label(r: CheckResult): string {
   return { pass: 'passed', fail: 'failed', skipped: 'skipped', inconclusive: 'inconclusive', not_configured: 'not configured' }[r];
+}
+
+/**
+ * A test run that executed zero tests is not evidence, even when it exits 0 (node --test, jest, vitest, mocha and
+ * pytest all can). Returns a reason when the output shows that nothing ran.
+ */
+export function noTestsRan(output: string): string | null {
+  // eslint-disable-next-line no-control-regex -- strip ANSI colour codes from runner output
+  const o = output.replace(/\x1b\[[0-9;]*m/g, '');
+  if (/^# tests 0\s*$/m.test(o)) return 'The runner reported 0 tests (node --test)';
+  if (/No tests found/i.test(o)) return 'The runner found no tests (jest)';
+  if (/No test files found/i.test(o)) return 'The runner found no test files (vitest)';
+  if (/^\s*0 passing\b/m.test(o) && !/\d+ failing/.test(o)) return 'The runner reported 0 passing tests (mocha)';
+  if (/(^|=+ )no tests ran\b/im.test(o)) return 'The runner reported no tests ran (pytest)';
+  if (/Tests?:\s+0 total/i.test(o)) return 'The runner reported 0 tests in total';
+  return null;
 }

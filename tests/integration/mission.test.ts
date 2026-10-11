@@ -3,10 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { registerSecret } from '@atlas/contracts';
-import { FakeRuntime, type FakeScript } from '@atlas/runtime-fake';
+import { FakeRuntime, forTask, SAMPLE_FIX, type FakeScript } from '@atlas/runtime-fake';
 import { realExecutors, replay, type Executors } from '@atlas/orchestrator';
 import { sampleRepo, sh } from '../helpers';
-import { makeOrchestrator, startMission, waitFor } from './harness';
+import { autoDecide, makeOrchestrator, startMission, waitFor } from './harness';
 
 describe('sample mission', () => {
   it('edits code in an isolated worktree, verifies independently and keeps the user checkout intact', async () => {
@@ -21,10 +21,10 @@ describe('sample mission', () => {
 
     // Evidence: real check records on the integrated commit, a review gate, and patch artifacts.
     const checks = h.repo.checks(id);
-    expect(checks.map((c) => [c.name, c.result])).toEqual([['tests', 'pass'], ['review', 'pass']]);
-    expect(checks[0]).toMatchObject({ required: true, exitCode: 0 });
+    expect(checks.map((c) => [c.name, c.result])).toEqual([['verification-definition', 'pass'], ['tests', 'pass'], ['review', 'pass']]);
+    expect(checks[1]).toMatchObject({ required: true, exitCode: 0 });
     expect(m.integrationBranch).toBe(`atlas/${id}/integration`);
-    expect(checks[0].commit).toBe(m.integrationCommit);
+    expect(checks[1].commit).toBe(m.integrationCommit);
     const t = h.repo.tasks(id).find((x) => x.key === 'implement')!;
     const patch = h.artifacts.read(t.resultRef!);
     expect(patch.intact).toBe(true);
@@ -243,5 +243,56 @@ describe('cancellation and recovery', () => {
     expect(attempts.map((x) => x.state)).toEqual(['lost', 'succeeded', 'succeeded']); // coder (lost, then fresh), reviewer
     expect(second.repo.mission(id)!.state).toBe('completed');
     expect(replay(second.repo.eventsSince(id, 0)).mission).toBe('completed');
+  });
+});
+
+describe('verification cannot be redefined by the agent (evolution P0-3)', () => {
+  const pkgWith = (root: string, test: string) => { const p = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')); p.scripts.test = test; return JSON.stringify(p, null, 2); };
+
+  it('a rewritten test script fails the gate even though the rewritten "tests" pass', async () => {
+    const root = sampleRepo();
+    const h = makeOrchestrator({ scripts: [forTask('implement', [{ tool: 'write_file', args: { path: 'package.json', content: pkgWith(root, 'node -e "process.exit(0)"') } }, { claim: 'All tests pass.' }])] });
+    const id = await startMission(h, root);
+    await h.orch.settle(id);
+    const m = h.repo.mission(id)!;
+    const checks = Object.fromEntries(h.repo.checks(id).map((c) => [c.name, c]));
+    expect(checks.tests.result).toBe('pass'); // the neutered command really exits 0 …
+    expect(checks['verification-definition'].result).toBe('fail'); // … but it is not the approved definition
+    expect(checks['verification-definition'].reason).toMatch(/changed scripts\.test/);
+    expect(m.verdict).toBe('failed');
+    expect(m.outcome).toMatch(/Blocked: verification-definition failed/);
+  });
+
+  it('deleting tests fails the gate; the operator can approve the exact change, which is recorded but never counted as evidence', async () => {
+    const root = sampleRepo();
+    const h = makeOrchestrator({ scripts: [forTask('implement', [{ tool: 'write_file', args: { path: 'src/slugify.js', content: SAMPLE_FIX } }, { tool: 'shell_exec', args: { command: 'rm', args: ['test/slugify.test.js'] } }, { claim: 'Done.' }])] });
+    const id = await startMission(h, root);
+    const stop = autoDecide(h, id, 'shell_exec');
+    await h.orch.settle(id);
+    stop();
+    let defn = h.repo.checks(id).find((c) => c.name === 'verification-definition')!;
+    expect(defn.result).toBe('fail');
+    expect(defn.reason).toMatch(/deleted test test\/slugify\.test\.js/);
+    expect(h.repo.mission(id)!.verdict).toBe('failed');
+    await h.orch.approveDefinitionChange(id);
+    defn = h.repo.checks(id).filter((c) => c.name === 'verification-definition').at(-1)!;
+    expect(defn.result).toBe('pass');
+    expect(defn.reason).toMatch(/approved by the operator/);
+    const m = h.repo.mission(id)!;
+    // With the only test file deleted, nothing verifies the change: approval unblocks, it does not verify.
+    expect(m.verdict).not.toBe('verified');
+    const tests = h.repo.checks(id).filter((c) => c.name === 'tests').at(-1)!;
+    expect(tests.result).toBe('inconclusive');
+    expect(tests.reason).toMatch(/no tests ran: The runner reported 0 tests/);
+    expect(h.events.some((e) => e.type === 'operator.action' && e.payload.action === 'approve_definition')).toBe(true);
+  });
+
+  it('an ordinary source change keeps the definition check quiet and verified', async () => {
+    const root = sampleRepo();
+    const h = makeOrchestrator();
+    const id = await startMission(h, root);
+    await h.orch.settle(id);
+    expect(h.repo.checks(id).find((c) => c.name === 'verification-definition')!.result).toBe('pass');
+    expect(h.repo.mission(id)!.outcome).toMatch(/^Verified: tests, api:slug-endpoint|^Verified: tests passed/);
   });
 });

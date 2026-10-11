@@ -98,7 +98,7 @@ export function MissionView({ missionId }: { missionId: string }) {
             {tab === 'activity' && <ActivityTimeline events={events} />}
             {tab === 'graph' && <TaskGraph snap={snap} />}
             {tab === 'changes' && <Changes snap={snap} />}
-            {tab === 'evidence' && <Evidence checks={snap.checks} gate={gate} />}
+            {tab === 'evidence' && <Evidence checks={snap.checks} gate={gate} canApproveDefinition={m.state === 'failed' && !m.decision && !m.archived} onApproveDefinition={() => void act('Could not approve', () => call('mission.approveDefinition', { missionId }))} />}
             {tab === 'findings' && <Findings snap={snap} onLog={showLog} />}
             {tab === 'browser' && <BrowserPanel snap={snap} events={events} />}
             {tab === 'deploy' && <DeployPanel snap={snap} events={events} />}
@@ -353,7 +353,8 @@ function UnifiedDiff({ text }: { text: string }) {
   );
 }
 
-function Evidence({ checks, gate }: { checks: CheckRecord[]; gate?: AtlasEvent }) {
+function Evidence({ checks, gate, canApproveDefinition, onApproveDefinition }: { checks: CheckRecord[]; gate?: AtlasEvent; canApproveDefinition?: boolean; onApproveDefinition?: () => void }) {
+  const defn = [...checks].reverse().find((c) => c.name === 'verification-definition');
   const [log, setLog] = useState<{ name: string; text: string } | null>(null);
   return (
     <div className="lv-scroll" data-testid="evidence">
@@ -376,6 +377,15 @@ function Evidence({ checks, gate }: { checks: CheckRecord[]; gate?: AtlasEvent }
             {checks.length === 0 && <tr><td colSpan={6} className="at-subtle">No checks recorded.</td></tr>}
           </tbody>
         </table>
+        {defn?.result === 'fail' && canApproveDefinition && (
+          <div className="lv-callout" data-testid="definition-change" style={{ marginTop: 16 }}>
+            <Icon as={IWarn} />
+            <div style={{ flex: 1 }}>
+              <b>The mission changed how this project is verified.</b> {defn.reason} Approving records your decision and re-runs the gate; it never counts as evidence that the change works.
+              <div style={{ marginTop: 8 }}><Button size="sm" onClick={onApproveDefinition} data-testid="approve-definition">Approve this change and re-verify</Button></div>
+            </div>
+          </div>
+        )}
         <div className="lv-callout" style={{ marginTop: 16 }}>
           <Icon as={IShield} />
           <div><b>Only the checks above count as evidence.</b> A passing review is a gate, not evidence. Anything not listed (for example a deployment that was not configured) was not verified.</div>

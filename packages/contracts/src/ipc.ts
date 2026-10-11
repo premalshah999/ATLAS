@@ -35,6 +35,7 @@ export const Requests = {
   'mission.delete': missionRef,
   'mission.reverify': missionRef,
   'mission.restore': missionRef,
+  'mission.approveDefinition': missionRef,
   'finding.update': z.object({ findingId: Id, status: z.enum(['open', 'accepted', 'dismissed', 'fixed']) }).strict(),
   'workspace.facts.get': z.object({ workspaceId: Id }).strict(),
   'workspace.facts.set': z.object({ workspaceId: Id, text: z.string().max(20_000) }).strict(),

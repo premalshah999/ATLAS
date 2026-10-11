@@ -14,7 +14,8 @@ import { assertMission, assertTask, TERMINAL_TASK } from './states';
 import { defaultPlan, validatePlan } from './plan';
 import { ROLES, role } from './roles';
 import { ToolGate, realExecutors, type Executors, type Isolation } from './toolgate';
-import { detectRecipes, gate, type Verdict } from './verification';
+import { detectRecipes, gate, noTestsRan, type Verdict } from './verification';
+import { definitionChange } from './definition';
 import { buildContext, repoMap } from './context';
 import { mergeInto, topoOrder, worktreeFromBases } from './integration';
 import { blockingFindings, makeFinding, type FindingArgs } from './findings';
@@ -781,17 +782,53 @@ export class Orchestrator {
 
   /** Build/test checks from project recipes, on the integrated commit, in the sandbox. */
   private async checksStage(ctx: StageContext) {
+    await this.definitionCheck(ctx);
     const recipes = detectRecipes(ctx.worktree);
     if (!recipes.some((r) => r.name === 'tests')) ctx.check({ name: 'tests', command: null, required: false, result: 'not_configured', exitCode: null, durationMs: null, reason: 'No test command found in package.json', artifactId: null });
     for (const r of recipes) {
       const res = await ctx.sandbox.run({ command: r.command, args: r.args, timeoutMs: r.timeoutMs });
       const log = ctx.putArtifact({ kind: 'test_report', name: `${r.name} @ ${ctx.commit.slice(0, 7)}`, content: `$ ${[r.command, ...r.args].join(' ')}\n${res.output}\n[exit ${res.exitCode ?? 'none'} · ${res.durationMs} ms]` });
-      const result = res.cancelled || res.timedOut || res.spawnError ? 'inconclusive' : res.exitCode === 0 ? 'pass' : 'fail';
+      // A passing test command that ran no tests proves nothing (all test files deleted, filter matching nothing).
+      const empty = r.name === 'tests' && res.exitCode === 0 ? noTestsRan(res.output) : null;
+      const result = res.cancelled || res.timedOut || res.spawnError || empty ? 'inconclusive' : res.exitCode === 0 ? 'pass' : 'fail';
       ctx.check({
         name: r.name, command: [r.command, ...r.args].join(' '), required: r.required, result, exitCode: res.exitCode, durationMs: res.durationMs,
-        reason: res.spawnError ? `Could not start: ${res.spawnError}` : res.timedOut ? 'Timed out' : res.cancelled ? 'Cancelled' : `Exit code ${res.exitCode}`, artifactId: log.id,
+        reason: res.spawnError ? `Could not start: ${res.spawnError}` : res.timedOut ? 'Timed out' : res.cancelled ? 'Cancelled' : empty ? `Exit code 0, but no tests ran: ${empty}` : `Exit code ${res.exitCode}`, artifactId: log.id,
       });
     }
+  }
+
+  /**
+   * The agent must not redefine its own verification (D1): compare the verification definition at the approved
+   * base with the integrated commit. A change, or a deleted test, blocks until the operator approves that exact change.
+   */
+  private async definitionCheck(ctx: StageContext) {
+    const m = ctx.mission;
+    const w = this.repo.workspace(m.workspaceId);
+    if (!w || !m.baseCommit) return;
+    const d = await definitionChange(w.root, m.baseCommit, ctx.commit);
+    if (!d.changed.length && !d.deletedTests.length) {
+      ctx.check({ name: 'verification-definition', command: null, required: true, result: 'pass', exitCode: null, durationMs: null, artifactId: null, reason: 'Unchanged since the approved base (how tests, checks and app flows are defined)' });
+      return;
+    }
+    const approved = this.repo.eventsSince(m.id, 0, 100_000).some((e) => e.type === 'operator.action' && e.payload.action === 'approve_definition' && e.payload.hash === d.hash);
+    const what = [...d.changed.map((c) => `changed ${c}`), ...d.deletedTests.map((t) => `deleted test ${t}`)].join('; ');
+    const art = ctx.putArtifact({ kind: 'log', name: 'Verification definition change', content: JSON.stringify({ base: m.baseCommit, commit: ctx.commit, changed: d.changed, deletedTests: d.deletedTests, hash: d.hash }, null, 2) });
+    ctx.check({
+      name: 'verification-definition', command: null, required: true, result: approved ? 'pass' : 'fail', exitCode: null, durationMs: null, artifactId: art.id,
+      reason: approved ? `Changed by the mission and approved by the operator: ${what}` : `The mission changed how verification is defined (${what}). Checks below ran the changed definition, so they cannot verify this change until you approve it.`,
+    });
+  }
+
+  /** Operator approves the exact verification-definition change of the current integrated commit, then the gate re-runs. */
+  async approveDefinitionChange(missionId: string): Promise<Mission> {
+    const m = this.mission(missionId);
+    const w = this.repo.workspace(m.workspaceId);
+    if (!w || !m.baseCommit || !m.integrationCommit) throw new AtlasError('invalid_request', 'This mission has no integrated change');
+    const d = await definitionChange(w.root, m.baseCommit, m.integrationCommit);
+    if (!d.changed.length && !d.deletedTests.length) throw new AtlasError('invalid_request', 'The verification definition did not change');
+    this.emit({ missionId, type: 'operator.action', actor: OPERATOR, payload: { action: 'approve_definition', hash: d.hash, changed: d.changed, deletedTests: d.deletedTests, commit: m.integrationCommit } });
+    return this.reverify(missionId);
   }
 
   /** Review gate: open, confirmed, high/medium findings block; suspected and informational do not. */
