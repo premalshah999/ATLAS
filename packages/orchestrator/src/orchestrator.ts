@@ -18,6 +18,7 @@ import { detectRecipes, gate, noTestsRan, type Verdict } from './verification';
 import { definitionChange, weakening, type DefinitionChange } from './definition';
 import { buildContext, repoMap } from './context';
 import { mergeInto, topoOrder, worktreeFromBases } from './integration';
+import { ACCEPTANCE_DIR, AcceptanceStore, materialize, suiteHash } from './acceptance';
 import { blockingFindings, makeFinding, type FindingArgs } from './findings';
 import { deleteMission, exportMission, importMission } from './archive';
 import { mkdirSync, readdirSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
@@ -42,6 +43,8 @@ export interface OrchestratorOptions {
    * `attempt.stalled` ("No signal" in the UI). It is not stopped: the operator decides. Default 120 s.
    */
   stallAfterMs?: number;
+  /** Operator-owned holdout acceptance suites, one per workspace (never inside a repository). */
+  acceptanceDir?: string;
   /** Free bytes on the volume holding `dir` (injectable for tests). Default: statfs. */
   diskFree?: (dir: string) => number;
 }
@@ -87,6 +90,7 @@ export class Orchestrator {
   private readonly signals = new Map<string, { missionId: string; taskId: string; last: number; flagged: boolean; live: number }>();
   private watchdog: NodeJS.Timeout | null = null;
   private readonly stallAfterMs: number;
+  readonly acceptance: AcceptanceStore;
 
   constructor(private readonly o: OrchestratorOptions) {
     this.repo = o.repo;
@@ -94,6 +98,7 @@ export class Orchestrator {
     this.maxAttempts = o.maxAttempts ?? 2;
     this.approvalTtlMs = o.approvalTtlMs ?? 15 * 60_000;
     this.stallAfterMs = o.stallAfterMs ?? 120_000;
+    this.acceptance = new AcceptanceStore(o.acceptanceDir ?? path.join(path.dirname(o.worktreeDir), 'acceptance'));
     this.repo.onEvent((e) => {
       const s = e.attemptId ? this.signals.get(e.attemptId) : undefined;
       if (s && e.type !== 'attempt.stalled') {
@@ -870,6 +875,7 @@ export class Orchestrator {
         const iso = await this.isolationFor(integ.dir);
         const ctx = this.stageContext(this.repo.mission(m.id)!, integ.dir, integ.commit, iso, signal, checks);
         await this.checksStage(ctx);
+        await this.acceptanceStage(ctx);
         this.findingsStage(ctx);
         for (const st of this.o.stages ?? []) {
           if (signal.aborted) break;
@@ -984,6 +990,34 @@ export class Orchestrator {
         reason: res.spawnError ? `Could not start: ${res.spawnError}` : res.timedOut ? 'Timed out' : empty ? `No tests ran: ${empty}` : result === 'pass' ? `The base commit's tests pass on the integrated code` : `The base commit's tests fail on the integrated code (exit ${res.exitCode})${approved ? '; you approved the test changes, so this no longer blocks' : ''}`,
       });
     } finally { await restore(); }
+  }
+
+  /**
+   * Holdout acceptance tests (independent acceptance verification): the operator's suite, which no agent has seen,
+   * runs against the integrated code in the sandbox. Required when configured. The suite's content hash is part of
+   * the check, so the result names exactly which tests were run.
+   */
+  private async acceptanceStage(ctx: StageContext) {
+    const suite = this.acceptance.get(ctx.mission.workspaceId);
+    if (!suite) return;
+    const dir = ctx.worktree;
+    const hash = suiteHash(suite);
+    const label = `acceptance suite ${hash.slice(0, 12)} (${Object.keys(suite.files).length} file${Object.keys(suite.files).length === 1 ? '' : 's'})`;
+    try {
+      materialize(dir, suite);
+      const res = await ctx.sandbox.run({ command: suite.command, args: suite.args, timeoutMs: 10 * 60_000 });
+      const log = ctx.putArtifact({ kind: 'test_report', name: `acceptance (holdout) @ ${ctx.commit.slice(0, 7)}`, content: `$ ${[suite.command, ...suite.args].join(' ')}  (${label}; written by the operator, never shown to agents)\n${res.output}\n[exit ${res.exitCode ?? 'none'} · ${res.durationMs} ms]` });
+      const empty = res.exitCode === 0 ? noTestsRan(res.output) : null;
+      const result = res.cancelled || res.timedOut || res.spawnError || empty ? 'inconclusive' : res.exitCode === 0 ? 'pass' : 'fail';
+      ctx.check({
+        name: 'acceptance (holdout)', command: [suite.command, ...suite.args].join(' '), required: true, result, exitCode: res.exitCode, durationMs: res.durationMs, artifactId: log.id,
+        reason: res.spawnError ? `Could not start: ${res.spawnError}` : res.timedOut ? 'Timed out' : empty ? `No tests ran: ${empty}` : result === 'pass' ? `Your ${label} passes on the integrated code` : `Your ${label} fails on the integrated code (exit ${res.exitCode})`,
+      });
+    } finally {
+      rmSync(path.join(dir, ACCEPTANCE_DIR), { recursive: true, force: true });
+      await git(dir, ['reset', '-q', '--hard', ctx.commit]);
+      await git(dir, ['clean', '-fdq']);
+    }
   }
 
   /** Operator approves the verification-definition change shown to them (bound to its hash and commit), then the gate re-runs. */

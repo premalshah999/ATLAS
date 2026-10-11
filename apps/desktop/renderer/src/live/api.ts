@@ -63,6 +63,9 @@ type Results = {
   'finding.update': Finding;
   'workspace.facts.get': { text: string };
   'workspace.facts.set': { text: string };
+  'workspace.acceptance.get': AcceptanceView | null;
+  'workspace.acceptance.set': AcceptanceView | null;
+  'workspace.acceptance.remove': AcceptanceView | null;
   'terminal.open': { sessionId: string; writable: boolean; worktree: string; target: string };
   'terminal.input': null;
   'terminal.close': null;
@@ -90,6 +93,8 @@ type Results = {
   'credentials.set': Credentials;
   'credentials.remove': Credentials;
 };
+
+export interface AcceptanceView { command: string; args: string[]; files: Record<string, string>; updatedAt: string; hash: string }
 
 export function call<M extends Method>(method: M, params: RequestOf<M> = {} as RequestOf<M>): Promise<Results[M]> {
   if (!bridge) return Promise.reject(new Error('ATLAS is running outside the desktop app'));

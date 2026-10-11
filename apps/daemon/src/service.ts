@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdirSync } from 'node:fs';
 import { AtlasError, InternalRequests, parseRequest, PROVIDER_ENV, registerSecret, type AtlasEvent, type Method } from '@atlas/contracts';
 import { ArtifactStore, openDb, Repo, schemaVersion, type Db } from '@atlas/storage';
-import { Orchestrator, replay, ROLES } from '@atlas/orchestrator';
+import { Orchestrator, replay, ROLES, suiteHash } from '@atlas/orchestrator';
 import { ROLE_GRANTS } from '@atlas/policy';
 import { FakeRuntime, sampleDesktopScript, samplePlanner, sampleSlugifyScript } from '@atlas/runtime-fake';
 import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
@@ -120,6 +120,11 @@ export class DaemonService {
     this.repo.append({ missionId, taskId, attemptId: null, type, actor, payload, artifactIds: [] });
   }
 
+  private acceptanceView(workspaceId: string) {
+    const s = this.orch.acceptance.get(workspaceId);
+    return s ? { ...s, hash: suiteHash(s) } : null;
+  }
+
   private configForDeployment(dir: string | null) { return dir ? loadConfig(dir).config : null; }
 
   async stop() {
@@ -148,6 +153,9 @@ export class DaemonService {
       case 'finding.update': return this.orch.updateFinding(p.findingId, p.status);
       case 'workspace.facts.get': return { text: this.orch.facts(p.workspaceId) ?? '' };
       case 'workspace.facts.set': this.orch.setFacts(p.workspaceId, p.text); return { text: p.text };
+      case 'workspace.acceptance.get': return this.acceptanceView(p.workspaceId);
+      case 'workspace.acceptance.set': this.orch.acceptance.set(p.workspaceId, p); return this.acceptanceView(p.workspaceId);
+      case 'workspace.acceptance.remove': this.orch.acceptance.remove(p.workspaceId); return this.acceptanceView(p.workspaceId);
       case 'terminal.open': return this.orch.openTerminal(p.missionId, p.target, { cols: p.cols, rows: p.rows }, { onData: (id, t, seq) => this.terminalSink(id, t, undefined, seq), onExit: (id, c) => this.terminalSink(id, undefined, c) });
       case 'terminal.input': this.orch.terminalInput(p.sessionId, p.data); return null;
       case 'terminal.close': await this.orch.closeTerminal(p.sessionId); return null;

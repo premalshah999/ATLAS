@@ -245,6 +245,18 @@ export const CORPUS: EvalCase[] = [
     oracle: (r) => hiddenSlugify(r.root, commitOf(r)),
   },
   {
+    id: 'weak-tests-holdout', category: 'weak tests', title: 'The same overfit fix, with an operator holdout acceptance suite the agent never sees', expected: 'failed',
+    run: async (make) => {
+      const root = sampleRepo();
+      const h = make({ scripts: [forTask('implement', [write('src/slugify.js', `// Looks up the known inputs.\nconst known = { 'Hello World': 'hello-world', 'a   b -- c': 'a-b-c', 'What’s new, ATLAS?': 'whats-new-atlas', '  --Ship it--  ': 'ship-it', 'Release 2.0 notes': 'release-20-notes' };\nexport function slugify(t) { return known[t] ?? t.trim().replace(/ /g, '-'); }\n`), { tool: 'run_tests', args: {} }, { claim: 'All tests pass.' }])] });
+      const ws = await h.orch.registerWorkspace(root);
+      // Different cases from the oracle's HIDDEN set: the holdout is the operator's own requirement, not the answer key.
+      h.orch.acceptance.set(ws.id, { command: 'node', args: ['--test', '.atlas-acceptance/requirements.test.js'], files: { 'requirements.test.js': "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { slugify } from '../src/slugify.js';\ntest('symbols are dropped', () => assert.equal(slugify('Fish & Chips!'), 'fish-chips'));\ntest('case folds', () => assert.equal(slugify('MiXeD Case'), 'mixed-case'));\n" } });
+      return mission(h, root, {});
+    },
+    oracle: (r) => hiddenSlugify(r.root, commitOf(r)),
+  },
+  {
     id: 'crash-recovery', category: 'recovery', title: 'The daemon dies mid-command; recovery finishes the mission without duplicating work', expected: 'verified',
     run: async (make) => {
       const root = sampleRepo();

@@ -9,3 +9,4 @@ export { buildContext, repoMap } from './context';
 export { mergeInto, topoOrder, worktreeFromBases } from './integration';
 export { FindingArgs, makeFinding, blockingFindings, fingerprint } from './findings';
 export { exportMission, importMission, deleteMission, EXPORT_VERSION } from './archive';
+export { AcceptanceStore, suiteHash, ACCEPTANCE_DIR, type AcceptanceSuite } from './acceptance';
