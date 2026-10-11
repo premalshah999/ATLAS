@@ -445,9 +445,10 @@ function PullRequestBar({ missionId, events }: { missionId: string; events: Atla
         {p && <Button size="sm" variant="ghost" disabled={busy} data-testid="ci-refresh" onClick={() => void run('Could not read CI', async () => setView(await call('mission.ciRefresh', { missionId })))}>Refresh CI</Button>}
         {view.canFixCi && <Button size="sm" disabled={busy} data-testid="fix-ci" onClick={() => void run('Could not create the follow-up', async () => {
           const f = await call('mission.fixCi', { missionId });
-          await call('mission.plan', { missionId: f.id });
           await refreshLists();
           go({ screen: 'mission', missionId: f.id });
+          // Planning runs in the background; the follow-up's own view shows its progress and the plan to approve.
+          void call('mission.plan', { missionId: f.id }).catch((e) => toast({ tone: 'danger', title: 'Planning failed', body: (e as Error).message }));
         })}>Fix CI failures</Button>}
       </div>
     </div>

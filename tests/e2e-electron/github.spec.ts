@@ -43,7 +43,10 @@ test('accept, open a pull request, read failing CI, and start a follow-up that f
     await expect(page.getByTestId('ci-state')).toContainText('CI failed: lint');
 
     await page.getByTestId('fix-ci').click();
-    await expect(page.getByTestId('follow-up')).toContainText('Fixes CI on pull request #41');
+    // If the follow-up is refused, the error toast says why (CI run 38125385152 failed here without a reason).
+    const followUp = page.getByTestId('follow-up');
+    await expect.poll(async () => (await followUp.count()) ? 'shown' : (await page.locator('.at-toast[data-tone="danger"]').allInnerTexts()).join(' | ') || 'waiting', { timeout: 30_000 }).toBe('shown');
+    await expect(followUp).toContainText('Fixes CI on pull request #41');
     await expect(page.getByTestId('approve-plan')).toBeVisible({ timeout: 30_000 });
     expect(gh.requests.every((r) => r.auth === `Bearer ${TOKEN}`)).toBe(true);
   } finally { await app.close(); await gh.close(); }
