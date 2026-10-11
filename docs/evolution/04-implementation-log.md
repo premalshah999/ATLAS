@@ -381,3 +381,4 @@ The auditor also confirmed several fixes against new scenarios (could not break 
   - capability SIDs as restricting SIDs (error 87);
   - restricting lists without Everyone, where Node cannot start;
   - the logon SID in the restricting list, which lets one task read another's root.
+- **Paused (2026-10-11).** Round 6 (CI run 38163323568) recorded the security descriptor the pipe receives under the restricted token. The client end of the pipe is still denied (error 5). The experiment stops here and nothing in ATLAS uses this mode. Windows stays fail-closed: no pass is ever reported, and verification runs on Linux, macOS or WSL2. The helper's experimental subcommands stay in the source, used only by the diagnostic test.
