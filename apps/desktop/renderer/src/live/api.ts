@@ -70,6 +70,9 @@ type Results = {
   'skills.read': { text: string; hash: string };
   'skills.import': SkillsState;
   'skills.remove': SkillsState;
+  'export.keys': { own: string; trusted: string[] };
+  'export.trust': { own: string; trusted: string[] };
+  'export.untrust': { own: string; trusted: string[] };
   'terminal.open': { sessionId: string; writable: boolean; worktree: string; target: string };
   'terminal.input': null;
   'terminal.close': null;

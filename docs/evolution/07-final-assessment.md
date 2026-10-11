@@ -39,13 +39,13 @@ ATLAS was evolved, not rewritten. Its identity is preserved: the Electron + Reac
 - **No comparison with the reference products is claimed.** We did not run a fair, reproducible benchmark of ATLAS against agent-orchestrator, limboo or Claude-Multiplex. [01](01-competitor-matrix.md) compares designs from source reading only.
 - **The scripted runtime drove every mission in these tests.** The Pi adapter is covered by its contract suite, but no live-model mission was run in this evolution, because no credentials were used.
 - **The 1/7 false-pass case in the eval is real:** weak new tests on new code pass. The gate cannot judge test quality.
-- **Exports are not signed.** A forger who recomputes the hashes is not detected.
+- **Export trust is per key id, set by hand.** Signed exports now name their signer; there is no revocation or key distribution beyond copying a key id.
 - **Windows users get a fail-closed product today, not a working one.**
 
 ## Recommended next steps, in order
 
 1. **Windows AppContainer toolchain access.** Finish the diagnosis the CI bisection has started (the toolchain capability ACL is not in effect). Then grant only the directories of the programs actually used, not every `PATH` entry.
-2. **Signed exports.** A per-installation key plus an explicit import trust prompt.
+2. ~~Signed exports~~: done. Per-installation Ed25519 key; imports show signer and trust.
 3. **Dev-tool upgrades.** vitest ≥ 4.1.11 and electron-builder ≥ 26.15, as a separate change (see [06](06-security-review.md)).
 4. **ESLint `react-hooks` rule.** It would have caught the one regression this evolution shipped locally and then fixed.
 5. **Live-model reality run.** A Pi mission against a real provider in a disposable environment, with credentials the operator supplies.

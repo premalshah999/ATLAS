@@ -82,6 +82,7 @@ export function Settings() {
           {settings && <RetentionSection settings={settings} onChange={setSettings} />}
           <RolesSection />
           <SkillsSection />
+          <ExportKeysSection />
           <section className="lv-section">
             <div className="at-label">Model provider keys</div>
             <p className="at-muted lv-small">Keys are encrypted with the operating system credential store and passed only to the agent runtime process. They are redacted from every log, event and artifact.{creds && !creds.available ? ' No credential store is available on this system: export the variable before launching ATLAS instead.' : ''}</p>
@@ -259,6 +260,27 @@ function SkillsSection() {
         </>
       )}
       {state?.errors.length ? <span className="at-subtle lv-small">Not loaded: {state.errors.join('; ')}</span> : null}
+    </section>
+  );
+}
+
+/** Signed evidence exports: this installation's key id, and the other installations whose exports are trusted. */
+function ExportKeysSection() {
+  const [keys, setKeys] = useState<{ own: string; trusted: string[] } | null>(null);
+  const [add, setAdd] = useState('');
+  useEffect(() => { void call('export.keys').then(setKeys).catch(() => {}); }, []);
+  return (
+    <section className="lv-section" data-testid="export-keys">
+      <div className="at-label">Evidence exports</div>
+      <p className="at-muted lv-small" style={{ margin: 0 }}>Exports are signed with this installation's key. An import shows who signed it; only keys listed here (and this installation's own) count as trusted.</p>
+      {keys && <KV rows={[['This installation', <span key="k" className="at-mono" data-testid="own-key">{keys.own}</span>]]} />}
+      {keys?.trusted.map((k) => (
+        <div key={k} className="at-row" style={{ gap: 8 }}><span className="at-mono lv-small">{k}</span><Button size="sm" variant="ghost" onClick={() => void call('export.untrust', { keyId: k }).then(setKeys)}>Remove</Button></div>
+      ))}
+      <div className="at-row" style={{ gap: 6 }}>
+        <Input value={add} onChange={(e) => setAdd(e.target.value.trim())} placeholder="Key id of another installation (32 hex characters)" aria-label="Trusted key id" />
+        <Button size="sm" disabled={!/^[0-9a-f]{32}$/.test(add)} onClick={() => void call('export.trust', { keyId: add }).then((r) => { setKeys(r); setAdd(''); })}>Trust key</Button>
+      </div>
     </section>
   );
 }

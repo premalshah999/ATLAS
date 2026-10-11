@@ -82,6 +82,8 @@ test('staging deploy, task graph, browser steps, terminal, export and read-only 
     await second.page.getByTestId('import-mission').click();
     await expect(second.page.getByTestId('mission')).toBeVisible({ timeout: 15_000 });
     await expect(second.page.getByText('imported archive · read-only')).toBeVisible();
+    // A different installation: signed, but by a key it does not trust yet.
+    await expect(second.page.getByTestId('provenance')).toContainText('signed by untrusted key');
     await expect(second.page.locator('h1')).toContainText(missionTitle);
     await second.page.getByRole('tab', { name: /Evidence/ }).click();
     await expect(second.page.getByTestId('evidence')).toContainText('staging:revision');

@@ -120,6 +120,8 @@ export class DaemonService {
     this.repo.append({ missionId, taskId, attemptId: null, type, actor, payload, artifactIds: [] });
   }
 
+  private exportKeysView() { return { own: this.orch.exportKeyId(), trusted: this.repo.setting<string[]>('export.trustedKeys', []) }; }
+
   private skillsView(workspaceId?: string) {
     const view = (s: Skill) => ({ name: s.name, description: s.description, roles: s.roles, version: s.version, source: s.source, hash: s.hash, files: s.files });
     const t = this.orch.skills.trusted();
@@ -187,6 +189,9 @@ export class DaemonService {
         return this.skillsView(p.workspaceId);
       }
       case 'skills.remove': this.orch.skills.removeOperator(p.name); return this.skillsView();
+      case 'export.keys': return this.exportKeysView();
+      case 'export.trust': this.repo.setSetting('export.trustedKeys', [...new Set([...this.repo.setting<string[]>('export.trustedKeys', []), p.keyId])]); return this.exportKeysView();
+      case 'export.untrust': this.repo.setSetting('export.trustedKeys', this.repo.setting<string[]>('export.trustedKeys', []).filter((k) => k !== p.keyId)); return this.exportKeysView();
       case 'terminal.open': return this.orch.openTerminal(p.missionId, p.target, { cols: p.cols, rows: p.rows }, { onData: (id, t, seq) => this.terminalSink(id, t, undefined, seq), onExit: (id, c) => this.terminalSink(id, undefined, c) });
       case 'terminal.input': this.orch.terminalInput(p.sessionId, p.data); return null;
       case 'terminal.close': await this.orch.closeTerminal(p.sessionId); return null;

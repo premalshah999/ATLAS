@@ -20,6 +20,7 @@ import { buildContext, repoMap } from './context';
 import { mergeInto, topoOrder, worktreeFromBases } from './integration';
 import { ACCEPTANCE_DIR, AcceptanceStore, materialize, suiteHash } from './acceptance';
 import { SkillLibrary } from './skills';
+import { ExportKeys } from './signing';
 import { blockingFindings, makeFinding, type FindingArgs } from './findings';
 import { deleteMission, exportMission, importMission } from './archive';
 import { mkdirSync, readdirSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
@@ -44,6 +45,8 @@ export interface OrchestratorOptions {
    * `attempt.stalled` ("No signal" in the UI). It is not stopped: the operator decides. Default 120 s.
    */
   stallAfterMs?: number;
+  /** Installation keys (export signing). */
+  keysDir?: string;
   /** Skill library directories: bundled with ATLAS (read-only) and operator-installed. */
   skillDirs?: { bundled?: string; operator?: string };
   /** Operator-owned holdout acceptance suites, one per workspace (never inside a repository). */
@@ -95,6 +98,7 @@ export class Orchestrator {
   private readonly stallAfterMs: number;
   readonly acceptance: AcceptanceStore;
   readonly skills: SkillLibrary;
+  private readonly exportKeys: ExportKeys;
 
   constructor(private readonly o: OrchestratorOptions) {
     this.repo = o.repo;
@@ -102,6 +106,7 @@ export class Orchestrator {
     this.maxAttempts = o.maxAttempts ?? 2;
     this.approvalTtlMs = o.approvalTtlMs ?? 15 * 60_000;
     this.stallAfterMs = o.stallAfterMs ?? 120_000;
+    this.exportKeys = new ExportKeys(o.keysDir ?? path.join(path.dirname(o.worktreeDir), 'keys'));
     this.skills = new SkillLibrary({ bundled: o.skillDirs?.bundled, operator: o.skillDirs?.operator ?? path.join(path.dirname(o.worktreeDir), 'skills') });
     this.acceptance = new AcceptanceStore(o.acceptanceDir ?? path.join(path.dirname(o.worktreeDir), 'acceptance'));
     this.repo.onEvent((e) => {
@@ -196,8 +201,23 @@ export class Orchestrator {
 
   /* ---------------- export, import, delete, retention (manual §38–39, §43) ---------------- */
 
-  exportMission(missionId: string, file: string) { return exportMission(this.repo, this.artifacts, missionId, file); }
-  importMission(file: string) { return importMission(this.repo, this.artifacts, file); }
+  exportMission(missionId: string, file: string) { return exportMission(this.repo, this.artifacts, missionId, file, this.exportKeys); }
+
+  /**
+   * Import an export read-only. The signer is checked against this installation's key and the keys the operator
+   * trusts (`export.trustedKeys`); the result is recorded on the imported mission as an event.
+   */
+  importMission(file: string) {
+    const own = this.exportKeys.keyId;
+    const trusted = this.repo.setting<string[]>('export.trustedKeys', []);
+    const { mission, provenance } = importMission(this.repo, this.artifacts, file, (k) => ({ own: k === own, trusted: k === own || trusted.includes(k) }));
+    const word = !provenance.signed ? 'unsigned (integrity only, origin unknown)' : provenance.own ? 'signed by this installation' : provenance.trusted ? `signed by trusted key ${provenance.keyId}` : `signed by an untrusted key ${provenance.keyId}`;
+    this.emit({ missionId: mission.id, type: 'operator.action', actor: OPERATOR, payload: { action: 'imported', provenance, note: `Imported archive: ${word}` } });
+    return { ...mission, provenance };
+  }
+
+  /** This installation's export signing key id (shown so other installations can choose to trust it). */
+  exportKeyId() { return this.exportKeys.keyId; }
   async deleteMission(missionId: string) { await this.closeMissionTerminals(missionId); await deleteMission(this.repo, this.artifacts, missionId, this.o.worktreeDir); }
 
   /**
@@ -1232,6 +1252,7 @@ export class Orchestrator {
     const m = this.mission(missionId);
     if (!['completed', 'failed'].includes(m.state)) throw new AtlasError('invalid_request', 'Only finished missions can be accepted or rejected');
     if (m.decision) throw new AtlasError('invalid_request', `Mission already ${m.decision}`);
+    if (m.archived) throw new AtlasError('invalid_request', 'An imported archive is read-only; it cannot be accepted or rejected');
     if (decision === 'accept' && !m.integrationCommit) throw new AtlasError('invalid_request', 'Nothing to accept: the mission produced no integrated change');
     const w = this.repo.workspace(m.workspaceId)!;
     // Operator terminals end with the decision (their transcripts are recorded), before their worktrees go away.

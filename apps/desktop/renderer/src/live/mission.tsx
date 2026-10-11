@@ -36,6 +36,7 @@ export function MissionView({ missionId }: { missionId: string }) {
   const patchCount = snap.artifacts.filter((a) => a.kind === 'patch').length;
   const hasBrowser = events.some((e) => e.type === 'browser.step') || snap.checks.some((c) => /^(api|browser):/.test(c.name));
   const stalled = stalledTasks(events);
+  const provenance = [...events].reverse().find((e) => e.type === 'operator.action' && e.payload.action === 'imported')?.payload.provenance as { signed: boolean; keyId: string | null; trusted: boolean; own: boolean } | undefined;
   const hasDesktop = events.some((e) => e.type.startsWith('desktop.')) || snap.tasks.some((t) => t.role === 'desktop_operator');
 
   return (
@@ -53,7 +54,7 @@ export function MissionView({ missionId }: { missionId: string }) {
         <div className="at-mhead-r">
           <div className="at-row" style={{ gap: 6 }}>
             {ACTIVE.has(m.state) && <Button variant="danger" icon={IStopCircle} disabled={busy} onClick={() => void act('Could not cancel', () => call('mission.cancel', { missionId }))}>Cancel mission</Button>}
-            {finished && !m.decision && (
+            {finished && !m.decision && !m.archived && (
               <>
                 <Button variant="ghost" icon={IUndo} disabled={busy} data-testid="reject" onClick={() => void act('Could not reject', () => call('mission.decide', { missionId, decision: 'reject' }))}>Reject changes</Button>
                 <Button variant={verdict === 'verified' ? 'primary' : 'default'} icon={IMerge} disabled={busy || patchCount === 0} data-testid="accept" onClick={() => void act('Could not accept', () => call('mission.decide', { missionId, decision: 'accept' }))}>Accept changes</Button>
@@ -62,6 +63,7 @@ export function MissionView({ missionId }: { missionId: string }) {
             {m.decision && <Badge tone="human">{m.decision === 'accepted' ? 'Accepted by you' : 'Rejected by you'}</Badge>}
             {m.decision === 'rejected' && m.integrationCommit && !m.archived && <Button variant="ghost" icon={IUndo} disabled={busy} data-testid="restore" onClick={() => void act('Could not restore', () => call('mission.restore', { missionId }))}>Restore change</Button>}
             {m.archived && <Badge tone="outline">imported archive · read-only</Badge>}
+            {m.archived && provenance && <span data-testid="provenance"><Badge tone={provenance.trusted ? 'outline' : 'warning'}>{!provenance.signed ? 'unsigned: origin unknown' : provenance.own ? 'signed by this installation' : provenance.trusted ? `signed by trusted key ${String(provenance.keyId).slice(0, 8)}` : `signed by untrusted key ${String(provenance.keyId).slice(0, 8)}`}</Badge></span>}
             <Menu align="right" width={260} trigger={(_o, toggle) => <Button variant="ghost" icon={IMore} onClick={toggle} aria-label="Mission actions" data-testid="mission-menu">More</Button>}>{(close) => (<>
               <MenuItem icon={IDisk} onClick={() => { close(); void act('Export failed', async () => { const r = await call('mission.export', { missionId }); if (r) toast({ tone: 'info', title: 'Audit log exported', body: `${r.records} records · SHA-256 ${r.sha256.slice(0, 16)}… → ${r.path}` }); }); }}>Export audit log (JSONL)…</MenuItem>
               <MenuItem icon={IClose} onClick={() => { close(); if (ACTIVE.has(m.state)) { toast({ tone: 'danger', title: 'Cancel the mission first' }); return; } if (window.confirm('Delete this mission? Its events, artifacts, worktrees and task branches are removed. An accepted branch is kept.')) void act('Delete failed', async () => { await call('mission.delete', { missionId }); await refreshLists(); go({ screen: 'projects' }); }); }}>Delete mission…</MenuItem>
