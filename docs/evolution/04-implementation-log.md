@@ -211,7 +211,13 @@ It also found **three false positives** (G, H, K: legitimate new scripts or test
 **Evidence from CI and fixes so far**
 1. The C# helper compile raced between parallel workers (`CS0016`). Fixed with an atomic compile-and-rename.
 2. Inside the AppContainer, Node fails with `EPERM lstat 'C:\'` (its JS realpath walks ancestors). Sandboxed Node now runs with `--preserve-symlinks --preserve-symlinks-main`, rather than ATLAS changing the ACL of the drive root.
-3. `npm test` reports "Access is denied." from `cmd.exe`. A bisection test was added (cmd.exe alone, then the npm shim).
+3. `npm test` reports "Access is denied." from `cmd.exe`. The CI bisection (run 38109076836) isolated the cause:
+   - The toolchain capability ACE is present on the Node directory.
+   - Node inside the container can list and read that directory.
+   - `cmd.exe` cannot: it resolves paths with `FindFirstFile` on every ancestor (`C:\`, the tool cache), which the container may not list.
+
+   **Fix (`a351f34`):** npm's and cmd-shim's `.cmd` shims are resolved to the script they wrap and run as `node <script>`. cmd.exe no longer starts inside the sandbox for package managers, and no system ACL is changed.
+4. The helper now terminates its Job Object when the daemon exits (`--parent`).
 
 **Status.** Windows is **not** green. The status is maintained in [05-test-evidence.md](05-test-evidence.md).
 
