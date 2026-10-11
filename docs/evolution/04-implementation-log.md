@@ -265,3 +265,58 @@ The auditor also confirmed several fixes against new scenarios (could not break 
 - 0 of 150 hung under the same load.
 - A regression test asserts no hang and no survivor.
 - Linux CI has been green on every run since.
+
+---
+
+# Round 2 (operator priorities)
+
+## Independent acceptance verification — `1d8a345`
+- **Problem.** The eval's `weak-tests` case is an overfit fix: a lookup table that passes every visible test. It was a false pass, and nothing in the gate could catch it, because the agent can read and satisfy every test in the repository.
+- **Change.** Holdout acceptance suites.
+  - Operators keep acceptance tests in ATLAS's data directory, never in the repository.
+  - Agents cannot read them: their sandbox sees only their worktree. The integration test proves an agent that knows the storage path reads nothing.
+  - At the gate the suite is written to `.atlas-acceptance/` in the integration worktree, run in the sandbox as the required check `acceptance (holdout)` (named by content hash), and removed. A planted `.atlas-acceptance` symlink cannot redirect writes.
+  - UI: Projects → "Holdout acceptance tests".
+- **Evidence.**
+  - `tests/integration/acceptance.test.ts`: 12 tests.
+  - eval: the new `weak-tests-holdout` case is correctly `failed`. The original `weak-tests` (no holdout) still counts as a false pass, so the limitation stays visible.
+  - e2e `acceptance.spec.ts`.
+
+## Skills — `7fa8278` (ADR 0013)
+- **Library.** Bundled and operator skills are trusted. Repository skills (`.agents/skills`, `.pi/skills`) are listed as untrusted and offered only after an import pinned to the reviewed hash.
+- **Loading.** Agents see an index of skills and load them through the governed tools `load_skill` / `read_skill_file`. Each load is recorded with its hash.
+- **Bundled skills (7):**
+  - `reproduce-before-fix`
+  - `skeptical-review`
+  - `architecture-tournament`
+  - `ruthless-simplifier`
+  - `deployment-detective`
+  - `experimental-scientist`
+  - `evidence-report`
+- **Skill Laboratory.** `pnpm lab:skills` compares the corpus with and without skills on the same runtime and model. On the scripted runtime both arms are identical by construction (the report says so). **No skill benefit has been measured**: that needs a live model.
+- **Evidence.** Unit (10), integration (3), and e2e `skills.spec.ts`, which shows the built app finds the bundled library.
+
+## Signed evidence exports — `e4b334b`
+- Each installation has an Ed25519 key, and the export trailer is signed.
+- Import refuses an invalid signature and records provenance: unsigned, this installation, a trusted key, or an untrusted key.
+- This closes the final audit's forgery finding:
+  - keeping the old signature after recomputing hashes → refused;
+  - re-signing with another key → shown as "untrusted key", never as the original signer.
+- **Found while testing:** an imported read-only archive offered Accept and Reject. Fixed in the UI and in the orchestrator.
+
+## Live Pi integration test — `47a9936`
+- `pnpm test:live` runs a real Pi mission, with and without the bundled skills. It passes only if:
+  - the gate verifies the result;
+  - a hidden oracle agrees;
+  - privileged requests are denied;
+  - no provider key appears in the export.
+- **Not run here: no provider key in this environment.**
+
+## Toolchain upgrades — `a9c7e71`
+- vitest 4, vite 7, esbuild 0.25, electron-builder 26.17, eslint 9.39 and typescript-eslint 8.71, with a full regression run.
+- Audit advisories went from 30 to 1. The remaining one is build-time and has no upstream fix.
+
+## Windows — `a351f34`, `dcab0bc` (in progress)
+- **Shim fix confirmed.** `npm.cmd` is now run as `node npm-cli.js`. CI run 38118446488 shows npm working inside the AppContainer: the bisection test passed.
+- **Next blocker.** `npm test` hangs inside the container, and a probe that spawns children never writes its pid file.
+- **Hypothesis:** libuv's piped child stdio needs a named pipe the AppContainer may not create. Diagnostics are on CI now.

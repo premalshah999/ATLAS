@@ -32,6 +32,11 @@ ATLAS was evolved, not rewritten. Its identity is preserved: the Electron + Reac
 | P0-6 Windows | **open** | see [05](05-test-evidence.md) |
 | P1-1 … P1-6 | done, reviewed, findings fixed | [04](04-implementation-log.md) |
 | P2-1 | done | metrics, two runs |
+| Independent acceptance verification | done | holdout suites; eval case `weak-tests-holdout` |
+| Skills + Skill Laboratory | done (benefit unmeasured) | ADR 0013; unit, integration, e2e |
+| Signed exports | done | archive tests incl. both forgery forms |
+| Live Pi test | written, **not run** (no key) | `pnpm test:live` |
+| Toolchain upgrades | done | full regression; audit 30 → 1 |
 | P2-2, P2-4, P3-* | not attempted | — |
 
 ## What this does not prove

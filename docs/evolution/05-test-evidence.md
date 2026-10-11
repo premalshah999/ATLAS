@@ -2,7 +2,19 @@
 
 Every number below comes from a process exit or a test assertion, and each one names the run that produced it. Local runs used the Linux development container (bubblewrap sandbox, Node 22). CI runs are GitHub Actions on `claude/gifted-volta-j4hvy4`.
 
-## Local suite (Linux, after the latest slice, commit `2a538b8`)
+## Local suite (Linux, round 2, toolchain upgraded, commit `a9c7e71`)
+
+| Command | Result |
+|---|---|
+| `pnpm typecheck`, `pnpm lint` | exit 0 |
+| `pnpm test` (unit) | 191 passed, 3 skipped (platform-gated) |
+| `pnpm test:integration` | 93 passed |
+| `pnpm eval` | 12/12 as expected; false passes 1/7 (`weak-tests` without holdout); `weak-tests-holdout` correctly failed |
+| `pnpm test:e2e` | 11 passed |
+| `pnpm test:live` | skipped: no provider key in this environment |
+| `pnpm package` | AppImage built |
+
+## Local suite (Linux, end of round 1, commit `2a538b8`)
 
 | Command | Result |
 |---|---|
