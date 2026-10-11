@@ -21,7 +21,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q bubblewrap xvfb xdotool x11-utils imagemagick
+          sudo apt-get install -y -q bubblewrap xvfb xdotool x11-utils imagemagick mono-mcs
           # Ubuntu 24.04 restricts unprivileged user namespaces; bubblewrap needs them.
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
       - name: Desktop tools (macOS)

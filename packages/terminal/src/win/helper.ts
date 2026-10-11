@@ -153,7 +153,7 @@ static class AtlasSandbox {
     var sddl = new StringBuilder("D:(A;;GA;;;SY)");
     if (logon != null) sddl.Append("(A;;GA;;;" + logon + ")");
     foreach (var r in restrict) { string rs = SidString(r.Sid); if (rs != "S-1-1-0" && rs != "S-1-5-32-545" && rs != "S-1-5-11" && rs != "S-1-5-4" && rs != logon) sddl.Append("(A;;GA;;;" + rs + ")"); }
-    IntPtr sd, dacl; bool present, defaulted;
+    IntPtr sd = IntPtr.Zero, dacl = IntPtr.Zero; bool present = false, defaulted = false;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptor(sddl.ToString(), 1, out sd, IntPtr.Zero) || !GetSecurityDescriptorDacl(sd, out present, out dacl, out defaulted)) Fail("default DACL: " + Marshal.GetLastWin32Error());
     IntPtr tdd = Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(tdd, dacl);
     if (!SetTokenInformation(rt, 6, tdd, IntPtr.Size)) Fail("set default DACL: " + Marshal.GetLastWin32Error()); // TokenDefaultDacl
