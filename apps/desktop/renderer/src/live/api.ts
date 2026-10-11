@@ -66,6 +66,10 @@ type Results = {
   'workspace.acceptance.get': AcceptanceView | null;
   'workspace.acceptance.set': AcceptanceView | null;
   'workspace.acceptance.remove': AcceptanceView | null;
+  'skills.list': SkillsState;
+  'skills.read': { text: string; hash: string };
+  'skills.import': SkillsState;
+  'skills.remove': SkillsState;
   'terminal.open': { sessionId: string; writable: boolean; worktree: string; target: string };
   'terminal.input': null;
   'terminal.close': null;
@@ -94,6 +98,8 @@ type Results = {
   'credentials.remove': Credentials;
 };
 
+export interface SkillView { name: string; description: string; roles: string[]; version: string; source: 'bundled' | 'operator' | 'repository'; hash: string; files: string[] }
+export interface SkillsState { trusted: SkillView[]; repository: SkillView[]; errors: string[] }
 export interface AcceptanceView { command: string; args: string[]; files: Record<string, string>; updatedAt: string; hash: string }
 
 export function call<M extends Method>(method: M, params: RequestOf<M> = {} as RequestOf<M>): Promise<Results[M]> {

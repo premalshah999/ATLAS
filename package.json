@@ -22,7 +22,8 @@
     "seed:sample": "node scripts/seed-sample.mjs",
     "screenshots": "pnpm build && playwright test -c tests/e2e-electron/screenshots.config.ts",
     "eval": "vitest run --project eval",
-    "metrics": "pnpm build && playwright test -c tests/e2e-electron/metrics.config.ts"
+    "metrics": "pnpm build && playwright test -c tests/e2e-electron/metrics.config.ts",
+    "lab:skills": "vite-node evals/skills-lab.ts"
   },
   "devDependencies": {
     "@atlas/browser": "workspace:*",

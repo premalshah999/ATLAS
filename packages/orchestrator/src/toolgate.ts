@@ -10,8 +10,11 @@ import { git, resolveInside } from '@atlas/workspace';
 import type { Repo, ArtifactStore } from '@atlas/storage';
 import { detectRecipes } from './verification';
 import { FindingArgs } from './findings';
+import type { SkillLibrary } from './skills';
 
 export const TOOL_SPECS: ToolSpec[] = [
+  { name: 'load_skill', description: 'Load a skill (a reviewed, versioned procedure) by name from the skill index in your context. Returns its instructions and the list of its reference files.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'], additionalProperties: false } },
+  { name: 'read_skill_file', description: 'Read a reference file of a loaded skill (path as listed by load_skill).', parameters: { type: 'object', properties: { name: { type: 'string' }, path: { type: 'string' } }, required: ['name', 'path'], additionalProperties: false } },
   { name: 'read_file', description: 'Read a UTF-8 text file in the worktree (max 200 KB).', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Path relative to the worktree root' } }, required: ['path'], additionalProperties: false } },
   { name: 'list_files', description: 'List entries of a directory in the worktree.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Directory relative to the worktree root; "." for the root' } }, required: ['path'], additionalProperties: false } },
   { name: 'write_file', description: 'Create or overwrite a text file in the worktree.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } },
@@ -66,6 +69,8 @@ const ARGS: Record<string, z.ZodTypeAny> = {
   run_tests: z.object({}).strict(),
   view_diff: z.object({ path: z.string().min(1).optional() }).strict(),
   report_finding: FindingArgs,
+  load_skill: z.object({ name: z.string().min(1).max(64) }).strict(),
+  read_skill_file: z.object({ name: z.string().min(1).max(64), path: z.string().min(1).max(300) }).strict(),
   browser_action: z.object({ step: z.record(z.unknown()) }).strict(),
   desktop_action: z.object({ action: z.string().min(1).max(40) }).passthrough(),
   inspect_logs: z.object({ lines: z.number().int().min(1).max(2000).optional() }).strict(),
@@ -116,6 +121,8 @@ export interface GateContext {
   onFinding?(args: FindingArgs, failingRuns: ReadonlySet<string>): string;
   /** Tools provided by service packages (browser, desktop, deploy), created lazily per attempt. */
   extra?: Record<string, { invoke(args: unknown, signal: AbortSignal): Promise<ToolResult> }>;
+  /** Trusted skills (bundled and operator-installed) this attempt may load. */
+  skills?: SkillLibrary;
   /** Run a delegated subtask to completion. */
   delegate?(args: { role: 'coder' | 'tester' | 'reviewer'; title: string; reason: string; acceptance: string[] }, signal: AbortSignal): Promise<ToolResult>;
 }
@@ -128,7 +135,7 @@ export class ToolGate implements ToolInvoker {
     this.specs = TOOL_SPECS.filter((s) => ctx.permitted.includes(s.name));
   }
 
-  private emit(type: 'policy.decision' | 'approval.requested' | 'approval.decided' | 'process.started' | 'process.output' | 'process.exited' | 'artifact.created', payload: Record<string, unknown>, artifactIds: string[] = []) {
+  private emit(type: 'skill.loaded' | 'policy.decision' | 'approval.requested' | 'approval.decided' | 'process.started' | 'process.output' | 'process.exited' | 'artifact.created', payload: Record<string, unknown>, artifactIds: string[] = []) {
     const { missionId, taskId, attemptId, role } = this.ctx;
     return this.repo.append({ missionId, taskId, attemptId, type, actor: { kind: 'system', component: 'toolgate' }, payload: { ...payload, role }, artifactIds });
   }
@@ -198,6 +205,14 @@ export class ToolGate implements ToolInvoker {
         const text = d.out || '(no differences against the mission base)';
         return ok(`${text.length > 60_000 ? `${text.slice(0, 60_000)}\n… [truncated]` : text}${untracked.out ? `\n\nUntracked files:\n${untracked.out}` : ''}`);
       }
+      case 'load_skill': case 'read_skill_file': {
+        if (!this.ctx.skills) return this.fail('unknown_tool', 'No skills are available for this task.');
+        const rel = name === 'load_skill' ? 'SKILL.md' : a.path;
+        const { skill, text } = this.ctx.skills.read(a.name, this.ctx.role, rel);
+        this.emit('skill.loaded', { skill: skill.name, file: rel, source: skill.source, version: skill.version, hash: skill.hash });
+        const refs = skill.files.filter((f) => f !== 'SKILL.md');
+        return ok(name === 'load_skill' ? `${text}${refs.length ? `\n\n[Reference files: ${refs.join(', ')} — read with read_skill_file]` : ''}` : text);
+      }
       case 'report_finding': {
         if (!this.ctx.onFinding) return this.fail('unknown_tool', 'Findings are not recorded for this task.');
         return ok(this.ctx.onFinding(a as FindingArgs, this.failingRuns));
@@ -256,6 +271,8 @@ export function describe(tool: string, a: Record<string, any>): string {
     case 'shell_exec': return redact([a.command, ...(a.args ?? [])].join(' '));
     case 'read_file': case 'list_files': case 'write_file': return a.path;
     case 'run_tests': return 'project test command';
+    case 'load_skill': return `skill ${a.name}`;
+    case 'read_skill_file': return `skill ${a.name}/${a.path}`;
     default: return tool;
   }
 }

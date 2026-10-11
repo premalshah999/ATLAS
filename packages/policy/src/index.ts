@@ -150,6 +150,9 @@ export const TOOL_CAPABILITY: Record<string, Capability | 'shell'> = {
   desktop_action: 'desktop.input',
   staging_deploy: 'deploy.staging',
   inspect_logs: 'fs.read',
+  // Reviewed procedures from ATLAS's own skill library: read-only text, never repository content.
+  load_skill: 'fs.read',
+  read_skill_file: 'fs.read',
 };
 
 export interface EvaluateInput {

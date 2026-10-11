@@ -19,6 +19,7 @@ import { definitionChange, weakening, type DefinitionChange } from './definition
 import { buildContext, repoMap } from './context';
 import { mergeInto, topoOrder, worktreeFromBases } from './integration';
 import { ACCEPTANCE_DIR, AcceptanceStore, materialize, suiteHash } from './acceptance';
+import { SkillLibrary } from './skills';
 import { blockingFindings, makeFinding, type FindingArgs } from './findings';
 import { deleteMission, exportMission, importMission } from './archive';
 import { mkdirSync, readdirSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
@@ -43,6 +44,8 @@ export interface OrchestratorOptions {
    * `attempt.stalled` ("No signal" in the UI). It is not stopped: the operator decides. Default 120 s.
    */
   stallAfterMs?: number;
+  /** Skill library directories: bundled with ATLAS (read-only) and operator-installed. */
+  skillDirs?: { bundled?: string; operator?: string };
   /** Operator-owned holdout acceptance suites, one per workspace (never inside a repository). */
   acceptanceDir?: string;
   /** Free bytes on the volume holding `dir` (injectable for tests). Default: statfs. */
@@ -91,6 +94,7 @@ export class Orchestrator {
   private watchdog: NodeJS.Timeout | null = null;
   private readonly stallAfterMs: number;
   readonly acceptance: AcceptanceStore;
+  readonly skills: SkillLibrary;
 
   constructor(private readonly o: OrchestratorOptions) {
     this.repo = o.repo;
@@ -98,6 +102,7 @@ export class Orchestrator {
     this.maxAttempts = o.maxAttempts ?? 2;
     this.approvalTtlMs = o.approvalTtlMs ?? 15 * 60_000;
     this.stallAfterMs = o.stallAfterMs ?? 120_000;
+    this.skills = new SkillLibrary({ bundled: o.skillDirs?.bundled, operator: o.skillDirs?.operator ?? path.join(path.dirname(o.worktreeDir), 'skills') });
     this.acceptance = new AcceptanceStore(o.acceptanceDir ?? path.join(path.dirname(o.worktreeDir), 'acceptance'));
     this.repo.onEvent((e) => {
       const s = e.attemptId ? this.signals.get(e.attemptId) : undefined;
@@ -499,6 +504,8 @@ export class Orchestrator {
     let tools = planTask ? planTask.tools : [...ROLES[t.role].tools];
     if (m.approvalMode === 'plan_only') tools = tools.filter((x) => !['write_file', 'delegate'].includes(x));
     if (t.depth >= m.budget.maxDelegationDepth) tools = tools.filter((x) => x !== 'delegate');
+    // Reviewed skills are read-only procedures: offered whenever the role has any (ADR 0013).
+    if (this.skills.forRole(t.role).length) tools = [...new Set([...tools, 'load_skill', 'read_skill_file'])];
     return tools;
   }
 
@@ -598,6 +605,7 @@ export class Orchestrator {
       isolation, missionId: m.id, taskId: t.id, attemptId: attempt.id, role: t.role, mode: m.approvalMode, cwd: dir, permitted, base: m.baseCommit!,
       approvalTtlMs: this.approvalTtlMs, awaitApproval: (a: Approval, s: AbortSignal) => this.awaitApproval(a, s),
       onFinding: (args, failing) => this.recordFinding(m, t, attempt.id, args, failing),
+      skills: this.skills,
       delegate: (args, s) => this.delegate(m, t, dir, args, s),
     }, this.repo, this.artifacts, this.o.executors ?? realExecutors);
 
@@ -606,7 +614,7 @@ export class Orchestrator {
       .map((e) => `${e.ts} ${e.type}: ${JSON.stringify(e.payload).slice(0, 240)}`);
     const ctx = await buildContext({
       worktree: dir, base: m.baseCommit!, role: t.role, objective: m.goal, constraints: m.constraints, task: t, planSummary: `${plan.summary}\nTasks: ${plan.tasks.map((x) => `${x.key} (${x.role})`).join(', ')}`,
-      facts: this.facts(w.id), decisions, includeDiff: t.role === 'reviewer' || t.role === 'tester',
+      facts: this.facts(w.id), decisions, includeDiff: t.role === 'reviewer' || t.role === 'tester', skills: this.skills.index(t.role),
     });
     const ctxArt = this.artifacts.put({ missionId: m.id, taskId: t.id, kind: 'context', name: `Context · ${t.key} attempt ${number}`, content: ctx.text });
     this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'context.built', actor: SYSTEM('context'), payload: { sources: ctx.sources, chars: ctx.text.length } });

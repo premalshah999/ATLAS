@@ -1,10 +1,10 @@
 // The control plane (manual §5, E1): storage, orchestration and runtimes in one supervised process.
 // It receives already-validated intents from Electron main and re-validates them before acting.
 import path from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { AtlasError, InternalRequests, parseRequest, PROVIDER_ENV, registerSecret, type AtlasEvent, type Method } from '@atlas/contracts';
 import { ArtifactStore, openDb, Repo, schemaVersion, type Db } from '@atlas/storage';
-import { Orchestrator, replay, ROLES, suiteHash } from '@atlas/orchestrator';
+import { Orchestrator, replay, ROLES, suiteHash, type Skill } from '@atlas/orchestrator';
 import { ROLE_GRANTS } from '@atlas/policy';
 import { FakeRuntime, sampleDesktopScript, samplePlanner, sampleSlugifyScript } from '@atlas/runtime-fake';
 import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
@@ -16,7 +16,7 @@ import { loadConfig } from '@atlas/workspace';
 import { createLogger, type Logger } from './log';
 import { lockDataDir } from './lock';
 
-export interface ServiceOptions { dataDir: string; version: string; apiKeys?: Record<string, string>; model?: string; deploySecrets?: Record<string, Record<string, string>> }
+export interface ServiceOptions { dataDir: string; skillsDir?: string; version: string; apiKeys?: Record<string, string>; model?: string; deploySecrets?: Record<string, Record<string, string>> }
 
 export class DaemonService {
   readonly repo: Repo;
@@ -54,7 +54,7 @@ export class DaemonService {
       session: (i, change, by) => this.record(i.missionId, i.taskId, 'desktop.session', by, { sessionId: i.id, change, controller: i.controller, display: i.display, environment: i.environment, size: `${i.width}x${i.height}`, inputs: i.inputs }),
       operatorInput: (i, a, ok, message) => this.record(i.missionId, i.taskId, 'desktop.action', 'operator', { sessionId: i.id, action: a.action, args: a.action === 'type' ? { chars: a.text.length } : a, ok, message, controller: i.controller, by: 'operator' }),
     });
-    this.orch = new Orchestrator({ repo: this.repo, artifacts: this.artifacts, runtimes: { fake: this.fake, pi: this.pi }, worktreeDir: path.join(o.dataDir, 'worktrees'), factsDir: path.join(o.dataDir, 'facts'),
+    this.orch = new Orchestrator({ repo: this.repo, artifacts: this.artifacts, runtimes: { fake: this.fake, pi: this.pi }, worktreeDir: path.join(o.dataDir, 'worktrees'), factsDir: path.join(o.dataDir, 'facts'), skillDirs: { bundled: o.skillsDir, operator: path.join(o.dataDir, 'skills') },
       stages: [applicationStage(), stagingStage(this.deploy)],
       toolFactories: {
         browser_action: (c) => createBrowserTool({ worktree: c.worktree, sandbox: c.sandbox, putScreenshot: (n, png) => c.putArtifact({ kind: 'screenshot', name: n, bytes: png }).id, emit: (p, ids) => c.emit('browser.step', p, ids) }),
@@ -120,6 +120,27 @@ export class DaemonService {
     this.repo.append({ missionId, taskId, attemptId: null, type, actor, payload, artifactIds: [] });
   }
 
+  private skillsView(workspaceId?: string) {
+    const view = (s: Skill) => ({ name: s.name, description: s.description, roles: s.roles, version: s.version, source: s.source, hash: s.hash, files: s.files });
+    const t = this.orch.skills.trusted();
+    const w = workspaceId ? this.repo.workspace(workspaceId) : null;
+    const r = w?.isGit ? this.orch.skills.inRepository(w.root) : { skills: [], errors: [] };
+    return { trusted: t.skills.map(view), repository: r.skills.map(view), errors: [...t.errors, ...r.errors] };
+  }
+
+  private readSkill(p: { name: string; source: 'trusted' | 'repository'; workspaceId?: string; path?: string }) {
+    const rel = p.path ?? 'SKILL.md';
+    if (p.source === 'trusted') {
+      const s = this.orch.skills.trusted().skills.find((x) => x.name === p.name);
+      if (!s || !s.files.includes(rel)) throw new AtlasError('invalid_request', 'Unknown skill file');
+      return { text: readFileSync(path.join(s.dir, rel), 'utf8'), hash: s.hash };
+    }
+    const w = p.workspaceId ? this.repo.workspace(p.workspaceId) : null;
+    const s = w?.isGit ? this.orch.skills.inRepository(w.root).skills.find((x) => x.name === p.name) : undefined;
+    if (!s || !s.files.includes(rel)) throw new AtlasError('invalid_request', 'Unknown skill file');
+    return { text: readFileSync(path.join(s.dir, rel), 'utf8'), hash: s.hash };
+  }
+
   private acceptanceView(workspaceId: string) {
     const s = this.orch.acceptance.get(workspaceId);
     return s ? { ...s, hash: suiteHash(s) } : null;
@@ -156,6 +177,16 @@ export class DaemonService {
       case 'workspace.acceptance.get': return this.acceptanceView(p.workspaceId);
       case 'workspace.acceptance.set': this.orch.acceptance.set(p.workspaceId, p); return this.acceptanceView(p.workspaceId);
       case 'workspace.acceptance.remove': this.orch.acceptance.remove(p.workspaceId); return this.acceptanceView(p.workspaceId);
+      case 'skills.list': return this.skillsView(p.workspaceId);
+      case 'skills.read': return this.readSkill(p);
+      case 'skills.import': {
+        const w = this.repo.workspace(p.workspaceId);
+        if (!w?.isGit) throw new AtlasError('invalid_request', 'Unknown workspace');
+        const s = this.orch.skills.importFromRepository(w.root, p.name, p.hash);
+        this.log.info('skill imported', { name: s.name, hash: s.hash, from: w.root });
+        return this.skillsView(p.workspaceId);
+      }
+      case 'skills.remove': this.orch.skills.removeOperator(p.name); return this.skillsView();
       case 'terminal.open': return this.orch.openTerminal(p.missionId, p.target, { cols: p.cols, rows: p.rows }, { onData: (id, t, seq) => this.terminalSink(id, t, undefined, seq), onExit: (id, c) => this.terminalSink(id, undefined, c) });
       case 'terminal.input': this.orch.terminalInput(p.sessionId, p.data); return null;
       case 'terminal.close': await this.orch.closeTerminal(p.sessionId); return null;

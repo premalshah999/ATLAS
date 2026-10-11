@@ -45,6 +45,8 @@ function daemonEnv(): Record<string, string> {
   // Proxy/CA settings, forwarded by the sandbox only to commands granted network access.
   for (const k of ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE']) if (process.env[k]) env[k] = process.env[k]!;
   env.ATLAS_DATA_DIR = dataDir();
+  // Bundled, reviewed skills (ADR 0013): shipped as an extra resource; the repository's skills/ in development.
+  env.ATLAS_SKILLS_DIR = app.isPackaged ? path.join(process.resourcesPath, 'skills') : path.join(__dirname, '..', '..', '..', 'skills');
   env.ATLAS_VERSION = app.getVersion();
   env.PI_TELEMETRY = '0';
   if (process.env.ATLAS_MODEL) env.ATLAS_MODEL = process.env.ATLAS_MODEL;

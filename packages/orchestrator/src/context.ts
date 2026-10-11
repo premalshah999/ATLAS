@@ -27,6 +27,8 @@ export async function buildContext(input: {
   facts: string | null;
   decisions: string[];
   includeDiff: boolean;
+  /** Index of reviewed skills (names and descriptions) the agent may load. */
+  skills?: string;
 }): Promise<ContextBundle> {
   const sources: ContextSource[] = [];
   const parts: string[] = [];
@@ -40,6 +42,7 @@ export async function buildContext(input: {
   add('task', input.task.key, `Task ${input.task.key}: ${input.task.title}`, input.task.acceptance.map((a) => `- ${a}`).join('\n'));
   add('plan', 'approved-plan', 'Approved plan', input.planSummary);
   if (input.facts) add('facts', 'project-facts', 'Project facts (maintained by the operator)', cap(input.facts, 8000));
+  if (input.skills) add('skills', 'skill-library', 'Skills (reviewed procedures you can load)', input.skills);
   if (input.decisions.length) add('decisions', 'event-log', 'Recent decisions', input.decisions.slice(-12).join('\n'));
   add('repo-map', `${input.base.slice(0, 12)}`, 'Repository files', await repoMap(input.worktree));
   if (input.includeDiff) {

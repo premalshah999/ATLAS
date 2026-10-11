@@ -69,6 +69,10 @@
       {
         "from": "../../licenses",
         "to": "licenses"
+      },
+      {
+        "from": "../../skills",
+        "to": "skills"
       }
     ]
   },
