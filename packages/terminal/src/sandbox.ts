@@ -75,9 +75,14 @@ export function detectSandbox(force = false): SandboxInfo {
     try {
       const helper = win.ensureHelper();
       // Probe: a real contained process must start and exit cleanly.
-      execFileSync(helper, ['run', 'atlas.probe', '--cmdline', `${win.quoteArg(process.env.ComSpec ?? 'C:\\Windows\\System32\\cmd.exe')} /d /c exit 0`], { stdio: 'ignore', windowsHide: true, timeout: 60_000 });
+      // Parallel workers can create the same AppContainer profile at once; one retry, and stderr kept for diagnosis.
+      const probe = () => execFileSync(helper, ['run', 'atlas.probe', '--cmdline', `${win.quoteArg(process.env.ComSpec ?? 'C:\\Windows\\System32\\cmd.exe')} /d /c exit 0`], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, timeout: 60_000 });
+      try { probe(); } catch { probe(); }
       return (cached = { kind: 'appcontainer', detail: 'Windows AppContainer + Job Object', path: helper });
-    } catch (e) { return (cached = { kind: 'none', detail: `Windows AppContainer sandbox unavailable (${(e as Error).message.slice(0, 200)})`, path: null }); }
+    } catch (e) {
+      const stderr = String((e as { stderr?: Buffer }).stderr ?? '').trim();
+      return (cached = { kind: 'none', detail: `Windows AppContainer sandbox unavailable (${(stderr || (e as Error).message).slice(0, 300)})`, path: null });
+    }
   }
   return (cached = { kind: 'none', detail: `No supported sandbox on ${process.platform}`, path: null });
 }

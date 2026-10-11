@@ -175,10 +175,31 @@ function cmdArg(a: string, twice: boolean) {
  * files go through `cmd.exe /d /s /c` with every argument caret-escaped, so an argument can never inject a second
  * command; Node must pass that line verbatim. `line` is the full CreateProcess command line for the sandbox helper.
  */
+/**
+ * The JavaScript program a Node .cmd shim runs: npm's own `npm.cmd` (NPM_CLI_JS=%~dp0\…\npm-cli.js) and
+ * cmd-shim's `"%dp0%\…\cli.js" %*`. Running it as `node <script>` keeps cmd.exe out of the sandbox: cmd resolves
+ * paths with FindFirstFile on every ancestor directory, which an AppContainer may not list (C:\, the tool
+ * cache), so shims failed with "Access is denied." even though node could read the same files (CI bisection).
+ */
+export function shimTarget(shimText: string, shimPath: string): string | null {
+  const found = [...shimText.matchAll(/%~?dp0%?\\*([^"%\r\n]+?\.[cm]?js)\b/gi)].map((m) => m[1]);
+  if (!found.length) return null;
+  const pick = found.find((f) => /(^|[\\/])[\w-]*cli\.[cm]?js$/i.test(f) && !/prefix/i.test(f)) ?? found[found.length - 1];
+  return path.win32.normalize(path.win32.join(path.win32.dirname(shimPath), pick));
+}
+
 export function windowsCommand(command: string, args: string[], env: Record<string, string | undefined>): { file: string; args: string[]; verbatim: boolean; line: string } {
   const resolved = resolveWindowsCommand(command, env);
   if (!resolved) throw Object.assign(new Error(`Command not found: ${command}`), { code: 'ENOENT' });
   if (/\.(cmd|bat)$/i.test(resolved)) {
+    let target: string | null = null;
+    try { target = shimTarget(readFileSync(resolved, 'utf8').slice(0, 8192), resolved); } catch { /* unreadable: use cmd.exe */ }
+    const localNode = path.join(path.dirname(resolved), 'node.exe');
+    const node = existsSync(localNode) ? localNode : resolveWindowsCommand('node', env);
+    if (target && node && existsSync(target)) {
+      const a = [target, ...args];
+      return { file: node, args: a, verbatim: false, line: [quoteArg(node), ...a.map(quoteArg)].join(' ') };
+    }
     const comspec = env.ComSpec ?? env.COMSPEC ?? process.env.ComSpec ?? 'C:\\Windows\\System32\\cmd.exe';
     const inner = `"${[resolved.replace(META, '^$1'), ...args.map((a) => cmdArg(a, true))].join(' ')}"`;
     return { file: comspec, args: ['/d', '/s', '/c', inner], verbatim: true, line: `${quoteArg(comspec)} /d /s /c ${inner}` };
