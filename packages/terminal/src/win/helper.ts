@@ -11,6 +11,8 @@
 //     interactive, logon, restricted), and with --low the low integrity level. Unlike an AppContainer it lets Node
 //     create the named pipes it needs for child stdio. Not used by ATLAS until it passes the sandbox test suite.
 //   atlas-sandbox.exe logonsid               print the logon SID of the current session
+//   atlas-sandbox.exe grant PATH SID rw|rx|ra [--inherit]   add an allow ACE for any SID (icacls only takes SIDs it
+//                                             can name; per-root sandbox SIDs are not accounts)
 //   atlas-sandbox.exe pipetest               diagnostic (ADR 0016): the Win32 steps libuv takes for a piped child,
 //                                             each with its error code; meant to run under --restricted
 //
@@ -85,6 +87,8 @@ static class AtlasSandbox {
   [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
   [DllImport("advapi32.dll", SetLastError = true)] static extern uint GetSecurityInfo(IntPtr h, int type, uint info, IntPtr owner, IntPtr group, out IntPtr dacl, IntPtr sacl, out IntPtr sd);
   [DllImport("advapi32.dll", SetLastError = true)] static extern uint SetSecurityInfo(IntPtr h, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint GetNamedSecurityInfo(string name, int type, uint info, IntPtr owner, IntPtr group, out IntPtr dacl, IntPtr sacl, out IntPtr sd);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern uint SetNamedSecurityInfo(string name, int type, uint info, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
   [DllImport("advapi32.dll", SetLastError = true)] static extern uint SetEntriesInAcl(int count, EXPLICIT_ACCESS[] entries, IntPtr oldAcl, out IntPtr newAcl);
   [StructLayout(LayoutKind.Sequential)] struct TRUSTEE { public IntPtr pMultipleTrustee; public int MultipleTrusteeOperation; public int TrusteeForm; public int TrusteeType; public IntPtr ptstrName; }
   [StructLayout(LayoutKind.Sequential)] struct EXPLICIT_ACCESS { public uint grfAccessPermissions; public int grfAccessMode; public uint grfInheritance; public TRUSTEE Trustee; }
@@ -204,6 +208,22 @@ static class AtlasSandbox {
     }
   }
 
+  /** Allow ACE for a SID on a file or directory; with inherit, existing children get it too (SE_FILE_OBJECT). */
+  static int Grant(string path, string sid, string mode, bool inherit) {
+    uint mask = mode == "rw" ? 0x1301BFu : mode == "rx" ? 0x1200A9u : mode == "ra" ? 0x100080u : 0; // MODIFY, READ_EXECUTE, READ_ATTRIBUTES|SYNCHRONIZE
+    if (mask == 0) Fail("grant mode must be rw, rx or ra");
+    IntPtr dacl, sd;
+    uint e = GetNamedSecurityInfo(path, 1, 4, IntPtr.Zero, IntPtr.Zero, out dacl, IntPtr.Zero, out sd);
+    if (e != 0) Fail("read ACL of " + path + ": " + e);
+    var entry = new EXPLICIT_ACCESS { grfAccessPermissions = mask, grfAccessMode = 1, grfInheritance = inherit ? 3u : 0u, Trustee = new TRUSTEE { TrusteeForm = 0, TrusteeType = 0, ptstrName = Sid(sid) } };
+    IntPtr acl;
+    e = SetEntriesInAcl(1, new[] { entry }, dacl, out acl);
+    if (e != 0) Fail("build ACL: " + e);
+    e = SetNamedSecurityInfo(path, 1, 4, IntPtr.Zero, IntPtr.Zero, acl, IntPtr.Zero);
+    if (e != 0) Fail("write ACL of " + path + ": " + e);
+    return 0;
+  }
+
   /** Replays libuv's piped-child steps and prints each Win32 result (ADR 0016 diagnostic). */
   static int PipeTest() {
     string name = @"\\.\pipe\atlas-pt-" + System.Diagnostics.Process.GetCurrentProcess().Id;
@@ -228,6 +248,7 @@ static class AtlasSandbox {
 
   static int Main(string[] argv) {
     if (argv.Length >= 1 && argv[0] == "pipetest") return PipeTest();
+    if (argv.Length >= 4 && argv[0] == "grant") return Grant(argv[1], argv[2], argv[3], argv.Length > 4 && argv[4] == "--inherit");
     if (argv.Length >= 1 && argv[0] == "logonsid") { string l = LogonSid(OwnToken()); if (l == null) Fail("no logon SID"); Console.WriteLine(l); return 0; }
     if (argv.Length >= 2 && argv[0] == "sid") {
       string s; ConvertSidToStringSid(ContainerSid(argv[1]), out s); Console.WriteLine(s); return 0;
