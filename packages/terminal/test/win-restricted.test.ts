@@ -46,10 +46,19 @@ describe.skipIf(process.platform !== 'win32')('ADR 0016: restricted-token varian
     writeFileSync(homeCanary, 'HOME-CANARY');
     writeFileSync(path.join(root, 'probe.cjs'), PROBE);
     const logon = execFileSync(helper, ['logonsid'], { encoding: 'utf8' }).trim();
-    const custom = win.capabilitySid(`atlasRoot.${process.pid}`);
+    // Round 1 (CI run 38156630914): every variant with the capability SID S-1-15-3-… in its restricting list failed
+    // in CreateRestrictedToken with error 87. Round 2 uses a plain per-root SID in the resource-manager authority
+    // (S-1-9-…) and keeps one capability-SID variant to confirm the cause.
+    const custom = `S-1-9-1-${[1, 2, 3, 4].map((i) => (process.pid * 7919 + i * 104729) % 4294967295).join('-')}`;
+    const capSid = win.capabilitySid(`atlasRoot.${process.pid}`);
     // The root: writable for the logon SID (normal check) and this sandbox's own SID (restricting check), low label.
-    execFileSync('icacls', [root, '/grant', `*${logon}:(OI)(CI)M`, '/grant', `*${custom}:(OI)(CI)M`, '/C', '/Q'], { stdio: 'pipe' });
+    execFileSync('icacls', [root, '/grant', `*${logon}:(OI)(CI)M`, '/grant', `*${custom}:(OI)(CI)M`, '/grant', `*${capSid}:(OI)(CI)M`, '/C', '/Q'], { stdio: 'pipe' });
     execFileSync('icacls', [root, '/setintegritylevel', '(OI)(CI)low', '/C', '/Q'], { stdio: 'pipe' });
+    // Round 1, variant E: Node started under the restricted token, then failed realpath (lstat EPERM) on an ancestor
+    // in the user profile. Read-attributes only (no listing, not inherited) on each ancestor lets it resolve paths.
+    for (const sid of [logon, custom]) {
+      for (let d = path.dirname(root); path.dirname(d) !== d; d = path.dirname(d)) execFileSync('icacls', [d, '/grant', `*${sid}:(RA)`, '/C', '/Q'], { stdio: 'pipe' });
+    }
     const pub = path.join(process.env.PUBLIC ?? 'C:\\Users\\Public', `atlas-r-${process.pid}.txt`);
     const variants: [string, string, boolean][] = [
       ['A everyone+users+authusers+logon+own, low', `everyone,users,authusers,logon,${custom}`, true],
@@ -57,6 +66,8 @@ describe.skipIf(process.platform !== 'win32')('ADR 0016: restricted-token varian
       ['C users+logon+own, low', `users,logon,${custom}`, true],
       ['D logon+restricted+own, low', `logon,restricted,${custom}`, true],
       ['E no restricting SIDs, low', '', true],
+      ['F everyone+users+logon (no own SID), low', 'everyone,users,logon', true],
+      ['G capability SID only, low (round-1 cause?)', capSid, true],
     ];
     const report: string[] = [`logon SID ${logon}; own SID ${custom}`];
     try {
