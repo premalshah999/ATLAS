@@ -295,6 +295,10 @@ export function TerminalPanel({ snap }: { snap: MissionSnapshot }) {
   /** Detach from the view only: the shell keeps running in the daemon (P1-5). */
   const detach = useRef<(() => void) | null>(null);
   const resize = useRef<(() => void) | null>(null);
+  /** Bumped by every attach/open and by unmount: a slower, older attempt disposes itself instead of leaking. */
+  const gen = useRef(0);
+  /** Until the session list is known, offering "Open terminal" would start a second shell beside a running one. */
+  const [listed, setListed] = useState(false);
   const targets = [...(snap.mission.integrationCommit ? [{ id: 'integration', label: 'Integration branch' }] : []), ...snap.tasks.filter((t) => t.worktree).map((t) => ({ id: t.id, label: `${t.key} · ${t.title}` }))];
 
   const mountXterm = async () => {
@@ -309,14 +313,16 @@ export function TerminalPanel({ snap }: { snap: MissionSnapshot }) {
     return { t, fit };
   };
 
-  const attach = async (sessionId: string, x?: Awaited<ReturnType<typeof mountXterm>>) => {
-    if (!host.current || !bridge) return;
+  const attach = async (sessionId: string, x?: Awaited<ReturnType<typeof mountXterm>>, my = ++gen.current) => {
+    if (!host.current || !bridge) { x?.t.dispose(); return; }
     const { t, fit } = x ?? await mountXterm();
+    if (my !== gen.current) { t.dispose(); return; }
     const gate = attachGate((d) => t.write(d), (code) => setEnded(code));
     // Subscribe before the snapshot, so nothing emitted in between is lost.
     const off = bridge.onTerminal((m) => { if (m.sessionId === sessionId) gate.push(m); });
     try {
       const a = await call('terminal.attach', { sessionId });
+      if (my !== gen.current) { off(); t.dispose(); return; }
       gate.snapshot(a.snapshot, a.seq);
       setSession({ sessionId, writable: a.writable, worktree: a.worktree });
       setTarget(a.target);
@@ -336,25 +342,31 @@ export function TerminalPanel({ snap }: { snap: MissionSnapshot }) {
 
   const open = async () => {
     if (!host.current || !target) return;
+    const my = ++gen.current;
     const x = await mountXterm();
+    if (my !== gen.current) { x.t.dispose(); return; }
     try {
       const s = await call('terminal.open', { missionId: snap.mission.id, target, cols: Math.max(20, x.t.cols), rows: Math.max(5, x.t.rows) });
-      await attach(s.sessionId, x);
+      await attach(s.sessionId, x, my);
     } catch (e) { x.t.dispose(); fail('Terminal not opened')(e); }
   };
 
   // Mounting again (another tab, a reload): re-attach to the mission's open session instead of starting a new one.
   useEffect(() => {
     let cancelled = false;
-    void call('terminal.list', { missionId: snap.mission.id }).then((list) => { const s = list.at(-1); if (s && !cancelled) void attach(s.sessionId); }).catch(() => {});
-    return () => { cancelled = true; detach.current?.(); };
+    setListed(false);
+    void call('terminal.list', { missionId: snap.mission.id })
+      .then((list) => { if (cancelled) return; setListed(true); const s = list.at(-1); if (s) void attach(s.sessionId); })
+      .catch(() => { if (!cancelled) setListed(true); });
+    return () => { cancelled = true; gen.current++; detach.current?.(); };
   }, [snap.mission.id]);
+  const hasTargets = targets.length > 0;
   useEffect(() => {
     if (!host.current) return;
     const ro = new ResizeObserver(() => resize.current?.());
     ro.observe(host.current);
     return () => ro.disconnect();
-  }, []);
+  }, [hasTargets]);
 
   if (!targets.length) return <EmptyState center icon={ITerminal} title="No worktree to open" body="A terminal opens inside a task worktree or the integration branch, in the same sandbox as agent commands." />;
   return (
@@ -363,7 +375,7 @@ export function TerminalPanel({ snap }: { snap: MissionSnapshot }) {
         <select className="lv-native-select" value={target} onChange={(e) => setTarget(e.target.value)} disabled={!!session && ended === undefined}>
           {targets.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
         </select>
-        {(!session || ended !== undefined) && <Button size="sm" variant="primary" icon={ITerminal} onClick={() => void open()} data-testid="open-terminal">Open terminal</Button>}
+        {listed && (!session || ended !== undefined) && <Button size="sm" variant="primary" icon={ITerminal} onClick={() => void open()} data-testid="open-terminal">Open terminal</Button>}
         {session && ended === undefined && <Button size="sm" variant="ghost" onClick={() => void call('terminal.close', { sessionId: session.sessionId }).then(() => setEnded(null))} data-testid="close-terminal">Close</Button>}
         {session && <span className="at-subtle lv-small at-trunc">{session.writable ? 'writable' : 'read-only: an agent holds this worktree'} · sandboxed · <span className="at-mono">{session.worktree}</span>{ended !== undefined ? ` · exited${ended === null ? '' : ` ${ended}`}` : ''}</span>}
         <Tip label="Your keystrokes go to a PTY inside the OS sandbox. The shell keeps running when you switch views; Close ends it. Opening and closing it is recorded in the mission log."><span><Badge tone="human">operator</Badge></span></Tip>

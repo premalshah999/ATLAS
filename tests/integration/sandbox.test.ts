@@ -75,14 +75,18 @@ describe('without a sandbox', () => {
       const h = makeOrchestrator();
       h.repo.setSetting('execution.allowUnsandboxed', true);
       const id = await startMission(h, root);
-      const stops = ['run_tests', 'shell_exec'].map((t) => autoDecide(h, id, t, 'deny'));
+      const stops = ['run_tests', 'shell_exec', 'unsandboxed_run'].map((t) => autoDecide(h, id, t, 'deny'));
       await h.orch.settle(id);
       stops.forEach((s) => s());
       const denied = h.repo.approvals(id).filter((a) => /No OS sandbox/.test(a.reason));
       expect(denied.length).toBeGreaterThan(0);
       expect(denied.every((a) => a.status === 'denied')).toBe(true);
-      // No agent process started: the only commands that ran are the gate's own checks (operator opt-in).
-      expect(h.events.filter((e) => e.type === 'process.started' && e.attemptId)).toEqual([]);
+      // The release gate asked too (review finding: checks ran the change's code with no consent), and was denied.
+      expect(denied.some((a) => a.tool === 'unsandboxed_run')).toBe(true);
+      // Nothing ran: no agent command and no check.
+      expect(h.events.filter((e) => e.type === 'process.started')).toEqual([]);
+      expect(h.repo.checks(id).find((c) => c.name === 'tests')).toMatchObject({ result: 'inconclusive', reason: expect.stringMatching(/did not approve/) });
+      expect(h.repo.mission(id)!.verdict).not.toBe('verified');
     } finally { delete process.env.ATLAS_SANDBOX; detectSandbox(true); }
   });
 
@@ -95,7 +99,7 @@ describe('without a sandbox', () => {
       h.repo.setSetting('execution.allowUnsandboxed', true);
       const id = await startMission(h, root);
       // P1-2: without a sandbox, agent commands that run project code wait for the operator, even "safe" ones.
-      const stops = ['run_tests', 'shell_exec'].map((t) => autoDecide(h, id, t));
+      const stops = ['run_tests', 'shell_exec', 'unsandboxed_run'].map((t) => autoDecide(h, id, t));
       await h.orch.settle(id);
       stops.forEach((s) => s());
       expect(h.repo.mission(id)!.outcome).toMatch(/^Verified/);

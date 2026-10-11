@@ -300,6 +300,38 @@ describe('stall watchdog (evolution P1-6)', () => {
   });
 });
 
+describe('daemon-side terminals (P1-5 review)', () => {
+  it.skipIf(process.platform === 'win32')('re-verify ends a shell on the old integration worktree and records it; nothing is left attached', async () => {
+    const h = makeOrchestrator({ scripts: [forTask('implement', [{ tool: 'write_file', args: { path: 'src/slugify.js', content: "export function slugify() { return 'x'; }\n" } }, { claim: 'done' }])] });
+    const id = await startMission(h, sampleRepo());
+    await h.orch.settle(id);
+    expect(h.repo.mission(id)!.state).toBe('failed');
+    const t = await h.orch.openTerminal(id, 'integration', { cols: 80, rows: 24 }, { onData: () => {}, onExit: () => {} });
+    expect(h.orch.listTerminals(id).map((x) => x.sessionId)).toEqual([t.sessionId]);
+    await h.orch.reverify(id);
+    await h.orch.settle(id);
+    expect(h.orch.listTerminals(id)).toEqual([]);
+    expect(h.events.filter((e) => e.type === 'operator.terminal').map((e) => e.payload.action)).toEqual(['opened', 'closed']);
+    // A new shell on the new integration worktree is writable: the old session's lease was released.
+    const again = await h.orch.openTerminal(id, 'integration', { cols: 80, rows: 24 }, { onData: () => {}, onExit: () => {} });
+    expect(again.writable).toBe(true);
+    await h.orch.closeTerminal(again.sessionId);
+  });
+});
+
+describe('stall watchdog exemptions (P1-6 review)', () => {
+  it('a long silent command is not a stall: it has its own timeout', async () => {
+    const steps = [{ tool: 'shell_exec', args: { command: 'node', args: ['-e', 'setTimeout(()=>{},1200)'] } }, { tool: 'write_file', args: { path: 'NOTE.md', content: 'x' } }, { claim: 'done' }];
+    const h = makeOrchestrator({ scripts: [forTask('implement', steps as any)], stallAfterMs: 250 });
+    const id = await startMission(h, sampleRepo());
+    const stop = autoDecide(h, id, 'shell_exec');
+    await h.orch.settle(id);
+    stop();
+    expect(h.events.some((e) => e.type === 'process.exited')).toBe(true);
+    expect(h.events.filter((e) => e.type === 'attempt.stalled')).toEqual([]);
+  });
+});
+
 describe('verification cannot be redefined by the agent (evolution P0-3, incl. independent-review bypasses)', () => {
   const BROKEN = "export function slugify() { return 'nope'; }\n";
   const pkgWith = (root: string, edit: (p: any) => void) => { const p = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')); edit(p); return JSON.stringify(p, null, 2); };

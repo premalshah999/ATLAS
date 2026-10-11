@@ -61,7 +61,8 @@ const GIT_EXEC_ARG = /^(--output(=|$)|-O|--open-files-in-pager(=|$)|--ext-diff$|
 const GIT_BRANCH_WRITE = new Set(['-d', '-D', '--delete', '-m', '-M', '--move', '-c', '-C', '--copy', '-f', '--force', '-u', '--set-upstream-to', '--unset-upstream', '--edit-description', '--track', '-t', '--no-track', '--create-reflog']);
 const PKG_OVERRIDE = /^--(script-shell|userconfig|globalconfig|prefix|node-options|shell|config)(=|$)/;
 const SAFE_PKG = new Set(['test', 't', 'run', 'exec', 'ls', 'list', 'why', 'outdated']);
-const PKG_READONLY = new Set(['ls', 'list', 'why', 'outdated']);
+/** Absolute paths of system program directories, which are not writable by agents. */
+const SYSTEM_DIR = /^(\/usr\/(local\/)?s?bin\/|\/s?bin\/|[A-Za-z]:\\Windows\\System32\\)[^\\/]+$/i;
 /** Safe-listed programs that execute project files (node runs them, tsc loads the project's compiler and config). */
 const PROJECT_CODE_EXEC = new Set(['node', 'tsc']);
 
@@ -71,6 +72,9 @@ export function classifyCommand(command: string, args: readonly string[]): Shell
   const exe = command.split(/[\\/]/).pop()!.toLowerCase().replace(/\.(exe|cmd|bat|com)$/, '');
   if (!exe || /[;&|`$<>]/.test(command)) return { capability: null, risk: 'high', reason: 'Executable name contains shell metacharacters' };
   if (DENY_EXEC.has(exe)) return { capability: null, risk: 'high', reason: `${exe} is never permitted for agents` };
+  // `./ls`, `script/test`, `tools\\ls.cmd`: a path runs whatever file is there (an agent can write it), so the
+  // safe list, which names system programs, never applies to it (P1-2 review finding).
+  if (/[\\/]/.test(command) && !SYSTEM_DIR.test(command)) return { capability: 'shell.privileged', risk: 'elevated', reason: `${command} is a file path, not a system program`, runsProjectCode: true };
   if (SHELLS.has(exe)) return { capability: 'shell.privileged', risk: 'high', reason: 'Spawning a shell runs arbitrary code' };
   if (NETWORK.has(exe)) return { capability: 'shell.privileged', risk: 'elevated', reason: 'Command reaches the network', network: true };
   if (exe === 'rm' || exe === 'mv' || exe === 'chmod' || exe === 'chown' || exe === 'ln') {
@@ -96,7 +100,9 @@ export function classifyCommand(command: string, args: readonly string[]): Shell
     const override = args.find((a) => PKG_OVERRIDE.test(a));
     if (override) return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} ${override.split('=')[0]} changes which programs run` };
     if (exe !== 'npx' && sub === 'exec') return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} exec runs an arbitrary program` };
-    if (exe !== 'npx' && SAFE_PKG.has(sub)) return { capability: 'shell.safe', risk: 'low', reason: `${exe} ${sub} runs a project script`, runsProjectCode: !PKG_READONLY.has(sub) };
+    // Every package-manager command loads project configuration that can run code (yarnPath/plugins in .yarnrc*,
+    // .pnpmfile.cjs, bunfig preload), even `ls` or `why`: all of them count as project code.
+    if (exe !== 'npx' && SAFE_PKG.has(sub)) return { capability: 'shell.safe', risk: 'low', reason: ['ls', 'list', 'why', 'outdated'].includes(sub) ? `${exe} ${sub} reads the dependency tree (loads project configuration)` : `${exe} ${sub} runs a project script`, runsProjectCode: true };
     if (exe === 'npx' && ['vitest', 'jest', 'tsc', 'eslint', 'prettier', 'mocha'].includes(sub)) return { capability: 'shell.safe', risk: 'low', reason: `npx ${sub} runs a local dev tool`, runsProjectCode: true };
     return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} ${sub || ''} may install packages or run install scripts`.replace(/\s+/g, ' '), network: true };
   }

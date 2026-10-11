@@ -84,7 +84,7 @@ export class Orchestrator {
   private readonly approvalTtlMs: number;
   private stopping = false;
   /** Running attempts and when each last produced an event (watchdog, P1-6). */
-  private readonly signals = new Map<string, { missionId: string; taskId: string; last: number; flagged: boolean }>();
+  private readonly signals = new Map<string, { missionId: string; taskId: string; last: number; flagged: boolean; live: number }>();
   private watchdog: NodeJS.Timeout | null = null;
   private readonly stallAfterMs: number;
 
@@ -96,12 +96,16 @@ export class Orchestrator {
     this.stallAfterMs = o.stallAfterMs ?? 120_000;
     this.repo.onEvent((e) => {
       const s = e.attemptId ? this.signals.get(e.attemptId) : undefined;
-      if (s && e.type !== 'attempt.stalled') { s.last = Date.now(); s.flagged = false; }
+      if (s && e.type !== 'attempt.stalled') {
+        s.last = Date.now(); s.flagged = false;
+        if (e.type === 'process.started') s.live++;
+        else if (e.type === 'process.exited') s.live = Math.max(0, s.live - 1);
+      }
     });
   }
 
   private watchSignal(missionId: string, taskId: string, attemptId: string) {
-    this.signals.set(attemptId, { missionId, taskId, last: Date.now(), flagged: false });
+    this.signals.set(attemptId, { missionId, taskId, last: Date.now(), flagged: false, live: 0 });
     this.watchdog ??= setInterval(() => this.checkSignals(), Math.max(50, Math.min(5000, this.stallAfterMs / 4)));
     this.watchdog.unref?.();
   }
@@ -114,8 +118,11 @@ export class Orchestrator {
   private checkSignals(now = Date.now()) {
     for (const [attemptId, s] of this.signals) {
       if (s.flagged || now - s.last < this.stallAfterMs) continue;
-      // Waiting for the operator is not a stall.
+      // Not stalls (review finding): waiting for the operator, a command that is still running (it has its own
+      // timeout), or a delegated subtask that is working (its events carry its own attempt id).
+      if (s.live > 0) continue;
       if (this.repo.approvals(s.missionId).some((a) => a.status === 'pending' && a.taskId === s.taskId)) continue;
+      if (this.repo.tasks(s.missionId).some((t) => t.parentTaskId === s.taskId && !['done', 'failed', 'cancelled'].includes(t.state))) continue;
       s.flagged = true;
       this.emit({ missionId: s.missionId, taskId: s.taskId, attemptId, type: 'attempt.stalled', actor: SYSTEM('watchdog'), payload: { silentForMs: now - s.last, thresholdMs: this.stallAfterMs } });
     }
@@ -519,14 +526,18 @@ export class Orchestrator {
    * Pre-create guards (evolution P1-4): retries and delegation must not fill the disk or pile up worktrees.
    * Below the free-space floor, or at the per-mission cap, no worktree is created and the task fails with a reason.
    */
-  private assertWorktreeCapacity(missionId: string) {
+  private assertWorktreeCapacity(missionId: string, kind: 'task' | 'integration' = 'task') {
     const parent = path.join(this.o.worktreeDir, missionId);
     mkdirSync(parent, { recursive: true });
     const cap = this.repo.setting('worktrees.maxPerMission', 40);
-    const count = readdirSync(parent, { withFileTypes: true }).filter((d) => d.isDirectory()).length;
-    if (count >= cap) throw new AtlasError('resource_limit', `This mission already has ${count} worktrees (limit ${cap}). Decide or delete finished work first.`);
+    const count = readdirSync(parent, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name !== 'integration').length;
+    // The cap limits task attempts; integration is always allowed, or a mission at the cap could never be decided.
+    if (kind === 'task' && count >= cap) throw new AtlasError('resource_limit', `This mission already has ${count} worktrees (limit ${cap}). Decide or delete finished work first.`);
     const floor = this.repo.setting('worktrees.minFreeMiB', 1024) * 1024 * 1024;
-    const free = (this.o.diskFree ?? ((d: string) => { const s = statfsSync(d); return Number(s.bavail) * Number(s.bsize); }))(parent);
+    let free: number;
+    try { free = (this.o.diskFree ?? ((d: string) => { const s = statfsSync(d); return Number(s.bavail) * Number(s.bsize); }))(parent); }
+    catch { return; } // free space unknown: do not block work on a failed measurement
+
     if (free < floor) throw new AtlasError('resource_limit', `Only ${Math.floor(free / 1024 / 1024)} MiB free where worktrees live (${parent}); ATLAS keeps at least ${Math.round(floor / 1024 / 1024)} MiB free.`);
   }
 
@@ -751,11 +762,13 @@ export class Orchestrator {
     const dir = path.join(this.o.worktreeDir, m.id, 'integration');
     const branch = `atlas/${m.id}/integration`;
     if (existsSync(dir)) {
+      // An operator shell on the old integration worktree would keep working in a deleted directory: end it first.
+      for (const [id, t] of [...this.terminals]) if (t.dir === dir) await this.closeTerminal(id).catch(() => {});
       const r = await retireWorktree(w.root, dir, branch, `refs/atlas/preserved/${m.id}/integration-${Date.now()}`);
       this.recordPreserved(m.id, r);
       if (r.retained) return { ok: false, message: `The previous integration worktree could not be preserved, so it was not replaced. ${r.retained}` };
     }
-    try { this.assertWorktreeCapacity(m.id); } catch (e) { return { ok: false, message: (e as Error).message }; }
+    try { this.assertWorktreeCapacity(m.id, 'integration'); } catch (e) { return { ok: false, message: (e as Error).message }; }
     const r = await worktreeFromBases(w.root, dir, branch, [m.baseCommit!]);
     if (!r.ok) return { ok: false, message: r.message };
     for (const t of writers) {
@@ -775,19 +788,35 @@ export class Orchestrator {
 
   private stageContext(m: Mission, dir: string, commit: string, iso: Isolation, signal: AbortSignal, checks: CheckRecord[], who: { role: Task['role']; taskId: string | null } = { role: 'deployment_verifier', taskId: null }): StageContext {
     const spec = (network = false) => this.sandboxSpec(iso, dir, network);
-    return {
+    // Without a sandbox, release checks, app starts and stage commands run the agent's code as the user. The
+    // settings opt-in is not consent for a particular change: ask once per context, before the first process
+    // (P1-2 review finding). A denial means nothing runs and the checks are inconclusive.
+    let consent: Promise<boolean> | null = null;
+    const consented = () => {
+      if (iso.mode !== 'unsandboxed') return Promise.resolve(true);
+      consent ??= ctx.requestApproval({
+        tool: 'unsandboxed_run', capability: 'shell.privileged', action: `Run project code from ${commit.slice(0, 12)} without a sandbox`,
+        environment: `Your user account · ${dir}`, resources: [dir],
+        reason: 'No OS sandbox: checks and app starts run this change\'s code (tests, scripts, servers) as your user', risk: 'high',
+      }).then((a) => a.status === 'approved').catch(() => false);
+      return consent;
+    };
+    const declined = 'Not run: the operator did not approve running this change without a sandbox';
+    const ctx: StageContext = {
       mission: m, worktree: dir, commit, signal,
       sandbox: {
         available: iso.mode !== 'unavailable',
         detail: iso.mode === 'unavailable' ? iso.detail : iso.mode,
         run: async (o) => {
           const s = spec(!!o.network);
+          if (s !== null && !(await consented())) return { exitCode: null, output: '', durationMs: 0, timedOut: false, cancelled: false, spawnError: declined, pid: null };
           if (s === null) return { exitCode: null, output: '', durationMs: 0, timedOut: false, cancelled: false, spawnError: `No OS sandbox: ${detectSandbox().detail}`, pid: null };
           const r = await run({ command: o.command, args: o.args, cwd: o.cwd ?? dir, timeoutMs: o.timeoutMs, signal: o.signal ?? signal, env: sanitizedEnv(), sandbox: s, onOutput: o.onOutput ? (_s, t) => o.onOutput!(t) : undefined });
           return { exitCode: r.exitCode, output: r.output, durationMs: r.durationMs, timedOut: r.timedOut, cancelled: r.cancelled, spawnError: r.spawnError, pid: r.pid };
         },
         start: async (o) => {
           const s = spec(o.network);
+          if (s !== null && !(await consented())) return { pid: null, spawnError: declined, stop: async () => {}, output: () => '', exited: () => ({ code: null }) };
           if (s === null) return { pid: null, spawnError: `No OS sandbox: ${detectSandbox().detail}`, stop: async () => {}, output: () => '', exited: () => ({ code: null }) };
           return startProcess({ command: o.command, args: o.args, cwd: o.cwd ?? dir, env: sanitizedEnv(o.env ?? {}), sandbox: s, onOutput: o.onOutput });
         },
@@ -817,6 +846,7 @@ export class Orchestrator {
       repoDeployment: (id) => this.repo.deployment(id),
       markDeployment: (id, verified) => this.repo.updateDeployment(id, { verified }),
     };
+    return ctx;
   }
 
   /** Integrate, then run every release stage on the integrated commit, then apply the gate. */
@@ -1030,16 +1060,22 @@ export class Orchestrator {
       session.io.onData(sessionId, data, session.seq);
     };
     session.flush = flush;
-    session.pty = openPty({
-      cwd: dir, cols: size.cols, rows: size.rows, sandbox: spec ? { ...spec, writable, limits: undefined } : undefined,
-      onData: (t) => {
-        session.seq += t.length;
-        session.pending += t;
-        if (session.pending.length >= 16_384) flush();
-        else session.timer ??= setTimeout(flush, 8);
-      },
-      onExit: (code) => { flush(); void this.closeTerminal(sessionId, code); session.io.onExit(sessionId, code); },
-    });
+    try {
+      session.pty = openPty({
+        cwd: dir, cols: size.cols, rows: size.rows, sandbox: spec ? { ...spec, writable, limits: undefined } : undefined,
+        onData: (t) => {
+          session.seq += t.length;
+          session.pending += t;
+          if (session.pending.length >= 16_384) flush();
+          else session.timer ??= setTimeout(flush, 8);
+        },
+        onExit: (code) => { flush(); void this.closeTerminal(sessionId, code); session.io.onExit(sessionId, code); },
+      });
+    } catch (e) {
+      // A failed start must not keep the worktree locked for later sessions (review finding).
+      if (writable) this.leases.release(dir, `operator:${sessionId}`);
+      throw e;
+    }
     this.terminals.set(sessionId, session);
     this.emit({ missionId, type: 'operator.terminal', actor: OPERATOR, payload: { action: 'opened', sessionId, worktree: dir, writable, sandboxed: !!spec } });
     return { sessionId, writable, worktree: dir, target };

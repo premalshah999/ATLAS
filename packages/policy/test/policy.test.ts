@@ -61,7 +61,9 @@ describe('desktop and deploy capabilities', () => {
 describe('Windows command names', () => {
   it('classifies shims and executables by their base name', () => {
     expect(classifyCommand('npm.cmd', ['test'])).toMatchObject({ capability: 'shell.safe' });
-    expect(classifyCommand('C:\\Program Files\\nodejs\\node.exe', ['x.js'])).toMatchObject({ capability: 'shell.safe' });
+    expect(classifyCommand('node.exe', ['x.js'])).toMatchObject({ capability: 'shell.safe' });
+    // A path runs whatever file is there; only bare names (resolved on PATH) are classified by name.
+    expect(classifyCommand('C:\\Program Files\\nodejs\\node.exe', ['x.js'])).toMatchObject({ capability: 'shell.privileged' });
     expect(classifyCommand('cmd.exe', ['/c', 'dir'])).toMatchObject({ capability: 'shell.privileged', risk: 'high' });
     expect(classifyCommand('powershell.exe', ['-c', 'ls'])).toMatchObject({ capability: 'shell.privileged' });
   });
@@ -97,12 +99,27 @@ describe('without an OS sandbox (evolution P1-2)', () => {
     expect(d.decision).toBe('ask');
     expect(d.reason).toMatch(/No OS sandbox/);
   });
-  it.each([['cat', ['a']], ['git', ['status']], ['npm', ['ls']], ['rg', ['x']], ['ls', []]] as const)('%s %s reads only: still allowed unsandboxed', (cmd, args) => {
+  it.each([['cat', ['a']], ['git', ['status']], ['rg', ['x']], ['ls', []]] as const)('%s %s reads only: still allowed unsandboxed', (cmd, args) => {
     expect(ev(cmd, [...args], false).decision).toBe('allow');
   });
   it('run_tests asks unsandboxed, for a tester too (the role still holds the capability)', () => {
     const d = evaluate({ role: 'tester', tool: 'run_tests', args: {}, mode: 'ask_risky', sandboxed: false });
     expect(d).toMatchObject({ decision: 'ask', capability: 'shell.safe' });
     expect(evaluate({ role: 'tester', tool: 'run_tests', args: {}, mode: 'ask_risky', sandboxed: true }).decision).toBe('allow');
+  });
+});
+
+describe('path-qualified programs and package-manager config (P1-2 review)', () => {
+  it.each(['./ls', 'script/test', 'tools\\ls.cmd', 'node_modules/.bin/vitest', '../x/cat'])('%s is never safe-listed, and asks unsandboxed', (cmd) => {
+    expect(classifyCommand(cmd, [])).toMatchObject({ capability: 'shell.privileged', runsProjectCode: true });
+    expect(evaluate({ role: 'coder', tool: 'shell_exec', args: { command: cmd, args: [] }, mode: 'ask_risky', sandboxed: true }).decision).toBe('ask');
+    expect(evaluate({ role: 'reviewer', tool: 'shell_exec', args: { command: cmd, args: [] }, mode: 'ask_risky', sandboxed: true }).decision).toBe('deny');
+  });
+  it('system programs by absolute path are still classified by name', () => {
+    expect(classifyCommand('/usr/bin/git', ['status'])).toMatchObject({ capability: 'shell.safe' });
+  });
+  it.each([['yarn', ['why', 'x']], ['pnpm', ['ls']], ['npm', ['outdated']], ['bun', ['pm', 'ls']]] as const)('%s %s loads project config: asks unsandboxed', (cmd, args) => {
+    const d = evaluate({ role: 'coder', tool: 'shell_exec', args: { command: cmd, args: [...args] }, mode: 'ask_risky', sandboxed: false });
+    expect(d.decision).toBe('ask');
   });
 });
