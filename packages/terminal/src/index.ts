@@ -4,6 +4,8 @@ import { spawn, execFileSync } from 'node:child_process';
 import { redact } from '@atlas/contracts';
 import { wrapCommand, type SandboxSpec } from './sandbox';
 import { windowsCommand } from './win/appcontainer';
+import { journalStart } from './journal';
+export { setProcessJournal, reapJournaled, processIdentity } from './journal';
 
 /**
  * Windows cannot start .cmd/.bat shims (npm, pnpm…) without cmd.exe; resolve PATH/PATHEXT and escape safely.
@@ -108,6 +110,7 @@ export function run(o: RunOptions): Promise<RunResult> {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const pid = child.pid ?? null;
+    const unjournal = journalStart(pid, 'command', [o.command, ...o.args].join(' '));
     if (pid) o.onStart?.(pid);
 
     const take = (stream: 'stdout' | 'stderr') => (buf: Buffer) => {
@@ -131,6 +134,7 @@ export function run(o: RunOptions): Promise<RunResult> {
     const finish = (exitCode: number | null, sig: string | null, spawnError: string | null) => {
       if (settled) return;
       settled = true;
+      unjournal();
       clearTimeout(timer);
       o.signal?.removeEventListener('abort', onAbort);
       // Reap any descendants that outlived the leader (e.g. backgrounded children).
@@ -169,7 +173,8 @@ export function startProcess(o: { command: string; args: string[]; cwd: string; 
   child.stdout!.on('data', take);
   child.stderr!.on('data', take);
   child.on('error', (e) => { spawnError = e.message; exit = { code: null }; });
-  const done = new Promise<void>((r) => child.on('close', (code) => { exit = { code }; r(); }));
+  const unjournal = journalStart(child.pid, 'service', [o.command, ...o.args].join(' '));
+  const done = new Promise<void>((r) => child.on('close', (code) => { exit = { code }; unjournal(); r(); }));
   return {
     pid: child.pid ?? null,
     get spawnError() { return spawnError; },

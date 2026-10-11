@@ -84,3 +84,15 @@ export interface AgentRuntime {
   resume(handle: AgentHandle, checkpoint: string): Promise<void>;
   dispose(handle: AgentHandle): Promise<void>;
 }
+
+/**
+ * Durable record of processes ATLAS started (evolution P0-4). A crashed daemon cannot clean up after itself,
+ * so the next start reaps every journaled process whose OS identity (pid + start time) still matches.
+ */
+export interface ProcessJournalEntry { pid: number; identity: string; kind: string; command: string; startedAt: string }
+export interface ProcessJournal {
+  add(e: ProcessJournalEntry): void;
+  remove(pid: number, identity: string): void;
+  list(): ProcessJournalEntry[];
+  clear(): void;
+}

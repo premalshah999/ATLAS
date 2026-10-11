@@ -8,7 +8,7 @@ import { Orchestrator, replay, ROLES } from '@atlas/orchestrator';
 import { ROLE_GRANTS } from '@atlas/policy';
 import { FakeRuntime, sampleDesktopScript, samplePlanner, sampleSlugifyScript } from '@atlas/runtime-fake';
 import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
-import { detectSandbox } from '@atlas/terminal';
+import { detectSandbox, reapJournaled, setProcessJournal } from '@atlas/terminal';
 import { applicationStage, createBrowserTool, resolveBrowser } from '@atlas/browser';
 import { DeployManager, stagingStage } from '@atlas/deploy';
 import { createDesktopTool, DesktopManager, desktopSupport } from '@atlas/desktop-control';
@@ -35,6 +35,8 @@ export class DaemonService {
     this.log = createLogger(path.join(o.dataDir, 'logs'));
     this.db = openDb(path.join(o.dataDir, 'atlas.db'));
     this.repo = new Repo(this.db);
+    // Every process the executor starts is journaled until it exits, so a crash cannot leave orphans (P0-4).
+    setProcessJournal(this.repo.processJournal());
     this.artifacts = new ArtifactStore(this.db, path.join(o.dataDir, 'artifacts'));
     this.keys = { ...(o.apiKeys ?? {}) };
     for (const k of Object.values(this.keys)) registerSecret(k);
@@ -86,6 +88,9 @@ export class DaemonService {
   private retentionTimer: NodeJS.Timeout | null = null;
 
   async start() {
+    // Reap processes a crashed predecessor left running, before anything new starts (identity-checked).
+    const reaped = reapJournaled(this.repo.processJournal());
+    if (reaped.killed.length || reaped.stale) this.log.warn('reaped orphaned processes', { killed: reaped.killed, stale: reaped.stale });
     const recovered = await this.orch.recover();
     // Bring back live local staging deployments; never retry a deployment that was interrupted (manual §40).
     const rec = await this.deploy.reconcile((dep) => this.configForDeployment(dep.releaseDir));
@@ -117,6 +122,7 @@ export class DaemonService {
     await this.desktop.shutdown();
     await this.deploy.shutdown();
     await this.orch.shutdown();
+    setProcessJournal(null);
     this.db.close();
   }
 
@@ -160,7 +166,7 @@ export class DaemonService {
       case 'mission.cancel': return this.orch.cancelMission(p.missionId);
       case 'mission.decide': return this.orch.decide(p.missionId, p.decision);
       case 'mission.restore': return this.orch.restore(p.missionId);
-      case 'mission.approveDefinition': return this.orch.approveDefinitionChange(p.missionId);
+      case 'mission.approveDefinition': return this.orch.approveDefinitionChange(p.missionId, p.hash);
       case 'task.cancel': return this.orch.cancelTask(p.taskId);
       case 'roles.list': return Object.values(ROLES).map((r) => ({ id: r.id, version: r.version, title: r.title, tools: r.tools, writes: r.writes, modelPreference: r.modelPreference, budget: r.budget, capabilities: ROLE_GRANTS[r.id], instructions: r.instructions }));
       case 'desktop.list': return { support: desktopSupport(), enabled: this.repo.setting('desktop.enabled', false), sessions: this.desktop.list() };

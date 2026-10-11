@@ -1,5 +1,5 @@
 // Typed persistence for the domain model. State-machine rules live in @atlas/orchestrator; this layer only stores.
-import { DEFAULT_BUDGET, nowIso, redactDeep, type Approval, type Attempt, type AtlasEvent, type CheckRecord, type Deployment, type Finding, type Mission, type NewEvent, type Plan, type Task, type Workspace } from '@atlas/contracts';
+import { DEFAULT_BUDGET, nowIso, redactDeep, type Approval, type Attempt, type AtlasEvent, type CheckRecord, type Deployment, type Finding, type Mission, type NewEvent, type Plan, type ProcessJournal, type Task, type Workspace } from '@atlas/contracts';
 import { tx, type Db } from './db';
 
 type Row = Record<string, any>;
@@ -29,6 +29,16 @@ export class Repo {
     return (this.db.prepare('SELECT * FROM events WHERE mission_id = ? AND seq > ? ORDER BY seq LIMIT ?').all(missionId, afterSeq, limit) as Row[]).map((r) => ({
       missionId: r.mission_id, seq: r.seq, type: r.type, ts: r.ts, actor: p(r.actor), taskId: r.task_id, attemptId: r.attempt_id, payload: p(r.payload), artifactIds: p(r.artifact_ids),
     }));
+  }
+
+  /* ---------- process journal (orphan reaping after a crash) ---------- */
+  processJournal(): ProcessJournal {
+    return {
+      add: (e) => { this.db.prepare('INSERT OR REPLACE INTO process_journal (pid, identity, kind, command, started_at) VALUES (?,?,?,?,?)').run(e.pid, e.identity, e.kind, e.command.slice(0, 500), e.startedAt); },
+      remove: (pid, identity) => { this.db.prepare('DELETE FROM process_journal WHERE pid = ? AND identity = ?').run(pid, identity); },
+      list: () => (this.db.prepare('SELECT * FROM process_journal ORDER BY started_at').all() as Row[]).map((r) => ({ pid: r.pid, identity: r.identity, kind: r.kind, command: r.command, startedAt: r.started_at })),
+      clear: () => { this.db.prepare('DELETE FROM process_journal').run(); },
+    };
   }
 
   /* ---------- settings (operator preferences, never secrets) ---------- */

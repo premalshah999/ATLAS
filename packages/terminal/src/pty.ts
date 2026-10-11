@@ -6,6 +6,7 @@ import { redact } from '@atlas/contracts';
 import { killTree, sanitizedEnv } from './index';
 import { wrapCommand, type SandboxSpec } from './sandbox';
 import { ensureHelper, windowsCommand } from './win/appcontainer';
+import { journalStart } from './journal';
 
 export interface PtyHandle {
   pid: number | null;
@@ -59,7 +60,8 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
   child.stdout!.on('data', take);
   child.stderr!.on('data', take);
   let exited = false;
-  const done = new Promise<void>((r) => child.on('close', (code) => { exited = true; o.onExit(code); r(); }));
+  const unjournal = journalStart(child.pid, 'terminal', 'operator terminal');
+  const done = new Promise<void>((r) => child.on('close', (code) => { exited = true; unjournal(); o.onExit(code); r(); }));
   child.on('error', (e) => { o.onData(`\r\n[terminal failed to start: ${e.message}]\r\n`); });
   return {
     pid: child.pid ?? null,

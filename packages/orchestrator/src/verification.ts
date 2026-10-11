@@ -66,17 +66,34 @@ export function label(r: CheckResult): string {
 }
 
 /**
- * A test run that executed zero tests is not evidence, even when it exits 0 (node --test, jest, vitest, mocha and
- * pytest all can). Returns a reason when the output shows that nothing ran.
+ * A test run that executed zero tests (or skipped every test) is not evidence, even when it exits 0. Only the
+ * runners' summary lines are read, and a run is "empty" only when every summary found reports zero, so a monorepo
+ * with one empty package, or a test that prints "No tests found", is not misread. Returns a reason, or null.
  */
 export function noTestsRan(output: string): string | null {
   // eslint-disable-next-line no-control-regex -- strip ANSI colour codes from runner output
-  const o = output.replace(/\x1b\[[0-9;]*m/g, '');
-  if (/^# tests 0\s*$/m.test(o)) return 'The runner reported 0 tests (node --test)';
-  if (/No tests found/i.test(o)) return 'The runner found no tests (jest)';
-  if (/No test files found/i.test(o)) return 'The runner found no test files (vitest)';
-  if (/^\s*0 passing\b/m.test(o) && !/\d+ failing/.test(o)) return 'The runner reported 0 passing tests (mocha)';
-  if (/(^|=+ )no tests ran\b/im.test(o)) return 'The runner reported no tests ran (pytest)';
-  if (/Tests?:\s+0 total/i.test(o)) return 'The runner reported 0 tests in total';
-  return null;
+  const lines = output.replace(/\x1b\[[0-9;]*m/g, '').split(/\r?\n/).slice(-200);
+  const counts: number[] = [];
+  let phrase: string | null = null;
+  const num = (re: RegExp) => { for (const l of lines) { const m = re.exec(l); if (m) counts.push(Number(m[1])); } };
+  num(/^(?:#|ℹ) tests (\d+)\s*$/); // node --test (TAP and spec reporters)
+  num(/^Tests:\s+(?:.*?,\s*)?(\d+) total/); // jest
+  num(/^\s*Tests\s+(?:.*?)\((\d+)\)\s*$/); // vitest summary "Tests  5 passed (5)"
+  num(/^\s*(\d+) passing\b/); // mocha
+  num(/^running (\d+) tests?$/); // cargo
+  num(/^=+ .*?(\d+) passed/); // pytest "== 3 passed in 0.1s =="
+  if (lines.some((l) => /^No tests found, exiting with code/.test(l))) phrase = 'The runner found no tests (jest)';
+  if (lines.some((l) => /^No test files found, exiting with code/.test(l))) phrase = 'The runner found no test files (vitest)';
+  if (lines.some((l) => /^=+ no tests ran\b/i.test(l))) phrase = 'The runner reported no tests ran (pytest)';
+  if (lines.length && lines.filter((l) => /^(ok|FAIL|\?)\s/.test(l)).length && lines.filter((l) => /^(ok|FAIL|\?)\s/.test(l)).every((l) => /\[no test files\]/.test(l))) phrase = 'No package had test files (go test)';
+  if (counts.some((c) => c > 0)) {
+    // Something ran. Still empty if node --test reports every test skipped or todo.
+    const pass = lines.map((l) => /^(?:#|ℹ) pass (\d+)\s*$/.exec(l)).find(Boolean);
+    const fail = lines.map((l) => /^(?:#|ℹ) fail (\d+)\s*$/.exec(l)).find(Boolean);
+    const skip = lines.map((l) => /^(?:#|ℹ) (?:skipped|todo) (\d+)\s*$/.exec(l)).filter(Boolean).reduce((n, m) => n + Number(m![1]), 0);
+    if (pass && Number(pass[1]) === 0 && fail && Number(fail[1]) === 0 && skip > 0) return `Every test was skipped or todo (${skip})`;
+    return null;
+  }
+  if (counts.length) return 'The runner reported 0 tests';
+  return phrase;
 }

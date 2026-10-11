@@ -98,7 +98,7 @@ export function MissionView({ missionId }: { missionId: string }) {
             {tab === 'activity' && <ActivityTimeline events={events} />}
             {tab === 'graph' && <TaskGraph snap={snap} />}
             {tab === 'changes' && <Changes snap={snap} />}
-            {tab === 'evidence' && <Evidence checks={snap.checks} gate={gate} canApproveDefinition={m.state === 'failed' && !m.decision && !m.archived} onApproveDefinition={() => void act('Could not approve', () => call('mission.approveDefinition', { missionId }))} />}
+            {tab === 'evidence' && <Evidence checks={snap.checks} gate={gate} canApproveDefinition={m.state === 'failed' && !m.decision && !m.archived} onApproveDefinition={(hash) => void act('Could not approve', () => call('mission.approveDefinition', { missionId, hash }))} />}
             {tab === 'findings' && <Findings snap={snap} onLog={showLog} />}
             {tab === 'browser' && <BrowserPanel snap={snap} events={events} />}
             {tab === 'deploy' && <DeployPanel snap={snap} events={events} />}
@@ -353,8 +353,11 @@ function UnifiedDiff({ text }: { text: string }) {
   );
 }
 
-function Evidence({ checks, gate, canApproveDefinition, onApproveDefinition }: { checks: CheckRecord[]; gate?: AtlasEvent; canApproveDefinition?: boolean; onApproveDefinition?: () => void }) {
+function Evidence({ checks, gate, canApproveDefinition, onApproveDefinition }: { checks: CheckRecord[]; gate?: AtlasEvent; canApproveDefinition?: boolean; onApproveDefinition?: (hash: string) => void }) {
   const defn = [...checks].reverse().find((c) => c.name === 'verification-definition');
+  const [defnHash, setDefnHash] = useState<string | null>(null);
+  // The approval is bound to the exact change shown here: its hash comes from the recorded comparison.
+  useEffect(() => { setDefnHash(null); if (defn?.artifactId) void call('artifact.read', { artifactId: defn.artifactId }).then((r) => { try { setDefnHash(JSON.parse(r.text).hash ?? null); } catch { /* not JSON */ } }).catch(() => {}); }, [defn?.artifactId]);
   const [log, setLog] = useState<{ name: string; text: string } | null>(null);
   return (
     <div className="lv-scroll" data-testid="evidence">
@@ -382,7 +385,7 @@ function Evidence({ checks, gate, canApproveDefinition, onApproveDefinition }: {
             <Icon as={IWarn} />
             <div style={{ flex: 1 }}>
               <b>The mission changed how this project is verified.</b> {defn.reason} Approving records your decision and re-runs the gate; it never counts as evidence that the change works.
-              <div style={{ marginTop: 8 }}><Button size="sm" onClick={onApproveDefinition} data-testid="approve-definition">Approve this change and re-verify</Button></div>
+              <div style={{ marginTop: 8 }}><Button size="sm" disabled={!defnHash} onClick={() => defnHash && onApproveDefinition?.(defnHash)} data-testid="approve-definition">Approve this change and re-verify</Button></div>
             </div>
           </div>
         )}

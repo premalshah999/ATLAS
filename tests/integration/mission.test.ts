@@ -246,53 +246,145 @@ describe('cancellation and recovery', () => {
   });
 });
 
-describe('verification cannot be redefined by the agent (evolution P0-3)', () => {
-  const pkgWith = (root: string, test: string) => { const p = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')); p.scripts.test = test; return JSON.stringify(p, null, 2); };
+describe('verification cannot be redefined by the agent (evolution P0-3, incl. independent-review bypasses)', () => {
+  const BROKEN = "export function slugify() { return 'nope'; }\n";
+  const pkgWith = (root: string, edit: (p: any) => void) => { const p = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')); edit(p); return JSON.stringify(p, null, 2); };
+  const testFile = (root: string) => readFileSync(path.join(root, 'test/slugify.test.js'), 'utf8');
+  const w = (file: string, content: string) => ({ tool: 'write_file', args: { path: file, content } });
+  async function run(steps: any[], approve = false) {
+    const root = sampleRepo();
+    const h = makeOrchestrator({ scripts: [forTask('implement', [...(typeof steps === 'function' ? (steps as any)(root) : steps), { claim: 'All tests pass.' }])] });
+    const id = await startMission(h, root);
+    const stop = approve ? autoDecide(h, id, 'shell_exec') : () => {};
+    await h.orch.settle(id);
+    stop();
+    const checks = (name: string) => h.repo.checks(id).filter((c) => c.name === name).at(-1);
+    return { h, id, root, m: h.repo.mission(id)!, checks };
+  }
 
   it('a rewritten test script fails the gate even though the rewritten "tests" pass', async () => {
     const root = sampleRepo();
-    const h = makeOrchestrator({ scripts: [forTask('implement', [{ tool: 'write_file', args: { path: 'package.json', content: pkgWith(root, 'node -e "process.exit(0)"') } }, { claim: 'All tests pass.' }])] });
-    const id = await startMission(h, root);
-    await h.orch.settle(id);
-    const m = h.repo.mission(id)!;
-    const checks = Object.fromEntries(h.repo.checks(id).map((c) => [c.name, c]));
-    expect(checks.tests.result).toBe('pass'); // the neutered command really exits 0 …
-    expect(checks['verification-definition'].result).toBe('fail'); // … but it is not the approved definition
-    expect(checks['verification-definition'].reason).toMatch(/changed scripts\.test/);
-    expect(m.verdict).toBe('failed');
-    expect(m.outcome).toMatch(/Blocked: verification-definition failed/);
+    const r = await run([w('package.json', pkgWith(root, (p) => { p.scripts.test = 'node -e "process.exit(0)"'; })), w('src/slugify.js', BROKEN)]);
+    expect(r.checks('tests')!.result).toBe('pass'); // the neutered command really exits 0 …
+    expect(r.checks('verification-definition')!.result).toBe('fail'); // … but it is not the approved definition
+    expect(r.checks('verification-definition')!.reason).toMatch(/changed package\.json#scripts\.test/);
+    expect(r.m.verdict).toBe('failed');
   });
 
-  it('deleting tests fails the gate; the operator can approve the exact change, which is recorded but never counted as evidence', async () => {
+  it.each([
+    ['gutted test body (review A)', (_root: string) => [w('src/slugify.js', BROKEN), w('test/slugify.test.js', "import { test } from 'node:test';\ntest('ok', () => {});\n")]],
+    ['test.skip (review B)', (root: string) => [w('src/slugify.js', BROKEN), w('test/slugify.test.js', testFile(root).replace(/^test\(/gm, 'test.skip('))]],
+  ])('%s: the original suite still runs and fails on the broken code', async (_n, steps) => {
+    const r = await run(steps as any);
+    expect(r.checks('tests (original suite)')!.result).toBe('fail');
+    expect(r.checks('tests (original suite)')!.reason).toMatch(/base commit's tests fail/);
+    expect(r.m.verdict).toBe('failed');
+  });
+
+  it('renaming tests out of the runner\'s reach plus a trivial new test (review C) is caught', async () => {
+    const r = await run([w('src/slugify.js', BROKEN), { tool: 'shell_exec', args: { command: 'mv', args: ['test/slugify.test.js', 'test/slugify.test.js.off'] } }, w('test/smoke.test.js', "import { test } from 'node:test';\ntest('ok', () => {});\n")], true);
+    expect(r.checks('tests (original suite)')!.result).toBe('fail');
+    expect(r.m.verdict).toBe('failed');
+  });
+
+  it('committing tooling that shadows node (review F) blocks the gate', async () => {
+    const r = await run([w('src/slugify.js', BROKEN), w('node_modules/.bin/node', '#!/bin/sh\necho "# tests 5"\nexit 0\n'), { tool: 'shell_exec', args: { command: 'chmod', args: ['+x', 'node_modules/.bin/node'] } }], true);
+    expect(r.checks('verification-definition')!.result).toBe('fail');
+    expect(r.checks('verification-definition')!.reason).toMatch(/tracks tooling file node_modules\/\.bin\/node/);
+    expect(r.m.verdict).toBe('failed');
+  });
+
+  it('switching the package manager (review D) blocks the gate', async () => {
+    const r = await run([w('src/slugify.js', BROKEN), w('yarn.lock', '# yarn lockfile v1\n'), w('.yarnrc', 'yarn-path "./tools/y.cjs"\n'), w('tools/y.cjs', 'process.exit(0)\n')]);
+    expect(r.checks('verification-definition')!.reason).toMatch(/changed package-manager/);
+    expect(r.checks('verification-definition')!.reason).toMatch(/changed \.yarnrc/);
+    expect(r.m.verdict).toBe('failed');
+  });
+
+  it('a non-object package.json (review E) fails closed with a recorded reason, not a crash', async () => {
+    const r = await run([w('package.json', 'null')]);
+    expect(r.checks('verification-definition')!.result).toBe('fail');
+    expect(r.checks('verification-definition')!.reason).toMatch(/changed package\.json/);
+    expect(r.m.verdict).toBe('failed');
+  });
+
+  it('legitimate work stays verified: a real fix, a new test and a new lint script (review G)', async () => {
     const root = sampleRepo();
-    const h = makeOrchestrator({ scripts: [forTask('implement', [{ tool: 'write_file', args: { path: 'src/slugify.js', content: SAMPLE_FIX } }, { tool: 'shell_exec', args: { command: 'rm', args: ['test/slugify.test.js'] } }, { claim: 'Done.' }])] });
-    const id = await startMission(h, root);
-    const stop = autoDecide(h, id, 'shell_exec');
-    await h.orch.settle(id);
-    stop();
-    let defn = h.repo.checks(id).find((c) => c.name === 'verification-definition')!;
+    const r = await run([w('src/slugify.js', SAMPLE_FIX), w('test/extra.test.js', "import { test } from 'node:test';\nimport assert from 'node:assert/strict';\nimport { slugify } from '../src/slugify.js';\ntest('rock', () => assert.equal(slugify('Rock & Roll'), 'rock-roll'));\n"), w('package.json', pkgWith(root, (p) => { p.scripts.lint = 'node -e "process.exit(0)"'; }))]);
+    expect(r.checks('verification-definition')!.result).toBe('pass');
+    expect(r.checks('verification-definition')!.reason).toMatch(/added package\.json#scripts\.lint.*1 test file\(s\) added/);
+    expect(r.checks('tests (original suite)')).toBeUndefined(); // no test was modified or deleted
+    expect(r.m.verdict).toBe('verified');
+  });
+
+  it('a legitimate test edit runs the original suite, which passes when the code is right', async () => {
+    const root = sampleRepo();
+    const r = await run([w('src/slugify.js', SAMPLE_FIX), w('test/slugify.test.js', testFile(root) + "test('extra', () => assert.equal(slugify('A B'), 'a-b'));\n")]);
+    expect(r.checks('tests (original suite)')!.result).toBe('pass');
+    expect(r.m.verdict).toBe('verified');
+    // The integration worktree was restored after the original-suite run.
+    expect(r.h.repo.checks(r.id).find((c) => c.name === 'tests')!.result).toBe('pass');
+  });
+
+  it('approval is bound to the reviewed hash and the mission state; deleting tests is never evidence', async () => {
+    const r = await run([w('src/slugify.js', SAMPLE_FIX), { tool: 'shell_exec', args: { command: 'rm', args: ['test/slugify.test.js'] } }], true);
+    const defn = r.checks('verification-definition')!;
     expect(defn.result).toBe('fail');
     expect(defn.reason).toMatch(/deleted test test\/slugify\.test\.js/);
-    expect(h.repo.mission(id)!.verdict).toBe('failed');
-    await h.orch.approveDefinitionChange(id);
-    defn = h.repo.checks(id).filter((c) => c.name === 'verification-definition').at(-1)!;
-    expect(defn.result).toBe('pass');
-    expect(defn.reason).toMatch(/approved by the operator/);
-    const m = h.repo.mission(id)!;
-    // With the only test file deleted, nothing verifies the change: approval unblocks, it does not verify.
-    expect(m.verdict).not.toBe('verified');
-    const tests = h.repo.checks(id).filter((c) => c.name === 'tests').at(-1)!;
-    expect(tests.result).toBe('inconclusive');
-    expect(tests.reason).toMatch(/no tests ran: The runner reported 0 tests/);
-    expect(h.events.some((e) => e.type === 'operator.action' && e.payload.action === 'approve_definition')).toBe(true);
+    const hash = JSON.parse(r.h.artifacts.read(defn.artifactId!).text).hash as string;
+    await expect(r.h.orch.approveDefinitionChange(r.id, 'f'.repeat(64))).rejects.toThrow(/differs from the one you reviewed/);
+    expect(r.h.events.some((e) => e.type === 'operator.action' && e.payload.action === 'approve_definition')).toBe(false);
+    await r.h.orch.approveDefinitionChange(r.id, hash);
+    expect(r.checks('verification-definition')!.result).toBe('pass');
+    // The original suite passes (the code is fixed); the integrated run has no tests at all, so nothing verifies it.
+    expect(r.checks('tests')!.result).toBe('inconclusive');
+    expect(r.h.repo.mission(r.id)!.verdict).not.toBe('verified');
   });
 
-  it('an ordinary source change keeps the definition check quiet and verified', async () => {
+  it('an approval is refused, and not recorded, when the mission is not awaiting one', async () => {
+    const r = await run([w('src/slugify.js', SAMPLE_FIX)]);
+    expect(r.m.state).toBe('completed');
+    await expect(r.h.orch.approveDefinitionChange(r.id, 'a'.repeat(64))).rejects.toThrow(/Only a failed, undecided mission/);
+    expect(r.h.events.some((e) => e.type === 'operator.action' && e.payload.action === 'approve_definition')).toBe(false);
+  });
+});
+
+describe('nothing in a worktree is destroyed silently (evolution P1-3)', () => {
+  it('reject keeps dirty and untracked work and branch tips under refs/atlas/preserved; delete removes them', async () => {
+    const root = sampleRepo();
+    const head = sh(root, 'git', ['rev-parse', 'HEAD']);
+    const h = makeOrchestrator();
+    const id = await startMission(h, root);
+    await h.orch.settle(id);
+    const t = h.repo.tasks(id).find((x) => x.key === 'implement')!;
+    // Work that never made it into a checkpoint (e.g. typed in the operator terminal).
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(path.join(t.worktree!, 'NOTES.md'), 'operator notes\n');
+    writeFileSync(path.join(t.worktree!, 'src/slugify.js'), '// edited after the checkpoint\n');
+    await h.orch.decide(id, 'reject');
+    expect(existsSync(t.worktree!)).toBe(false);
+    const ref = `refs/atlas/preserved/${id}/${path.basename(t.worktree!)}/uncommitted`;
+    expect(sh(root, 'git', ['show', `${ref}:NOTES.md`])).toBe('operator notes');
+    expect(sh(root, 'git', ['show', `${ref}:src/slugify.js`])).toBe('// edited after the checkpoint');
+    expect(sh(root, 'git', ['rev-parse', `refs/atlas/preserved/${id}/${path.basename(t.worktree!)}/branch`])).toBe(t.checkpoint);
+    const ev = h.events.find((e) => e.type === 'workspace.worktree' && e.payload.action === 'preserved')!;
+    expect(JSON.stringify(ev.payload.refs)).toContain(ref);
+    // The user's checkout and branches are untouched; no stray branches remain.
+    expect(sh(root, 'git', ['rev-parse', 'HEAD'])).toBe(head);
+    expect(sh(root, 'git', ['status', '--porcelain'])).toBe('');
+    expect(sh(root, 'git', ['branch', '--list', `atlas/${id}/*`])).toBe('');
+    await h.orch.deleteMission(id);
+    expect(sh(root, 'git', ['for-each-ref', `refs/atlas/preserved/${id}/`])).toBe('');
+  });
+
+  it('a clean worktree leaves only the branch tip, never an empty snapshot', async () => {
     const root = sampleRepo();
     const h = makeOrchestrator();
     const id = await startMission(h, root);
     await h.orch.settle(id);
-    expect(h.repo.checks(id).find((c) => c.name === 'verification-definition')!.result).toBe('pass');
-    expect(h.repo.mission(id)!.outcome).toMatch(/^Verified: tests, api:slug-endpoint|^Verified: tests passed/);
+    await h.orch.decide(id, 'accept');
+    const refs = sh(root, 'git', ['for-each-ref', '--format=%(refname)', `refs/atlas/preserved/${id}/`]).split('\n').filter(Boolean);
+    expect(refs.some((r) => r.endsWith('/uncommitted'))).toBe(false);
+    expect(refs.some((r) => r.endsWith('/branch'))).toBe(true);
   });
 });

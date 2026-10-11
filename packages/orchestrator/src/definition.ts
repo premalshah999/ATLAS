@@ -1,74 +1,150 @@
-// What defines "verified" for a project, and whether a mission changed it (evolution D1, backlog P0-3).
-// The agent writes the integrated commit, so it must not be able to redefine its own test. The definition is
-// read at the base commit (what the operator approved at plan time) and at the integrated commit; any difference,
-// and any deleted test file, fails the gate until the operator explicitly approves that change.
+// What defines "verified" for a project, and how a mission changed it (evolution D1, backlog P0-3, revised after
+// the independent review in docs/evolution/04-implementation-log.md). The agent writes the integrated commit, so it
+// must not be able to redefine its own test:
+//   - the verification definition (scripts, runner/type/lint config, package manager, atlas.config.json sections,
+//     every package.json in a workspace) is compared between the approved base and the integrated commit;
+//   - deleted tests and newly tracked tooling (node_modules) are reported;
+//   - modified or renamed tests trigger a run of the base commit's original test suite against the new code.
+// Weakening changes block the gate until the operator approves that exact change at that exact commit.
 import { createHash } from 'node:crypto';
 import { git } from '@atlas/workspace';
 
-/** Scripts that verification runs, and the npm lifecycle hooks around them. */
-const VERIFY_SCRIPTS = ['test', 'typecheck', 'lint'];
-const RUNNER_KEYS = ['jest', 'mocha', 'ava', 'c8', 'nyc', 'vitest', 'tap'];
-/** Top-level files that change what a check does (runner config, type and lint config). */
-const CONFIG_FILE = /^(vitest|vite|jest|playwright|karma|cypress|ava|webpack)\.config\.[cm]?[jt]s$|^\.mocharc(\.\w+)?$|^\.nycrc(\.\w+)?$|^\.c8rc(\.\w+)?$|^tsconfig(\.[\w-]+)?\.json$|^\.eslintrc(\.\w+)?$|^eslint\.config\.[cm]?[jt]s$|^\.npmrc$/;
-/** Paths that hold tests. Deleting one weakens verification. */
-export const TEST_PATH = /(^|\/)(test|tests|__tests__|spec|specs|e2e)\/|\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)test_[^/]+\.py$|_test\.(go|py)$/;
+/** Scripts verification runs, plus npm lifecycle hooks around them. */
+export const VERIFY_SCRIPTS = ['test', 'typecheck', 'lint'];
+const RUNNER_KEYS = ['jest', 'mocha', 'ava', 'c8', 'nyc', 'vitest', 'tap', 'workspaces', 'packageManager', 'type', 'imports', 'exports'];
+/** Script runners that fan out to other scripts by pattern: when used, every script counts as definition. */
+const FANOUT = /\b(run-s|run-p|npm-run-all2?|concurrently|turbo|nx|lerna|wireit)\b|\s(-r|--recursive|--filter|--workspaces?|-ws)\b/;
+/** Config files (any directory, outside node_modules) that change what a check does or which program runs. */
+const CONFIG_FILE = /(^|\/)((vitest|vite|jest|playwright|karma|cypress|ava|webpack|babel|swc|rollup|esbuild)\.config\.[cm]?[jt]s(on)?|vitest\.workspace\.[\w.]+|\.mocharc(\.[\w]+)?|\.nycrc(\.\w+)?|\.c8rc(\.\w+)?|tsconfig([.\w-]*)\.json|\.eslintrc(\.\w+)?|eslint\.config\.[cm]?[jt]s|\.npmrc|\.yarnrc(\.yml)?|\.pnpmfile\.cjs|pnpm-workspace\.yaml|\.babelrc(\.\w+)?|\.swcrc|pytest\.ini|tox\.ini|conftest\.py)$/;
+const LOCKFILES = ['package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', 'bun.lock'];
+/** Paths that hold tests (and their support files). */
+export const TEST_PATH = /(^|\/)(test|tests|__tests__|spec|specs|e2e)\/|\.(test|spec)\.[cm]?[jt]sx?$|(^|\/)test_[^/]+\.py$|_test\.(go|py)$|(^|\/)conftest\.py$/;
+const MAX_BLOB = 1024 * 1024;
 
-export interface Definition { hash: string; items: Record<string, string> }
+export interface Definition { hash: string; items: Record<string, string>; files: string[] }
 
-async function show(repo: string, commit: string, file: string): Promise<string | null> {
-  const r = await git(repo, ['show', `${commit}:${file}`]);
-  return r.code === 0 ? r.out : null;
+async function gitStrict(repo: string, args: string[]): Promise<string> {
+  const r = await git(repo, args, 60_000);
+  if (r.code !== 0) throw new Error(`git ${args.slice(0, 2).join(' ')} failed: ${r.out.slice(0, 200)}`);
+  return r.out;
 }
 
-/** Collect the verification-relevant definition at a commit, as canonical strings per item. */
+async function blob(repo: string, commit: string, file: string): Promise<string> {
+  const size = Number((await git(repo, ['cat-file', '-s', `${commit}:${file}`])).out.trim());
+  if (!Number.isFinite(size)) return '(unreadable)';
+  if (size > MAX_BLOB) return `sha:${(await gitStrict(repo, ['rev-parse', `${commit}:${file}`])).trim()}`;
+  const r = await git(repo, ['show', `${commit}:${file}`]);
+  return r.code === 0 ? r.out : '(unreadable)';
+}
+
+/** All tracked files at a commit (NUL-separated, so unusual names cannot break parsing). */
+async function filesAt(repo: string, commit: string): Promise<string[]> {
+  return (await gitStrict(repo, ['ls-tree', '-r', '-z', '--name-only', commit])).split('\0').filter(Boolean);
+}
+
+/** Collect the verification-relevant definition at a commit. */
 export async function definitionAt(repo: string, commit: string): Promise<Definition> {
+  const files = await filesAt(repo, commit);
+  const outside = (f: string) => !/(^|\/)node_modules\//.test(f);
   const items: Record<string, string> = {};
-  const pkgText = await show(repo, commit, 'package.json');
-  if (pkgText) {
-    let pkg: Record<string, any> = {};
-    try { pkg = JSON.parse(pkgText); } catch { items['package.json'] = `unparseable:${pkgText}`; }
-    const scripts: Record<string, string> = pkg.scripts ?? {};
-    // Scripts reached from the verification scripts (pre/post hooks and `npm run x` references), transitively.
+  for (const pj of files.filter((f) => outside(f) && /(^|\/)package\.json$/.test(f))) {
+    const text = await blob(repo, commit, pj);
+    let pkg: unknown;
+    try { pkg = JSON.parse(text); } catch { pkg = undefined; }
+    if (!pkg || typeof pkg !== 'object' || Array.isArray(pkg)) { items[`${pj}`] = `unparseable:${createHash('sha256').update(text).digest('hex')}`; continue; }
+    const p = pkg as Record<string, unknown>;
+    const scripts = (p.scripts && typeof p.scripts === 'object' && !Array.isArray(p.scripts) ? p.scripts : {}) as Record<string, unknown>;
     const want = new Set<string>();
     const visit = (name: string) => {
       if (want.has(name) || scripts[name] === undefined) return;
       want.add(name);
-      for (const m of String(scripts[name]).matchAll(/\b(?:npm|pnpm|yarn)(?:\s+run)?\s+([\w:.-]+)/g)) visit(m[1]);
+      const body = String(scripts[name]);
+      if (FANOUT.test(body)) for (const n of Object.keys(scripts)) want.add(n);
+      for (const m of body.matchAll(/\b(?:npm|pnpm|yarn|bun)(?:\s+run)?\s+([\w:.-]+)/g)) visit(m[1]);
     };
     for (const s of VERIFY_SCRIPTS) for (const n of [`pre${s}`, s, `post${s}`]) visit(n);
-    for (const n of VERIFY_SCRIPTS) if (scripts[n] === undefined) items[`scripts.${n}`] = '(absent)';
-    for (const n of [...want].sort()) items[`scripts.${n}`] = String(scripts[n]);
-    for (const k of RUNNER_KEYS) if (pkg[k] !== undefined) items[`package.json#${k}`] = JSON.stringify(pkg[k]);
+    for (const n of [...want].sort()) items[`${pj}#scripts.${n}`] = String(scripts[n]);
+    for (const k of RUNNER_KEYS) if (p[k] !== undefined) items[`${pj}#${k}`] = JSON.stringify(p[k]);
   }
-  const cfgText = await show(repo, commit, 'atlas.config.json');
-  if (cfgText) {
+  items['package-manager'] = LOCKFILES.filter((l) => files.includes(l)).join(',') || '(none)';
+  if (files.includes('atlas.config.json')) {
+    const text = await blob(repo, commit, 'atlas.config.json');
     try {
-      const cfg = JSON.parse(cfgText);
+      const cfg = JSON.parse(text);
+      if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) throw new Error('not an object');
       for (const k of ['checks', 'app', 'api', 'browser', 'deploy']) if (cfg[k] !== undefined) items[`atlas.config.json#${k}`] = JSON.stringify(cfg[k]);
-    } catch { items['atlas.config.json'] = `unparseable:${cfgText}`; }
+    } catch { items['atlas.config.json'] = `unparseable:${createHash('sha256').update(text).digest('hex')}`; }
   }
-  const top = await git(repo, ['ls-tree', '--name-only', commit]);
-  for (const f of top.out.split('\n').filter((x) => CONFIG_FILE.test(x)).sort()) items[f] = (await show(repo, commit, f)) ?? '';
+  for (const f of files.filter((x) => outside(x) && CONFIG_FILE.test(x)).sort()) items[f] = await blob(repo, commit, f);
   const hash = createHash('sha256').update(JSON.stringify(Object.entries(items).sort())).digest('hex');
-  return { hash, items };
+  return { hash, items, files };
 }
 
-export interface DefinitionChange { changed: string[]; deletedTests: string[]; baseHash: string; hash: string }
+export interface DefinitionChange {
+  /** Definition items that changed or disappeared: weakening until the operator approves. */
+  changed: string[];
+  /** Items that did not exist at the base (a new lint script, a first test script): informational. */
+  added: string[];
+  deletedTests: string[];
+  modifiedTests: string[];
+  addedTests: string[];
+  /** Tooling the mission started tracking (node_modules): could shadow node, npm, the runner. */
+  trackedTooling: string[];
+  /** Test files at the base commit (the original suite). */
+  baseTests: string[];
+  /** Config files at the base / at the commit, for restoring the original suite. */
+  baseConfig: string[];
+  commitConfig: string[];
+  baseHash: string;
+  /** Binds an approval to this exact change at this exact commit. */
+  hash: string;
+}
+
+/** Items whose first appearance can change which program runs: never "just an addition". */
+const NEW_IS_WEAKENING = (k: string) => k === 'package-manager' || !k.includes('#') || /#(packageManager|workspaces|type|imports|exports)$/.test(k);
 
 /** Compare the definition between the approved base and the integrated commit. */
 export async function definitionChange(repo: string, base: string, commit: string): Promise<DefinitionChange> {
   const [a, b] = await Promise.all([definitionAt(repo, base), definitionAt(repo, commit)]);
   const keys = [...new Set([...Object.keys(a.items), ...Object.keys(b.items)])].sort();
-  const changed = keys.filter((k) => a.items[k] !== b.items[k]);
-  const diff = await git(repo, ['diff', '--name-status', '-M', base, commit]);
-  const deletedTests: string[] = [];
-  for (const line of diff.out.split('\n')) {
-    const [st, from, to] = line.split('\t');
-    if (!st || !from) continue;
-    if (st === 'D' && TEST_PATH.test(from)) deletedTests.push(from);
-    if (st.startsWith('R') && TEST_PATH.test(from) && to && !TEST_PATH.test(to)) deletedTests.push(`${from} (moved out of tests to ${to})`);
+  const changed: string[] = [];
+  const added: string[] = [];
+  for (const k of keys) {
+    if (a.items[k] === b.items[k]) continue;
+    if (a.items[k] === undefined && !NEW_IS_WEAKENING(k)) added.push(k);
+    else changed.push(k);
   }
-  // The approval binds to both: the definition at the integrated commit and the set of deleted tests.
-  const hash = createHash('sha256').update(JSON.stringify([b.hash, deletedTests])).digest('hex');
-  return { changed, deletedTests, baseHash: a.hash, hash };
+  const deletedTests: string[] = [];
+  const modifiedTests: string[] = [];
+  const addedTests: string[] = [];
+  const trackedTooling: string[] = [];
+  const tok = (await gitStrict(repo, ['diff', '--name-status', '-z', '-M', base, commit])).split('\0');
+  for (let i = 0; i < tok.length; ) {
+    const st = tok[i++];
+    if (!st) continue;
+    const from = tok[i++] ?? '';
+    const to = st[0] === 'R' || st[0] === 'C' ? tok[i++] ?? '' : '';
+    const target = to || from;
+    if (/(^|\/)node_modules\//.test(target) && st[0] !== 'D') trackedTooling.push(target);
+    const wasTest = TEST_PATH.test(from);
+    if (st[0] === 'D' && wasTest) deletedTests.push(from);
+    else if (st[0] === 'R' && wasTest) modifiedTests.push(`${from} → ${to}`);
+    else if ((st[0] === 'M' || st[0] === 'T') && wasTest) modifiedTests.push(from);
+    else if ((st[0] === 'A' || st[0] === 'C') && TEST_PATH.test(target)) addedTests.push(target);
+  }
+  const outside = (f: string) => !/(^|\/)node_modules\//.test(f);
+  // Bound to the integrated *content* (tree), not the commit: re-integration makes a new commit for the same tree,
+  // while any other content (even with the same definition and deletions) produces a different hash.
+  const tree = (await gitStrict(repo, ['rev-parse', `${commit}^{tree}`])).trim();
+  const hash = createHash('sha256').update(JSON.stringify([tree, base, b.hash, changed, deletedTests, modifiedTests, trackedTooling])).digest('hex');
+  return {
+    changed, added, deletedTests, modifiedTests, addedTests, trackedTooling,
+    baseTests: a.files.filter((f) => outside(f) && TEST_PATH.test(f)),
+    baseConfig: a.files.filter((f) => outside(f) && (CONFIG_FILE.test(f) || LOCKFILES.includes(f))),
+    commitConfig: b.files.filter((f) => outside(f) && (CONFIG_FILE.test(f) || LOCKFILES.includes(f))),
+    baseHash: a.hash, hash,
+  };
 }
+
+/** Changes that must be approved before the gate can pass. */
+export const weakening = (d: DefinitionChange) => [...d.changed.map((c) => `changed ${c}`), ...d.deletedTests.map((t) => `deleted test ${t}`), ...d.trackedTooling.slice(0, 5).map((t) => `tracks tooling file ${t}`)];

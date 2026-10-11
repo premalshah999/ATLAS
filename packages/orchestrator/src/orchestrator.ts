@@ -8,19 +8,19 @@ import {
   type ToolResult, type Workspace,
 } from '@atlas/contracts';
 import type { ArtifactStore, Repo } from '@atlas/storage';
-import { checkpoint, diffSince, git, gitOk, inspectRepo, Leases, removeWorktree } from '@atlas/workspace';
+import { checkpoint, diffSince, git, gitOk, inspectRepo, Leases, retireWorktree, type PreservedRef } from '@atlas/workspace';
 import { detectSandbox, openPty, ptySupported, run, sanitizedEnv, startProcess, type PtyHandle, type SandboxSpec } from '@atlas/terminal';
 import { assertMission, assertTask, TERMINAL_TASK } from './states';
 import { defaultPlan, validatePlan } from './plan';
 import { ROLES, role } from './roles';
 import { ToolGate, realExecutors, type Executors, type Isolation } from './toolgate';
 import { detectRecipes, gate, noTestsRan, type Verdict } from './verification';
-import { definitionChange } from './definition';
+import { definitionChange, weakening, type DefinitionChange } from './definition';
 import { buildContext, repoMap } from './context';
 import { mergeInto, topoOrder, worktreeFromBases } from './integration';
 import { blockingFindings, makeFinding, type FindingArgs } from './findings';
 import { deleteMission, exportMission, importMission } from './archive';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 
 export interface OrchestratorOptions {
   repo: Repo;
@@ -676,7 +676,7 @@ export class Orchestrator {
     const writers = topoOrder(tasks).map((id) => tasks.find((t) => t.id === id)!).filter((t) => ROLES[t.role].writes && t.state === 'done' && t.checkpoint);
     const dir = path.join(this.o.worktreeDir, m.id, 'integration');
     const branch = `atlas/${m.id}/integration`;
-    if (existsSync(dir)) await removeWorktree(w.root, dir, branch);
+    if (existsSync(dir)) this.recordPreserved(m.id, await retireWorktree(w.root, dir, branch, `refs/atlas/preserved/${m.id}/integration-${Date.now()}`));
     const r = await worktreeFromBases(w.root, dir, branch, [m.baseCommit!]);
     if (!r.ok) return { ok: false, message: r.message };
     for (const t of writers) {
@@ -782,7 +782,7 @@ export class Orchestrator {
 
   /** Build/test checks from project recipes, on the integrated commit, in the sandbox. */
   private async checksStage(ctx: StageContext) {
-    await this.definitionCheck(ctx);
+    const defn = await this.definitionCheck(ctx);
     const recipes = detectRecipes(ctx.worktree);
     if (!recipes.some((r) => r.name === 'tests')) ctx.check({ name: 'tests', command: null, required: false, result: 'not_configured', exitCode: null, durationMs: null, reason: 'No test command found in package.json', artifactId: null });
     for (const r of recipes) {
@@ -796,38 +796,97 @@ export class Orchestrator {
         reason: res.spawnError ? `Could not start: ${res.spawnError}` : res.timedOut ? 'Timed out' : res.cancelled ? 'Cancelled' : empty ? `Exit code 0, but no tests ran: ${empty}` : `Exit code ${res.exitCode}`, artifactId: log.id,
       });
     }
+    // Tests changed: the original suite must also pass on the new code (gutted, skipped or renamed tests cannot).
+    if (defn && (defn.change.modifiedTests.length || defn.change.deletedTests.length)) await this.originalSuite(ctx, defn.change, defn.approved);
   }
 
   /**
-   * The agent must not redefine its own verification (D1): compare the verification definition at the approved
-   * base with the integrated commit. A change, or a deleted test, blocks until the operator approves that exact change.
+   * The agent must not redefine its own verification (D1, revised after review): compare the verification definition
+   * at the approved base with the integrated commit. Weakening changes (changed or removed definition items, deleted
+   * tests, newly tracked tooling) block until the operator approves that exact change at that exact commit.
+   * Returns the comparison so the original test suite can be run when tests were modified.
    */
-  private async definitionCheck(ctx: StageContext) {
+  private async definitionCheck(ctx: StageContext): Promise<{ change: DefinitionChange; approved: boolean } | null> {
     const m = ctx.mission;
     const w = this.repo.workspace(m.workspaceId);
-    if (!w || !m.baseCommit) return;
-    const d = await definitionChange(w.root, m.baseCommit, ctx.commit);
-    if (!d.changed.length && !d.deletedTests.length) {
-      ctx.check({ name: 'verification-definition', command: null, required: true, result: 'pass', exitCode: null, durationMs: null, artifactId: null, reason: 'Unchanged since the approved base (how tests, checks and app flows are defined)' });
-      return;
+    const fail = (reason: string) => { ctx.check({ name: 'verification-definition', command: null, required: true, result: 'inconclusive', exitCode: null, durationMs: null, artifactId: null, reason }); return null; };
+    if (!w || !m.baseCommit) return fail('No approved base commit to compare the verification definition with');
+    let d: DefinitionChange;
+    try { d = await definitionChange(w.root, m.baseCommit, ctx.commit); }
+    catch (e) { return fail(`Could not compare the verification definition: ${(e as Error).message}`); }
+    const weak = weakening(d);
+    const approved = this.definitionApproved(m.id, d.hash);
+    const art = ctx.putArtifact({ kind: 'log', name: 'Verification definition comparison', content: JSON.stringify({ base: m.baseCommit, commit: ctx.commit, hash: d.hash, changed: d.changed, added: d.added, deletedTests: d.deletedTests, modifiedTests: d.modifiedTests, addedTests: d.addedTests, trackedTooling: d.trackedTooling }, null, 2) });
+    const notes = [d.added.length ? `added ${d.added.join(', ')}` : '', d.modifiedTests.length ? `${d.modifiedTests.length} test file(s) modified (the original suite is run too)` : '', d.addedTests.length ? `${d.addedTests.length} test file(s) added` : ''].filter(Boolean).join('; ');
+    if (!weak.length) {
+      ctx.check({ name: 'verification-definition', command: null, required: true, result: 'pass', exitCode: null, durationMs: null, artifactId: art.id, reason: `Unchanged since the approved base${notes ? ` (${notes})` : ''}` });
+    } else {
+      ctx.check({
+        name: 'verification-definition', command: null, required: true, result: approved ? 'pass' : 'fail', exitCode: null, durationMs: null, artifactId: art.id,
+        reason: approved
+          ? `Changed by the mission and approved by the operator at ${ctx.commit.slice(0, 12)}: ${weak.join('; ')}`
+          : `The mission changed how verification is defined (${weak.join('; ')}). Checks below ran the changed definition, so they cannot verify this change until you approve it.${notes ? ` Also: ${notes}.` : ''}`,
+      });
     }
-    const approved = this.repo.eventsSince(m.id, 0, 100_000).some((e) => e.type === 'operator.action' && e.payload.action === 'approve_definition' && e.payload.hash === d.hash);
-    const what = [...d.changed.map((c) => `changed ${c}`), ...d.deletedTests.map((t) => `deleted test ${t}`)].join('; ');
-    const art = ctx.putArtifact({ kind: 'log', name: 'Verification definition change', content: JSON.stringify({ base: m.baseCommit, commit: ctx.commit, changed: d.changed, deletedTests: d.deletedTests, hash: d.hash }, null, 2) });
-    ctx.check({
-      name: 'verification-definition', command: null, required: true, result: approved ? 'pass' : 'fail', exitCode: null, durationMs: null, artifactId: art.id,
-      reason: approved ? `Changed by the mission and approved by the operator: ${what}` : `The mission changed how verification is defined (${what}). Checks below ran the changed definition, so they cannot verify this change until you approve it.`,
-    });
+    return { change: d, approved };
   }
 
-  /** Operator approves the exact verification-definition change of the current integrated commit, then the gate re-runs. */
-  async approveDefinitionChange(missionId: string): Promise<Mission> {
+  private definitionApproved(missionId: string, hash: string): boolean {
+    return this.repo.eventsSince(missionId, 0, 100_000).some((e) => e.type === 'operator.action' && e.payload.action === 'approve_definition' && e.payload.hash === hash);
+  }
+
+  /**
+   * Run the base commit's original test suite against the integrated code (the reviewer's strongest suggestion):
+   * gutted, skipped or renamed tests cannot make this pass. Base test files, verification scripts, runner config and
+   * lockfiles are restored in the integration worktree; tests the mission added are removed; afterwards the worktree
+   * is reset to the integrated commit.
+   */
+  private async originalSuite(ctx: StageContext, d: DefinitionChange, approved: boolean) {
+    const dir = ctx.worktree;
+    const m = ctx.mission;
+    const base = m.baseCommit!;
+    const restore = async () => { await git(dir, ['reset', '-q', '--hard', ctx.commit]); await git(dir, ['clean', '-fdq']); };
+    try {
+      const fromBase = [...new Set([...d.baseTests, ...d.baseConfig])];
+      for (let i = 0; i < fromBase.length; i += 100) await gitOk(dir, ['checkout', base, '--', ...fromBase.slice(i, i + 100)]);
+      const remove = [...d.addedTests, ...d.commitConfig.filter((f) => !d.baseConfig.includes(f)), ...d.modifiedTests.map((x) => x.split(' → ')[1]).filter((x): x is string => !!x)];
+      for (const f of remove) rmSync(path.join(dir, f), { force: true });
+      // Verification scripts of every package.json go back to the base version; dependencies stay as integrated.
+      const w = this.repo.workspace(m.workspaceId)!;
+      for (const pj of (await git(w.root, ['ls-tree', '-r', '-z', '--name-only', base])).out.split('\0').filter((f) => /(^|\/)package\.json$/.test(f) && !/node_modules\//.test(f))) {
+        const b = await git(w.root, ['show', `${base}:${pj}`]);
+        const target = path.join(dir, pj);
+        if (b.code !== 0 || !existsSync(target)) continue;
+        try {
+          const bp = JSON.parse(b.out), cp = JSON.parse(readFileSync(target, 'utf8'));
+          if (!bp || !cp || typeof bp !== 'object' || typeof cp !== 'object') continue;
+          for (const k of ['scripts', 'jest', 'mocha', 'ava', 'c8', 'nyc', 'vitest', 'tap', 'type', 'imports', 'exports', 'workspaces', 'packageManager']) { if (bp[k] === undefined) delete cp[k]; else cp[k] = bp[k]; }
+          writeFileSync(target, JSON.stringify(cp, null, 2));
+        } catch { /* unparseable: leave as integrated; the definition check already failed */ }
+      }
+      const recipe = detectRecipes(dir).find((r) => r.name === 'tests');
+      if (!recipe) { ctx.check({ name: 'tests (original suite)', command: null, required: !approved, result: 'not_configured', exitCode: null, durationMs: null, artifactId: null, reason: 'The base commit has no test command' }); return; }
+      const res = await ctx.sandbox.run({ command: recipe.command, args: recipe.args, timeoutMs: recipe.timeoutMs });
+      const log = ctx.putArtifact({ kind: 'test_report', name: `original suite @ ${ctx.commit.slice(0, 7)}`, content: `$ ${[recipe.command, ...recipe.args].join(' ')}  (base ${base.slice(0, 7)} tests, integrated code)\n${res.output}\n[exit ${res.exitCode ?? 'none'} · ${res.durationMs} ms]` });
+      const empty = res.exitCode === 0 ? noTestsRan(res.output) : null;
+      const result = res.cancelled || res.timedOut || res.spawnError || empty ? 'inconclusive' : res.exitCode === 0 ? 'pass' : 'fail';
+      ctx.check({
+        name: 'tests (original suite)', command: [recipe.command, ...recipe.args].join(' '), required: !approved, result, exitCode: res.exitCode, durationMs: res.durationMs, artifactId: log.id,
+        reason: res.spawnError ? `Could not start: ${res.spawnError}` : res.timedOut ? 'Timed out' : empty ? `No tests ran: ${empty}` : result === 'pass' ? `The base commit's tests pass on the integrated code` : `The base commit's tests fail on the integrated code (exit ${res.exitCode})${approved ? '; you approved the test changes, so this no longer blocks' : ''}`,
+      });
+    } finally { await restore(); }
+  }
+
+  /** Operator approves the verification-definition change shown to them (bound to its hash and commit), then the gate re-runs. */
+  async approveDefinitionChange(missionId: string, expectedHash?: string): Promise<Mission> {
     const m = this.mission(missionId);
+    if (m.state !== 'failed' || m.decision || m.archived) throw new AtlasError('invalid_request', 'Only a failed, undecided mission can have a verification change approved');
     const w = this.repo.workspace(m.workspaceId);
     if (!w || !m.baseCommit || !m.integrationCommit) throw new AtlasError('invalid_request', 'This mission has no integrated change');
     const d = await definitionChange(w.root, m.baseCommit, m.integrationCommit);
-    if (!d.changed.length && !d.deletedTests.length) throw new AtlasError('invalid_request', 'The verification definition did not change');
-    this.emit({ missionId, type: 'operator.action', actor: OPERATOR, payload: { action: 'approve_definition', hash: d.hash, changed: d.changed, deletedTests: d.deletedTests, commit: m.integrationCommit } });
+    if (!weakening(d).length && !d.modifiedTests.length) throw new AtlasError('invalid_request', 'The verification definition did not change');
+    if (expectedHash && expectedHash !== d.hash) throw new AtlasError('invalid_request', 'The change differs from the one you reviewed; reload and review it again');
+    this.emit({ missionId, type: 'operator.action', actor: OPERATOR, payload: { action: 'approve_definition', hash: d.hash, commit: m.integrationCommit, changed: d.changed, deletedTests: d.deletedTests, modifiedTests: d.modifiedTests, trackedTooling: d.trackedTooling } });
     return this.reverify(missionId);
   }
 
@@ -976,17 +1035,33 @@ export class Orchestrator {
     if (m.decision) throw new AtlasError('invalid_request', `Mission already ${m.decision}`);
     if (decision === 'accept' && !m.integrationCommit) throw new AtlasError('invalid_request', 'Nothing to accept: the mission produced no integrated change');
     const w = this.repo.workspace(m.workspaceId)!;
-    for (const t of this.repo.tasks(missionId)) if (t.worktree) await removeWorktree(w.root, t.worktree, t.branch);
+    // Task worktrees go away, but nothing in them is destroyed: dirty state and branch tips are kept under
+    // refs/atlas/preserved/<mission>/… (P1-3). Lost attempts' worktrees are covered by the attempt records.
+    const preserved: PreservedRef[] = [];
+    const attemptDirs = new Set<string>();
+    for (const t of this.repo.tasks(missionId)) {
+      if (t.worktree) attemptDirs.add(t.worktree);
+      for (const a of this.repo.attempts(missionId).filter((x) => x.taskId === t.id)) {
+        attemptDirs.add(path.join(this.o.worktreeDir, m.id, `${t.key}-${a.number}`));
+      }
+    }
+    for (const dir of attemptDirs) {
+      if (!existsSync(dir)) continue;
+      const name = path.basename(dir);
+      preserved.push(...await retireWorktree(w.root, dir, `atlas/${m.id}/${name}`, `refs/atlas/preserved/${m.id}/${name}`));
+    }
     const integDir = path.join(this.o.worktreeDir, m.id, 'integration');
     const kept: string[] = [];
     if (m.integrationBranch) {
-      if (decision === 'accept') { await removeWorktree(w.root, integDir, null); kept.push(m.integrationBranch); }
+      if (decision === 'accept') { preserved.push(...await retireWorktree(w.root, integDir, null, `refs/atlas/preserved/${m.id}/integration`)); kept.push(m.integrationBranch); }
       else {
         // Keep the rejected result reachable under a private ref (not a branch) so it can be restored later.
         if (m.integrationCommit) await gitOk(w.root, ['update-ref', `refs/atlas/rejected/${m.id}`, m.integrationCommit]);
-        await removeWorktree(w.root, integDir, m.integrationBranch);
+        preserved.push(...await retireWorktree(w.root, integDir, null, `refs/atlas/preserved/${m.id}/integration`));
+        await git(w.root, ['branch', '-D', m.integrationBranch]);
       }
     }
+    this.recordPreserved(missionId, preserved);
     for (const st of this.o.stages ?? []) await (st as ReleaseStage & { onDecision?: (m: Mission, d: string) => Promise<void> }).onDecision?.(m, decision).catch(() => {});
     this.repo.updateMission(missionId, { decision: decision === 'accept' ? 'accepted' : 'rejected' });
     this.emit({ missionId, type: 'mission.decision', actor: OPERATOR, payload: { decision, branches: kept, commit: m.integrationCommit, note: decision === 'accept' ? `Changes kept on ${kept.join(', ')} at ${m.integrationCommit?.slice(0, 7)}; merge them when ready.` : 'Worktrees and branches removed. Your checkout was not modified.' } });
@@ -1013,6 +1088,11 @@ export class Orchestrator {
     this.repo.updateMission(missionId, { decision: 'accepted' });
     this.emit({ missionId, type: 'mission.decision', actor: OPERATOR, payload: { decision: 'restore', branches: [m.integrationBranch], commit: m.integrationCommit, note: `Restored the rejected change on ${m.integrationBranch} at ${m.integrationCommit.slice(0, 7)}; merge it when ready.` } });
     return this.mission(missionId);
+  }
+
+  private recordPreserved(missionId: string, refs: PreservedRef[]) {
+    if (!refs.length) return;
+    this.emit({ missionId, type: 'workspace.worktree', actor: SYSTEM('workspace'), payload: { action: 'preserved', refs } });
   }
 
   /* ---------------- recovery (manual §40) ---------------- */

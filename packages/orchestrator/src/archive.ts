@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { AtlasError, newId, nowIso, redact, redactDeep, type Artifact, type AtlasEvent, type Mission } from '@atlas/contracts';
 import type { ArtifactStore, Repo } from '@atlas/storage';
-import { git, removeWorktree } from '@atlas/workspace';
+import { deleteRefs, git, removeWorktree } from '@atlas/workspace';
 
 export const EXPORT_VERSION = 1;
 const TEXT_KINDS = new Set(['log', 'patch', 'transcript', 'test_report', 'plan', 'evidence', 'context', 'manifest']);
@@ -88,9 +88,18 @@ export async function deleteMission(repo: Repo, artifacts: ArtifactStore, missio
   if (['planning', 'running', 'verifying'].includes(m.state)) throw new AtlasError('invalid_request', 'Cancel the mission before deleting it');
   const w = repo.workspace(m.workspaceId);
   if (w?.isGit && !m.archived) {
-    for (const t of repo.tasks(missionId)) if (t.worktree) await removeWorktree(w.root, t.worktree, t.branch).catch(() => {});
+    for (const t of repo.tasks(missionId)) {
+      if (t.worktree) await removeWorktree(w.root, t.worktree, t.branch).catch(() => {});
+      // Worktrees of earlier (lost or failed) attempts, too: they are not referenced by the task row any more.
+      for (const a of repo.attempts(missionId).filter((x) => x.taskId === t.id)) {
+        const dir = `${worktreeDir}/${m.id}/${t.key}-${a.number}`;
+        if (dir !== t.worktree) await removeWorktree(w.root, dir, `atlas/${m.id}/${t.key}-${a.number}`).catch(() => {});
+      }
+    }
     if (m.integrationBranch) await removeWorktree(w.root, `${worktreeDir}/${m.id}/integration`, m.decision === 'accepted' ? null : m.integrationBranch).catch(() => {});
     await git(w.root, ['update-ref', '-d', `refs/atlas/rejected/${m.id}`]).catch(() => {});
+    // Deleting a mission is the operator's explicit request to drop its preserved work too.
+    await deleteRefs(w.root, `refs/atlas/preserved/${m.id}/`).catch(() => 0);
   }
   artifacts.removeFiles(missionId);
   repo.deleteMission(missionId);
