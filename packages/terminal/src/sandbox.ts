@@ -278,7 +278,14 @@ function wrapWindowsAccount(command: string, args: string[], spec: SandboxSpec, 
   acct.grantFor(a.sid, spec.root, spec.writable ? 'rw' : 'rx');
   for (const p of spec.readWrite ?? []) acct.grantFor(a.sid, p, 'rw');
   for (const p of [...(spec.readOnly ?? []), ...net.files]) acct.grantFor(a.sid, p, 'rx');
-  for (const p of toolchainPaths(env)) { try { acct.grantFor(a.sid, p, 'rx'); } catch { /* not ours to change */ } }
+  // Toolchains outside the operator's profile (Program Files, C:\hostedtoolcache…) are readable by every standard
+  // account through Users already; only those inside the profile (%APPDATA%\npm, nvm, scoop) need a grant.
+  // Granting the others would rewrite ACLs across large system trees.
+  const profile = real(os.homedir()).toLowerCase() + path.sep;
+  for (const p of toolchainPaths(env)) {
+    if (!real(p).toLowerCase().startsWith(profile)) continue;
+    try { acct.grantFor(a.sid, p, 'rx'); } catch { /* not ours to change */ }
+  }
   const home = acct.accountHome(spec.root, a.sid);
   const envOut: Record<string, string> = {
     ...env, ...net.env,
