@@ -53,28 +53,39 @@ describe.skipIf(!ptySupported().ok || detectSandbox().kind !== 'bwrap')('operato
 // the helper running as the account hosts it. Typed input must reach PowerShell and its output come back.
 describe.skipIf(process.platform !== 'win32')('operator PTY on Windows', () => {
   process.env.ATLAS_PTY_DEBUG = '1'; // the helper reports every input relay step on stderr (part of the transcript)
+  const sleep = () => new Promise((r) => setTimeout(r, 50));
   async function session(sandboxed: boolean) {
     const dir = tmpDir();
     let out = '';
     let code: number | null | undefined;
     const p = openPty({ cwd: dir, cols: 100, rows: 30, ...(sandboxed ? { sandbox: { root: dir, writable: true, network: false } } : {}), onData: (t) => { out += t; }, onExit: (c) => { code = c; } });
-    for (let i = 0; i < 200 && !/PS [A-Z]:\\/.test(out) && code === undefined; i++) await new Promise((r) => setTimeout(r, 50));
-    p.write('echo ("atlas" + "-pty-" + (40 + 2))\r');
-    for (let i = 0; i < 200 && !out.includes('atlas-pty-42') && code === undefined; i++) await new Promise((r) => setTimeout(r, 50));
+    for (let i = 0; i < 400 && !/PS [A-Z]:\\/.test(out) && code === undefined; i++) await sleep();
+    // 1. A bare expression: no cmdlet, so no module loading. Keystrokes in, output out.
+    let t0 = Date.now();
+    p.write('"atlas" + "-pty-" + (40 + 2)\r');
+    for (let i = 0; i < 200 && !out.includes('atlas-pty-42') && code === undefined; i++) await sleep();
+    const exprMs = Date.now() - t0;
+    // 2. A cmdlet (Microsoft.PowerShell.Utility), and an everyday alias (ls: Microsoft.PowerShell.Management).
+    t0 = Date.now();
+    p.write('Write-Output ("atlas" + "-cmdlet-" + (40 + 2)); ls\r');
+    for (let i = 0; i < 900 && !out.includes('atlas-cmdlet-42') && code === undefined; i++) await sleep();
+    const cmdletMs = Date.now() - t0;
     const transcript = JSON.stringify(out.slice(-3000));
     p.write('exit\r');
-    for (let i = 0; i < 100 && code === undefined; i++) await new Promise((r) => setTimeout(r, 50));
+    for (let i = 0; i < 100 && code === undefined; i++) await sleep();
     await p.close();
-    return { out, transcript };
+    return { out, transcript, timing: `expression ${exprMs} ms, cmdlet ${cmdletMs} ms, exit code ${code}` };
   }
   it('typed input reaches PowerShell and its output comes back (helper without a sandbox)', async () => {
-    const { out, transcript } = await session(false);
-    console.log(`[pty plain] ${transcript}`);
+    const { out, transcript, timing } = await session(false);
+    console.log(`[pty plain] ${timing} ${transcript}`);
     expect(out, transcript).toContain('atlas-pty-42');
-  }, 60_000);
+    expect(out, transcript).toContain('atlas-cmdlet-42');
+  }, 120_000);
   it.skipIf(detectSandbox().kind !== 'windows-account')('the same inside the sandbox account', async () => {
-    const { out, transcript } = await session(true);
-    console.log(`[pty account] ${transcript}`);
+    const { out, transcript, timing } = await session(true);
+    console.log(`[pty account] ${timing} ${transcript}`);
     expect(out, transcript).toContain('atlas-pty-42');
-  }, 60_000);
+    expect(out, transcript).toContain('atlas-cmdlet-42');
+  }, 120_000);
 });

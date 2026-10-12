@@ -72,7 +72,11 @@ export function openPty(o: { cwd: string; cols: number; rows: number; sandbox?: 
     // ConPTY hosted by the sandbox helper: inside the task's AppContainer when sandboxed, otherwise uncontained
     // (only reachable when the operator allowed unsandboxed execution).
     const shell = 'powershell.exe';
-    const shellArgs = ['-NoLogo', '-NoProfile'];
+    // The first cmdlet from a module that is not loaded yet (ls, echo, cat…) makes Windows PowerShell analyse every
+    // module on PSModulePath unless its analysis cache is warm, and it never is for a sandbox account (a fresh
+    // LOCALAPPDATA per task). CI round 9: the typed line was accepted, then no output for 15 s. Importing the two
+    // modules behind the everyday aliases by name needs no analysis.
+    const shellArgs = ['-NoLogo', '-NoProfile', '-NoExit', '-Command', 'Import-Module Microsoft.PowerShell.Management,Microsoft.PowerShell.Utility'];
     if (o.sandbox) {
       const w = wrapCommand(shell, shellArgs, o.cwd, o.sandbox, env);
       env = w.env;
