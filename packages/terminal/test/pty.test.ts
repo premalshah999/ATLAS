@@ -48,3 +48,32 @@ describe.skipIf(!ptySupported().ok || detectSandbox().kind !== 'bwrap')('operato
     expect(code).not.toBeUndefined();
   });
 });
+
+// Windows: the operator terminal is a ConPTY hosted by the sandbox helper; with sandbox accounts (ADR 0020) a copy of
+// the helper running as the account hosts it. Typed input must reach PowerShell and its output come back.
+describe.skipIf(process.platform !== 'win32')('operator PTY on Windows', () => {
+  async function session(sandboxed: boolean) {
+    const dir = tmpDir();
+    let out = '';
+    let code: number | null | undefined;
+    const p = openPty({ cwd: dir, cols: 100, rows: 30, ...(sandboxed ? { sandbox: { root: dir, writable: true, network: false } } : {}), onData: (t) => { out += t; }, onExit: (c) => { code = c; } });
+    for (let i = 0; i < 200 && !/PS [A-Z]:\\/.test(out) && code === undefined; i++) await new Promise((r) => setTimeout(r, 50));
+    p.write('echo ("atlas" + "-pty-" + (40 + 2))\r');
+    for (let i = 0; i < 200 && !out.includes('atlas-pty-42') && code === undefined; i++) await new Promise((r) => setTimeout(r, 50));
+    const transcript = JSON.stringify(out.slice(-3000));
+    p.write('exit\r');
+    for (let i = 0; i < 100 && code === undefined; i++) await new Promise((r) => setTimeout(r, 50));
+    await p.close();
+    return { out, transcript };
+  }
+  it('typed input reaches PowerShell and its output comes back (helper without a sandbox)', async () => {
+    const { out, transcript } = await session(false);
+    console.log(`[pty plain] ${transcript}`);
+    expect(out, transcript).toContain('atlas-pty-42');
+  }, 60_000);
+  it.skipIf(detectSandbox().kind !== 'windows-account')('the same inside the sandbox account', async () => {
+    const { out, transcript } = await session(true);
+    console.log(`[pty account] ${transcript}`);
+    expect(out, transcript).toContain('atlas-pty-42');
+  }, 60_000);
+});
