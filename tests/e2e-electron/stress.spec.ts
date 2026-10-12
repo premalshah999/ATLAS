@@ -8,7 +8,9 @@ import { launch } from './app';
 const MISSIONS = 6;
 
 test('six concurrent missions: UI stays responsive and every mission verifies', async () => {
-  test.setTimeout(240_000);
+  // Windows: every sandboxed command is an account logon (ADR 0020), so six missions take longer.
+  const budget = process.platform === 'win32' ? 420_000 : 180_000;
+  test.setTimeout(budget + 60_000);
   const repo = sampleRepo();
   const { app, page } = await launch({ openDir: repo });
   try {
@@ -46,7 +48,8 @@ test('six concurrent missions: UI stays responsive and every mission verifies', 
       const a = (window as any).atlas;
       return Promise.all(list.map(async (id: string) => { try { return (await a.invoke('mission.get', { missionId: id })).mission.state; } catch { return 'error'; } }));
     }, ids);
-    for (let round = 0; round < 200; round++) {
+    const deadline = Date.now() + budget;
+    while (Date.now() < deadline) {
       lag.push(await page.evaluate(probe));
       const t0 = Date.now();
       await page.keyboard.press('Control+k');
@@ -62,7 +65,11 @@ test('six concurrent missions: UI stays responsive and every mission verifies', 
     console.log(`[stress] missions=${MISSIONS} samples=${lag.length} event-loop delay p95=${p95(lag).toFixed(0)}ms max=${Math.max(...lag).toFixed(0)}ms; palette open p95=${p95(palette)}ms max=${Math.max(...palette)}ms; states=${final.join(',')}`);
 
     // Every mission finished and verified.
-    expect(final.every((x) => x === 'completed'), final.join(',')).toBe(true);
+    const outcomes = await page.evaluate(async (list) => {
+      const a = (window as any).atlas;
+      return Promise.all(list.map(async (id: string) => { const m = (await a.invoke('mission.get', { missionId: id })).mission; return `${m.state}: ${m.outcome ?? ''}`; }));
+    }, ids);
+    expect(final.every((x) => x === 'completed'), outcomes.join('\n')).toBe(true);
     const verdicts: string[] = await page.evaluate(async (list) => {
       const a = (window as any).atlas;
       return Promise.all(list.map(async (id: string) => (await a.invoke('mission.get', { missionId: id })).mission.verdict));

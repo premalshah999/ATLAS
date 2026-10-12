@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { forTask, sampleSlugifyScript, SAMPLE_FIX, type FakeScript } from '@atlas/runtime-fake';
 import { sampleRepo, sh } from '../helpers';
-import { makeOrchestrator, startMission } from './harness';
+import { explainChecks, makeOrchestrator, startMission } from './harness';
 
 const task = (key: string, dependsOn: string[] = [], extra: Record<string, unknown> = {}) => ({
   key, title: `Task ${key}`, role: 'coder', dependsOn, acceptance: [`${key} done`], tools: ['read_file', 'write_file', 'run_tests', 'delegate'], risk: 'low', ...extra,
@@ -153,7 +153,7 @@ describe('review findings', () => {
     const attemptsBefore = h.repo.attempts(id).length;
     h.orch.updateFinding(h.repo.findings(id)[0].id, 'dismissed');
     await h.orch.reverify(id);
-    expect(h.repo.mission(id)!.state).toBe('completed');
+    expect(h.repo.mission(id)!.state, `${h.repo.mission(id)!.outcome}\n${explainChecks(h, id)}`).toBe('completed');
     expect(h.repo.attempts(id).length).toBe(attemptsBefore);
   });
 });

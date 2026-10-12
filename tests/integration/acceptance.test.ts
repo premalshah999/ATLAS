@@ -77,7 +77,11 @@ describe('holdout acceptance suites', () => {
     await h.orch.settle(id);
     stop();
     const { sh } = await import('../helpers');
-    expect(sh(root, 'git', ['ls-tree', h.repo.mission(id)!.integrationCommit!, '.atlas-acceptance'])).toMatch(/^120000 /); // the symlink is really in the change
+    const entry = sh(root, 'git', ['ls-tree', h.repo.mission(id)!.integrationCommit!, '.atlas-acceptance']);
+    // Linux and macOS: the symlink is really in the change. Windows: a standard account cannot create symbolic links
+    // (ADR 0020), so the planted link never exists; the rest of the test still holds.
+    if (process.platform === 'win32') expect(entry).not.toMatch(/^120000 /);
+    else expect(entry).toMatch(/^120000 /);
     expect(existsSync(outside)).toBe(false);
     expect(h.repo.checks(id).find((c) => c.name === 'acceptance (holdout)')!.result).toBe('pass');
   });

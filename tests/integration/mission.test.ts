@@ -423,7 +423,7 @@ describe('verification cannot be redefined by the agent (evolution P0-3, incl. i
     await r.h.orch.approveDefinitionChange(r.id, hash);
     expect(r.checks('verification-definition')!.result).toBe('pass');
     // The original suite passes (the code is fixed); the integrated run has no tests at all, so nothing verifies it.
-    expect(r.checks('tests')!.result).toBe('inconclusive');
+    expect(r.checks('tests')!.result, explainChecks(r.h, r.id)).toBe('inconclusive');
     expect(r.h.repo.mission(r.id)!.verdict).not.toBe('verified');
   });
 

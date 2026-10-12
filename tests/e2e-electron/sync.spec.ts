@@ -12,7 +12,8 @@ test('skills and MCP servers sync to Claude Code and Codex; other tools\' items 
   mkdirSync(path.join(home, '.config/opencode/skills/team-style'), { recursive: true });
   writeFileSync(path.join(home, '.config/opencode/skills/team-style/SKILL.md'), '---\nname: team-style\ndescription: Our team conventions.\n---\nPrefer small functions.\n');
   writeFileSync(path.join(home, '.config/opencode/opencode.json'), JSON.stringify({ mcp: { tracker: { type: 'remote', url: 'https://tracker.example.com/mcp', headers: { Authorization: 'Bearer real-secret-value' } } } }));
-  const { app, page } = await launch({ env: { HOME: home } });
+  // HOME on Linux and macOS; USERPROFILE is what Windows (and os.homedir()) use.
+  const { app, page } = await launch({ env: { HOME: home, USERPROFILE: home } });
   try {
     await page.keyboard.press('Control+,');
 

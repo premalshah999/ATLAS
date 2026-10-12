@@ -7,6 +7,8 @@ import { sampleRepo, tmpDir } from '../helpers';
 import { launch } from './app';
 
 test('staging deploy, task graph, browser steps, terminal, export and read-only import', async () => {
+  // Windows runs each sandboxed command as the sandbox account (ADR 0020): a logon per command makes missions slower.
+  if (process.platform === 'win32') test.setTimeout(420_000);
   const repo = sampleRepo();
   const exportFile = path.join(tmpDir('atlas-e2e-export-'), 'mission.jsonl');
   const first = await launch({ openDir: repo, env: { ATLAS_E2E_SAVE_PATH: exportFile } });
@@ -36,7 +38,7 @@ test('staging deploy, task graph, browser steps, terminal, export and read-only 
     const card = page.getByTestId('approval').first();
     await expect(card).toContainText('local-staging', { timeout: 90_000 });
     await card.getByTestId('approve').click();
-    await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'completed', { timeout: 120_000 });
+    await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'completed', { timeout: process.platform === 'win32' ? 300_000 : 120_000 });
     await expect(page.getByTestId('outcome')).toContainText('staging:revision');
 
     await page.getByRole('tab', { name: /Tasks/ }).click();

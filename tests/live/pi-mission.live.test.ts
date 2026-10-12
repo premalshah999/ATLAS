@@ -5,7 +5,7 @@
 // Nothing is mocked. Privileged commands the model asks for are denied (the run must succeed with safe tools).
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PiRuntime } from '@atlas/runtime-pi';
@@ -21,7 +21,10 @@ const BUNDLED = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.
 const HIDDEN: [string, string][] = [['Rock & Roll', 'rock-roll'], ["It's 9 o'clock", 'its-9-oclock'], ['  Multiple   Spaces  ', 'multiple-spaces'], ['UPPER lower', 'upper-lower']];
 function oracle(root: string, commit: string): string[] {
   const dir = tmpDir('atlas-live-oracle-');
-  execFileSync('sh', ['-c', 'git -C "$1" archive "$2" | tar -x -C "$3"', 'x', root, commit, dir]);
+  // A tar file inside the target, extracted with a relative name: GNU tar reads "C:\\…" as a remote host.
+  execFileSync('git', ['-C', root, 'archive', '--format=tar', '-o', path.join(dir, '.export.tar'), commit]);
+  execFileSync('tar', ['-xf', '.export.tar'], { cwd: dir });
+  rmSync(path.join(dir, '.export.tar'), { force: true });
   writeFileSync(path.join(dir, 'o.mjs'), `import { slugify } from './src/slugify.js';\nconsole.log(JSON.stringify(${JSON.stringify(HIDDEN)}.filter(([i, o]) => slugify(i) !== o)));`);
   return JSON.parse(execFileSync('node', ['o.mjs'], { cwd: dir, encoding: 'utf8' }));
 }

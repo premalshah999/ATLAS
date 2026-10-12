@@ -194,6 +194,10 @@ function createWindow() {
 
 // Process-wide sandbox. `--no-sandbox` is honored only for root CI containers; renderers keep sandbox: true regardless.
 if (!app.commandLine.hasSwitch('no-sandbox')) app.enableSandbox();
+// Manual §43: the window loads only bundled content, so it needs no proxy. Without this, Chromium on Windows probes
+// for a proxy auto-config file (WPAD, http://wpad/) as soon as it starts: an unexplained outbound request.
+app.commandLine.appendSwitch('no-proxy-server');
+
 app.whenReady().then(() => {
   if (!primary) return;
   // Deny every permission request (camera, notifications, …) from web content.
