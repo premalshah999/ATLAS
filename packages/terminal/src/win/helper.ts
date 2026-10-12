@@ -242,14 +242,17 @@ static class AtlasSandbox {
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool ReadFile(IntPtr h, IntPtr buf, int n, out int read, IntPtr overlapped);
   [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetOverlappedResult(IntPtr h, IntPtr overlapped, out int n, bool wait);
   [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateEvent(IntPtr a, bool manualReset, bool initial, string name);
+  [DllImport("kernel32.dll")] static extern int GetFileType(IntPtr h);
 
   /**
    * Operator keystrokes from our stdin into the ConPTY. Node may hand us a pipe opened for overlapped I/O, on which
    * a plain synchronous read fails (CI: input never reached PowerShell). ReadFile with an OVERLAPPED and
    * GetOverlappedResult(wait) works for both kinds of handle. Failures are reported, never swallowed.
    */
+  static bool Debug;
   static void RelayInput(Stream toPty) {
     IntPtr h = GetStdHandle(-10);
+    if (Debug) Console.Error.WriteLine("atlas-sandbox: debug: input relay started, stdin type " + GetFileType(h));
     const int SIZE = 8192;
     IntPtr buf = Marshal.AllocHGlobal(SIZE);
     int ovSize = IntPtr.Size * 3 + 8; // OVERLAPPED: Internal, InternalHigh, Offset+OffsetHigh (or Pointer), hEvent
@@ -269,6 +272,7 @@ static class AtlasSandbox {
         if (n <= 0) return;
         Marshal.Copy(buf, managed, 0, n);
         toPty.Write(managed, 0, n); toPty.Flush();
+        if (Debug) Console.Error.WriteLine("atlas-sandbox: debug: relayed " + n + " input bytes into the terminal");
       }
     } catch (Exception ex) { Console.Error.WriteLine("atlas-sandbox: terminal input: " + ex.Message); }
   }
@@ -451,6 +455,7 @@ static class AtlasSandbox {
       else if (argv[i] == "--restricted") restrictedSids = argv[++i];
       else if (argv[i] == "--low") low = true;
       else if (argv[i] == "--account") account = argv[++i];
+      else if (argv[i] == "--debug") Debug = true;
       else if (argv[i] == "--store") store = argv[++i];
       else Fail("unknown option " + argv[i]);
     }
@@ -463,7 +468,7 @@ static class AtlasSandbox {
     if (cred != null && cols > 0) {
       // CreateProcessWithLogonW takes no attribute list, so the ConPTY is hosted by a copy of this helper running as
       // the account: the shell and everything it starts belong to the sandbox account.
-      cmd = new StringBuilder(QuoteArg(System.Reflection.Assembly.GetExecutingAssembly().Location) + " run - --pty " + cols + "x" + rows + " --cmdline " + QuoteArg(line), 32768);
+      cmd = new StringBuilder(QuoteArg(System.Reflection.Assembly.GetExecutingAssembly().Location) + " run - --pty " + cols + "x" + rows + (Debug ? " --debug" : "") + " --cmdline " + QuoteArg(line), 32768);
       cols = 0; rows = 0;
     }
     IntPtr rtoken = restrictedSids != null ? RestrictedToken(restrictedSids, low) : IntPtr.Zero;
@@ -501,6 +506,10 @@ static class AtlasSandbox {
     var si = new STARTUPINFOEX(); si.StartupInfo.cb = Marshal.SizeOf(si); si.lpAttributeList = list;
     if (cred != null) si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFO)); // CreateProcessWithLogonW takes a plain STARTUPINFO
     if (!pty) { si.StartupInfo.dwFlags = STARTF_USESTDHANDLES; si.StartupInfo.hStdInput = GetStdHandle(-10); si.StartupInfo.hStdOutput = GetStdHandle(-11); si.StartupInfo.hStdError = GetStdHandle(-12); }
+    // ConPTY: our own stdio is redirected (pipes from ATLAS). Without explicit null handles the child would inherit
+    // those instead of attaching to the pseudoconsole, so the shell reads our stdin pipe and never sees the keystrokes
+    // relayed into the terminal (CI: prompt shown, input lost). node-pty does the same.
+    else { si.StartupInfo.dwFlags = STARTF_USESTDHANDLES; si.StartupInfo.hStdInput = IntPtr.Zero; si.StartupInfo.hStdOutput = IntPtr.Zero; si.StartupInfo.hStdError = IntPtr.Zero; }
 
     IntPtr job = CreateJobObject(IntPtr.Zero, null);
     var lim = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();

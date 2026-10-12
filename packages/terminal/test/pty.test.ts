@@ -52,6 +52,7 @@ describe.skipIf(!ptySupported().ok || detectSandbox().kind !== 'bwrap')('operato
 // Windows: the operator terminal is a ConPTY hosted by the sandbox helper; with sandbox accounts (ADR 0020) a copy of
 // the helper running as the account hosts it. Typed input must reach PowerShell and its output come back.
 describe.skipIf(process.platform !== 'win32')('operator PTY on Windows', () => {
+  process.env.ATLAS_PTY_DEBUG = '1'; // the helper reports every input relay step on stderr (part of the transcript)
   async function session(sandboxed: boolean) {
     const dir = tmpDir();
     let out = '';
