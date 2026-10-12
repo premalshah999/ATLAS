@@ -19,7 +19,7 @@ export type ApprovalMode = z.infer<typeof ApprovalMode>;
 export const RuntimeKind = z.enum(['fake', 'pi']);
 export type RuntimeKind = z.infer<typeof RuntimeKind>;
 
-export const AgentRole = z.enum(['orchestrator', 'coder', 'reviewer', 'tester', 'browser_qa', 'desktop_operator', 'deployment_verifier']);
+export const AgentRole = z.enum(['orchestrator', 'coder', 'reviewer', 'tester', 'browser_qa', 'desktop_operator', 'deployment_verifier', 'security_reviewer']);
 export type AgentRole = z.infer<typeof AgentRole>;
 
 export interface Workspace {
@@ -143,6 +143,8 @@ export interface Finding {
   status: 'open' | 'accepted' | 'dismissed' | 'fixed';
   fingerprint: string;
   createdAt: string;
+  /** An agent's review, or ATLAS's deterministic security scan (ADR 0023). */
+  source?: 'review' | 'security';
 }
 
 export interface Attempt {

@@ -442,6 +442,7 @@ export class DaemonService {
       'deploy.allowedTargets': this.repo.setting<string[]>('deploy.allowedTargets', []), 'deploy.autoRollback': this.repo.setting('deploy.autoRollback', true),
       'desktop.enabled': this.repo.setting('desktop.enabled', false),
       'models.default': this.repo.setting<string | null>('models.default', null), 'models.fast': this.repo.setting<string | null>('models.fast', null), 'models.strong': this.repo.setting<string | null>('models.strong', null),
+      'security.gate': this.repo.setting<'blocking' | 'advisory'>('security.gate', 'blocking'), 'security.aiReview': this.repo.setting('security.aiReview', true),
     };
   }
 

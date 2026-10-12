@@ -253,9 +253,10 @@ describe('delegation and budgets', () => {
     const id = await startMission(h, root);
     await h.orch.settle(id);
     const built = h.events.filter((e) => e.type === 'context.built');
-    expect(built.length).toBe(2);
+    expect(built.length).toBe(3); // coder, reviewer, security engineer
     expect((built[0].payload.sources as any[]).map((s) => s.kind)).toEqual(expect.arrayContaining(['objective', 'task', 'plan', 'facts', 'repo-map']));
-    expect((built[1].payload.sources as any[]).map((s) => s.kind)).toContain('diff'); // reviewer sees the diff
+    // Both reviews see the diff, whichever started first.
+    for (const b of built.slice(1)) expect((b.payload.sources as any[]).map((s) => s.kind)).toContain('diff');
     const ctxArt = h.artifacts.list(id).find((a) => a.kind === 'context')!;
     expect(h.artifacts.read(ctxArt.id).text).toContain('Slugs must stay ASCII.');
     expect(existsSync(path.join(h.dataDir, 'facts'))).toBe(true);

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import {
   AtlasError, DEFAULT_BUDGET, MissionBudget, newId, nowIso, RETRYABLE, type AgentRole, type AgentRuntime, type Approval, type ApprovalMode, type Attempt, type AtlasEvent,
-  type CheckRecord, type Mission, type MissionState, type NewEvent, type Plan, type ReleaseStage, type RuntimeKind, type StageContext, type Task, type TaskState,
+  type CheckRecord, type Finding, type Mission, type MissionState, type NewEvent, type Plan, type ReleaseStage, type RuntimeKind, type StageContext, type Task, type TaskState,
   type ToolResult, type Workspace, type Actor, redact,
 } from '@atlas/contracts';
 import type { ArtifactStore, Repo } from '@atlas/storage';
@@ -21,7 +21,9 @@ import { mergeInto, topoOrder, worktreeFromBases } from './integration';
 import { ACCEPTANCE_DIR, AcceptanceStore, materialize, suiteHash } from './acceptance';
 import { SkillLibrary } from './skills';
 import { ExportKeys } from './signing';
-import { blockingFindings, makeFinding, type FindingArgs } from './findings';
+import { blockingFindings, fingerprint, makeFinding, type FindingArgs } from './findings';
+import { scanWorktree } from './security';
+import { report as securityReport } from '@atlas/security';
 import { deleteMission, exportMission, importMission } from './archive';
 import { Pipeline } from './pipeline';
 import { ciState, parseRemote, type CiState, type Forge, type RemoteRef } from './forge';
@@ -380,7 +382,7 @@ export class Orchestrator {
         if (!(e as { declined?: boolean }).declined) this.emit({ missionId, type: 'plan.rejected', actor: SYSTEM('planner'), payload: { version, source: 'model', issues: [{ code: 'planner_error', message: (e as Error).message }], fallback: 'default' } });
       } finally { clearTimeout(timer); }
     }
-    candidate ??= defaultPlan(m, version, hasTests);
+    candidate ??= defaultPlan(m, version, hasTests, this.repo.setting('security.aiReview', true));
     const v = validatePlan(candidate, { maxTasks: m.budget.maxTasks });
     if (!v.ok) {
       this.emit({ missionId, type: 'plan.rejected', actor: SYSTEM('plan-validator'), payload: { version, source, issues: v.issues } });
@@ -686,7 +688,7 @@ export class Orchestrator {
       .map((e) => `${e.ts} ${e.type}: ${JSON.stringify(e.payload).slice(0, 240)}`);
     const ctx = await buildContext({
       worktree: dir, base: m.baseCommit!, role: t.role, objective: m.goal, constraints: m.constraints, task: t, planSummary: `${plan.summary}\nTasks: ${plan.tasks.map((x) => `${x.key} (${x.role})`).join(', ')}`,
-      facts: this.facts(w.id), decisions, includeDiff: t.role === 'reviewer' || t.role === 'tester', skills: this.skills.index(t.role), mcp: permitted.includes('mcp_call') ? this.o.mcp?.index(t.role) : undefined,
+      facts: this.facts(w.id), decisions, includeDiff: t.role === 'reviewer' || t.role === 'tester' || t.role === 'security_reviewer', skills: this.skills.index(t.role), mcp: permitted.includes('mcp_call') ? this.o.mcp?.index(t.role) : undefined,
     });
     const ctxArt = this.artifacts.put({ missionId: m.id, taskId: t.id, kind: 'context', name: `Context · ${t.key} attempt ${number}`, content: ctx.text });
     this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'context.built', actor: SYSTEM('context'), payload: { sources: ctx.sources, chars: ctx.text.length } });
@@ -966,6 +968,7 @@ export class Orchestrator {
         await this.checksStage(ctx);
         await this.acceptanceStage(ctx);
         this.findingsStage(ctx);
+        await this.securityStage(ctx);
         for (const st of this.o.stages ?? []) {
           if (signal.aborted) break;
           try {
@@ -1122,10 +1125,48 @@ export class Orchestrator {
     return this.reverify(missionId);
   }
 
+  /**
+   * Security gate (ADR 0023): ATLAS's deterministic scan of the integrated change. Its high and medium results are
+   * confirmed findings (ATLAS observed them; the report is the evidence) and block like any confirmed finding until
+   * fixed or dismissed by the operator. In advisory mode they are recorded as suspected and do not block.
+   */
+  private async securityStage(ctx: StageContext) {
+    const m = ctx.mission;
+    if (!m.baseCommit) return;
+    const advisory = ctx.setting<'blocking' | 'advisory'>('security.gate', 'blocking') === 'advisory';
+    const started = Date.now();
+    const hits = await scanWorktree(ctx.worktree, m.baseCommit);
+    const art = ctx.putArtifact({ kind: 'evidence', name: `Security scan @ ${ctx.commit.slice(0, 7)}`, content: securityReport(hits) });
+    const tasks = this.repo.tasks(m.id).filter((t) => !t.parentTaskId);
+    const owner = [...tasks].reverse().find((t) => ROLES[t.role].writes) ?? tasks[0];
+    if (owner) {
+      for (const h of hits.filter((x) => x.severity !== 'info')) {
+        const serious = h.severity === 'high' || h.severity === 'medium';
+        const kind = serious ? (advisory ? 'suspected' : 'confirmed') : 'informational';
+        const f: Finding = {
+          id: newId('fnd'), missionId: m.id, taskId: owner.id, file: h.file, line: h.line, endLine: null, severity: h.severity, kind, title: h.title,
+          observation: h.detail, recommendation: h.recommendation, evidence: `${h.snippet}\n\nFound by ATLAS's security scan (rule ${h.rule}) on ${ctx.commit.slice(0, 12)}.`,
+          reproductionArtifactId: kind === 'confirmed' ? art.id : null, confidence: 1, status: 'open', fingerprint: fingerprint({ file: h.file, line: h.line ?? undefined, title: `${h.rule} ${h.title}` }), createdAt: nowIso(), source: 'security',
+        };
+        const { finding, duplicate } = this.repo.insertFinding(f);
+        if (!duplicate) this.emit({ missionId: m.id, taskId: owner.id, type: 'finding.reported', actor: SYSTEM('security-scan'), payload: { findingId: finding.id, file: finding.file, line: finding.line, severity: finding.severity, kind: finding.kind, title: finding.title, rule: h.rule }, artifactIds: [art.id] });
+      }
+    }
+    const blocking = blockingFindings(this.repo.findings(m.id).filter((f) => f.source === 'security'));
+    const counts = (['high', 'medium', 'low', 'info'] as const).map((s) => `${hits.filter((h) => h.severity === s).length} ${s}`).join(', ');
+    ctx.check({
+      name: 'security', command: null, required: true, result: blocking.length ? 'fail' : 'pass', exitCode: null, durationMs: Date.now() - started, artifactId: art.id,
+      reason: blocking.length
+        ? `${blocking.length} open security finding${blocking.length === 1 ? '' : 's'}: ${blocking.slice(0, 3).map((f) => `${f.title} (${f.file}${f.line ? `:${f.line}` : ''})`).join('; ')}`
+        : hits.length ? `Scan results: ${counts}; none open and blocking${advisory ? ' (advisory mode)' : ''}` : 'No security problems found in the change',
+    });
+  }
+
   /** Review gate: open, confirmed, high/medium findings block; suspected and informational do not. */
   private findingsStage(ctx: StageContext) {
-    const all = this.repo.findings(ctx.mission.id);
-    const reviewed = this.repo.tasks(ctx.mission.id).some((t) => t.role === 'reviewer' && t.state === 'done');
+    // Agent reviews (the reviewer and the security engineer); ATLAS's own scan has its own check.
+    const all = this.repo.findings(ctx.mission.id).filter((f) => f.source !== 'security');
+    const reviewed = this.repo.tasks(ctx.mission.id).some((t) => (t.role === 'reviewer' || t.role === 'security_reviewer') && t.state === 'done');
     if (!reviewed && !all.length) return;
     const blocking = blockingFindings(all);
     ctx.check({

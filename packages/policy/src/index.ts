@@ -21,6 +21,7 @@ export const ROLE_GRANTS: Record<AgentRole, readonly Capability[]> = {
   browser_qa: ['fs.read', 'browser.navigate'],
   desktop_operator: ['fs.read', 'desktop.input'],
   deployment_verifier: ['fs.read', 'browser.navigate'],
+  security_reviewer: ['fs.read', 'shell.safe'],
 };
 
 /**
@@ -150,6 +151,8 @@ export const TOOL_CAPABILITY: Record<string, Capability | 'shell'> = {
   desktop_action: 'desktop.input',
   staging_deploy: 'deploy.staging',
   inspect_logs: 'fs.read',
+  // ATLAS's deterministic scanner over the worktree's change: reads only (ADR 0023).
+  security_scan: 'fs.read',
   // Reviewed procedures from ATLAS's own skill library: read-only text, never repository content.
   load_skill: 'fs.read',
   read_skill_file: 'fs.read',

@@ -102,6 +102,7 @@ export function Findings({ snap, onLog }: { snap: MissionSnapshot; onLog: (artif
             <div className="at-row" style={{ gap: 8 }}>
               <Badge tone={SEV_TONE[f.severity]}>{f.severity}</Badge>
               <Badge tone={f.kind === 'confirmed' ? 'danger' : 'outline'}>{f.kind}</Badge>
+              {f.source === 'security' && <Badge tone="warning">security scan</Badge>}
               <span className="body-strong at-trunc" style={{ flex: 1 }}>{f.title}</span>
               <span className="at-mono at-subtle lv-small">{f.file}{f.line ? `:${f.line}${f.endLine && f.endLine !== f.line ? `–${f.endLine}` : ''}` : ''}</span>
             </div>

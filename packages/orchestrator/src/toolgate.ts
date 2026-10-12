@@ -1,5 +1,7 @@
 // The governed tool surface (manual §21–22). Every agent tool call: validate args → policy → (approval) → executor.
 // A denied call returns before any executor is touched.
+import { report as securityReport } from '@atlas/security';
+import { scanWorktree } from './security';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -21,6 +23,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   { name: 'shell_exec', description: 'Run one program with an argument array (no shell). Privileged commands need human approval.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Executable, e.g. "npm"' }, args: { type: 'array', items: { type: 'string' } }, timeoutSec: { type: 'number' } }, required: ['command', 'args'], additionalProperties: false } },
   { name: 'git_status', description: 'Show git status and the diff summary of the worktree.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'run_tests', description: "Run the project's configured test command and return its output and exit code.", parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'security_scan', description: 'Run ATLAS\'s deterministic security scan over your worktree\'s change against the mission base: leaked secrets, injection-prone calls, disabled TLS checks, risky dependency and CI changes. Returns each result with file, line, severity and the fix.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'view_diff', description: 'Show the diff of the worktree (committed and uncommitted) against the mission base commit.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Optional: limit to one path' } }, additionalProperties: false } },
   {
     name: 'report_finding',
@@ -73,6 +76,7 @@ const ARGS: Record<string, z.ZodTypeAny> = {
   git_status: z.object({}).strict(),
   run_tests: z.object({}).strict(),
   view_diff: z.object({ path: z.string().min(1).optional() }).strict(),
+  security_scan: z.object({}).strict(),
   report_finding: FindingArgs,
   load_skill: z.object({ name: z.string().min(1).max(64) }).strict(),
   read_skill_file: z.object({ name: z.string().min(1).max(64), path: z.string().min(1).max(300) }).strict(),
@@ -223,6 +227,10 @@ export class ToolGate implements ToolInvoker {
         return ok(`${st.out || '(clean)'}\n${diff.out}`.trim());
       }
       case 'shell_exec': return this.process(a.command, a.args, (a.timeoutSec ?? 300) * 1000, signal, 'shell', network);
+      case 'security_scan': {
+        const hits = await scanWorktree(cwd, this.ctx.base);
+        return ok(securityReport(hits));
+      }
       case 'view_diff': {
         const args = ['diff', '--no-color', '--no-ext-diff', this.ctx.base, ...(a.path ? ['--', a.path] : [])];
         const d = await git(cwd, args);

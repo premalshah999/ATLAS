@@ -147,8 +147,8 @@ export class Repo {
   insertFinding(f: Finding): { finding: Finding; duplicate: boolean } {
     const existing = this.db.prepare('SELECT * FROM findings WHERE mission_id = ? AND fingerprint = ?').get(f.missionId, f.fingerprint) as Row | undefined;
     if (existing) return { finding: toFinding(existing), duplicate: true };
-    this.db.prepare(`INSERT INTO findings (id, mission_id, task_id, file, line, end_line, severity, kind, title, observation, recommendation, evidence, reproduction_artifact_id, confidence, status, fingerprint, created_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(f.id, f.missionId, f.taskId, f.file, f.line, f.endLine, f.severity, f.kind, f.title, f.observation, f.recommendation, f.evidence, f.reproductionArtifactId, f.confidence, f.status, f.fingerprint, f.createdAt);
+    this.db.prepare(`INSERT INTO findings (id, mission_id, task_id, file, line, end_line, severity, kind, title, observation, recommendation, evidence, reproduction_artifact_id, confidence, status, fingerprint, created_at, source)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(f.id, f.missionId, f.taskId, f.file, f.line, f.endLine, f.severity, f.kind, f.title, f.observation, f.recommendation, f.evidence, f.reproductionArtifactId, f.confidence, f.status, f.fingerprint, f.createdAt, f.source ?? 'review');
     return { finding: f, duplicate: false };
   }
   findings(missionId: string): Finding[] { return (this.db.prepare('SELECT * FROM findings WHERE mission_id = ? ORDER BY created_at').all(missionId) as Row[]).map(toFinding); }
@@ -232,7 +232,7 @@ const toDeployment = (r: Row): Deployment => ({
 });
 const toFinding = (r: Row): Finding => ({
   id: r.id, missionId: r.mission_id, taskId: r.task_id, file: r.file, line: r.line, endLine: r.end_line, severity: r.severity, kind: r.kind, title: r.title, observation: r.observation,
-  recommendation: r.recommendation, evidence: r.evidence, reproductionArtifactId: r.reproduction_artifact_id, confidence: r.confidence, status: r.status, fingerprint: r.fingerprint, createdAt: r.created_at,
+  recommendation: r.recommendation, evidence: r.evidence, reproductionArtifactId: r.reproduction_artifact_id, confidence: r.confidence, status: r.status, fingerprint: r.fingerprint, createdAt: r.created_at, source: r.source === 'security' ? 'security' : 'review',
 });
 const toAttempt = (r: Row): Attempt => ({ id: r.id, taskId: r.task_id, missionId: r.mission_id, number: r.number, state: r.state, runtime: r.runtime, pid: r.pid, startedAt: r.started_at, endedAt: r.ended_at, error: r.error, tokens: r.tokens });
 const toApproval = (r: Row): Approval => ({

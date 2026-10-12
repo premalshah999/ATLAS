@@ -118,4 +118,11 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       ALTER TABLE missions ADD COLUMN model TEXT;
     `,
   },
+  {
+    version: 8,
+    sql: `
+      -- Who reported a finding (ADR 0023): an agent review, or ATLAS's own security scan.
+      ALTER TABLE findings ADD COLUMN source TEXT NOT NULL DEFAULT 'review';
+    `,
+  },
 ];

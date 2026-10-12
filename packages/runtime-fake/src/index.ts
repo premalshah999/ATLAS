@@ -27,6 +27,18 @@ export function forTask(key: string, steps: FakeStep[], role = 'coder'): FakeScr
   return { name: `task:${key}`, matches: (input) => input.roleId === role && input.prompt.includes(`Work on task ${key} now.`), steps: () => steps };
 }
 
+/** Default security review (ADR 0023): read the change and run ATLAS's scan; report nothing it cannot back. */
+export const securitySurveyScript: FakeScript = {
+  name: 'security-survey',
+  matches: (input) => input.roleId === 'security_reviewer',
+  steps: () => [
+    { say: 'Reviewing the change for security problems.' },
+    { tool: 'view_diff', args: {} },
+    { tool: 'security_scan', args: {} },
+    { claim: 'Security review complete. ATLAS\'s scan results are recorded; no further findings reported (scripted security engineer).' },
+  ],
+};
+
 /** Default review: read the change and run the tests; report nothing it cannot back. */
 export const reviewSurveyScript: FakeScript = {
   name: 'review-survey',
@@ -82,7 +94,7 @@ export class FakeRuntime implements AgentRuntime {
   private async drive(input: AgentInput, q: EventQueue<AgentEvent>, signal: AbortSignal) {
     let script: FakeScript | null = null;
     for (const s of this.scripts) if (await s.matches(input)) { script = s; break; }
-    script ??= (await reviewSurveyScript.matches(input)) ? reviewSurveyScript : surveyScript;
+    script ??= (await reviewSurveyScript.matches(input)) ? reviewSurveyScript : (await securitySurveyScript.matches(input)) ? securitySurveyScript : surveyScript;
     const steps = await script.steps(input);
     let calls = 0;
     let summary = '';

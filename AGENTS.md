@@ -48,6 +48,8 @@ packages/desktop-control     Xvfb virtual displays, xdotool input, controller le
 packages/mcp                 MCP client (stdio in the sandbox, streamable HTTP) and server manager behind mcp_call
 packages/sync                skills and MCP servers synced to Claude Code, Codex and OpenCode (preview, ownership, conflicts)
 packages/team                team spaces: signed append-only record in refs/atlas/team, invitations, teams, board, reviews, owner gate
+packages/security            deterministic security scan of a change: secrets, injection-prone code, dependency and CI risks
+packages/graph               code graph of a repository (files, symbols, imports) that agents query instead of re-reading files
 packages/runtime-fake        deterministic scripted runtime (CI and the sample missions)
 packages/runtime-pi          Pi SDK adapter (pinned 0.87.1)
 fixtures/sample-app          sample project with a real bug and real tests

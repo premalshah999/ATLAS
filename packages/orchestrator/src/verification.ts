@@ -40,7 +40,7 @@ export type Verdict = 'verified' | 'unverified' | 'failed';
  * Checks that gate release but are not evidence the software works: a clean review, an approval.
  * They can block; they can never on their own make a result "verified".
  */
-export const GATE_ONLY = new Set(['review', 'verification-definition']);
+export const GATE_ONLY = new Set(['review', 'verification-definition', 'security']);
 
 /** Aggregate checks. Only `pass` satisfies a required check; missing checks never count as success. */
 export function gate(checks: Pick<CheckRecord, 'name' | 'required' | 'result' | 'reason'>[]): { verdict: Verdict; summary: string } {

@@ -20,7 +20,7 @@ function seed(repo: Repo) {
 describe('storage', () => {
   it('applies migrations once with WAL and foreign keys', () => {
     const { db } = setup();
-    expect(schemaVersion(db)).toBe(7);
+    expect(schemaVersion(db)).toBe(8);
     expect((db.prepare('PRAGMA journal_mode').get() as any).journal_mode).toBe('wal');
     expect((db.prepare('PRAGMA foreign_keys').get() as any).foreign_keys).toBe(1);
   });
@@ -35,7 +35,7 @@ describe('storage', () => {
     db.exec("DELETE FROM schema_migrations WHERE version = 5; ALTER TABLE missions DROP COLUMN verdict; DROP TABLE process_journal;");
     db.close();
     ({ db, repo } = setup(dir));
-    expect(schemaVersion(db)).toBe(7);
+    expect(schemaVersion(db)).toBe(8);
     expect(repo.mission(id)!.verdict).toBe('unverified'); // the latest gate result wins
     repo.updateMission(id, { verdict: 'verified' });
     expect(repo.mission(id)!.verdict).toBe('verified');
@@ -53,7 +53,7 @@ describe('storage', () => {
     db.exec('DELETE FROM missions WHERE follow_up IS NOT NULL; DELETE FROM schema_migrations WHERE version = 6; ALTER TABLE missions DROP COLUMN follow_up;');
     db.close();
     ({ db, repo } = setup(dir));
-    expect(schemaVersion(db)).toBe(7);
+    expect(schemaVersion(db)).toBe(8);
     expect(repo.mission(id)!.followUp).toBeNull();
   });
 
@@ -66,10 +66,10 @@ describe('storage', () => {
     repo.insertMission({ ...repo.mission(id)!, id: other, model: 'mistral/devstral-2512', createdAt: now, updatedAt: now });
     expect(repo.mission(other)!.model).toBe('mistral/devstral-2512');
     expect(repo.mission(id)!.model).toBeNull();
-    db.exec(`DELETE FROM missions WHERE id = '${other}'; DELETE FROM schema_migrations WHERE version = 7; ALTER TABLE missions DROP COLUMN model;`);
+    db.exec(`DELETE FROM missions WHERE id = '${other}'; DELETE FROM schema_migrations WHERE version IN (7, 8); ALTER TABLE missions DROP COLUMN model; ALTER TABLE findings DROP COLUMN source;`);
     db.close();
     ({ db, repo } = setup(dir));
-    expect(schemaVersion(db)).toBe(7);
+    expect(schemaVersion(db)).toBe(8);
     expect(repo.mission(id)!.model).toBeNull();
   });
 

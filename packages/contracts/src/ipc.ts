@@ -106,6 +106,8 @@ export const Requests = {
     z.object({ key: z.literal('models.default'), value: modelRef.nullable() }).strict(),
     z.object({ key: z.literal('models.fast'), value: modelRef.nullable() }).strict(),
     z.object({ key: z.literal('models.strong'), value: modelRef.nullable() }).strict(),
+    z.object({ key: z.literal('security.gate'), value: z.enum(['blocking', 'advisory']) }).strict(),
+    z.object({ key: z.literal('security.aiReview'), value: z.boolean() }).strict(),
   ]),
   'mcp.list': empty,
   'mcp.save': z.object({ server: McpServerConfig }).strict(),

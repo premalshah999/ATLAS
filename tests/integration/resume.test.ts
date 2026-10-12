@@ -61,6 +61,7 @@ describe('durable Pi sessions across a daemon restart', () => {
     let resumedContext: any[] = [];
     const answer: FauxResponseStep = (ctx) => {
       if (isTask(ctx, 'review')) return fauxAssistantMessage('Reviewed the change; it matches the acceptance criteria.');
+      if (isTask(ctx, 'security')) return fauxAssistantMessage('No security problems in this change.');
       resumedContext = ctx.messages;
       return fauxAssistantMessage('The fix was written before the restart; the command I started was stopped. Done.');
     };
@@ -72,7 +73,7 @@ describe('durable Pi sessions across a daemon restart', () => {
     await second.orch.settle(id);
 
     const attempts = second.repo.attempts(id);
-    expect(attempts.map((a) => a.state)).toEqual(['lost', 'succeeded', 'succeeded']);
+    expect(attempts.map((a) => a.state)).toEqual(['lost', 'succeeded', 'succeeded', 'succeeded']); // coder (lost, resumed), reviewer, security engineer
     const started = second.events.find((e) => e.type === 'attempt.started' && e.attemptId === attempts[1].id)!;
     expect(started.payload.resumedFrom).toMatchObject({ attemptId: lost.id, number: 1 });
 

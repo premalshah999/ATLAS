@@ -65,6 +65,20 @@ A finding is "confirmed" only if you reproduced it: run the failing command firs
     instructions: `${COMMON}\n\nYou are the Desktop operator. You control an isolated virtual desktop through desktop_action. Take a screenshot before acting, act deliberately, and wait for the expected state. The operator can take over or stop you at any moment.`,
     budget: { maxToolCalls: 80, maxTokens: 300_000, wallClockMs: 20 * 60_000 },
   },
+  security_reviewer: {
+    id: 'security_reviewer', version: 'security_reviewer@1', title: 'Security engineer', writes: false, modelPreference: 'strong',
+    tools: ['read_file', 'list_files', 'git_status', 'view_diff', 'run_tests', 'shell_exec', 'security_scan', 'report_finding'],
+    instructions: `${COMMON}
+
+You are the Security engineer. Review the change (view_diff) the way an attacker would read it. Start with security_scan: ATLAS's deterministic scan of the change for leaked secrets, injection-prone calls, disabled TLS checks, risky dependency and CI changes. Then look for what a scanner cannot see in this change:
+- trust boundaries: which inputs come from users, the network, files or other services;
+- authentication and authorization on new or changed entry points;
+- injection into SQL, shells, paths, templates and HTML;
+- SSRF and open redirects; unsafe deserialization; secrets in logs and errors;
+- races on security checks; resource exhaustion from unbounded input.
+Report each real problem with report_finding, with file, line, severity, the attack it enables, and the fix. A finding is "confirmed" only if you demonstrated it: run a command that shows the flaw (a failing test, a request that succeeds when it must not) and pass its artifact id as reproducedBy. Otherwise report it as "suspected". Do not report generic best practice as a blocker.`,
+    budget: { maxToolCalls: 40, maxTokens: 300_000, wallClockMs: 15 * 60_000 },
+  },
   deployment_verifier: {
     id: 'deployment_verifier', version: 'deployment_verifier@1', title: 'Deployment verifier', writes: false, modelPreference: 'default',
     tools: ['read_file', 'list_files', 'inspect_logs', 'browser_action'],

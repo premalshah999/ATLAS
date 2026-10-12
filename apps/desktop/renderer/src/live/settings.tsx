@@ -85,6 +85,7 @@ export function Settings() {
               </div>
             )}
           </section>
+          {settings && <SecuritySection settings={settings} onChange={setSettings} />}
           {settings && <DesktopSection settings={settings} onChange={setSettings} />}
           {settings && <DeploySection settings={settings} onChange={setSettings} />}
           {settings && <RetentionSection settings={settings} onChange={setSettings} />}
@@ -191,6 +192,19 @@ function ModelsSection({ settings, models, onChange }: { settings: SettingsState
           <ModelSelect testId={`model-${t.key.split('.')[1]}`} models={models} value={settings.values[t.key]} empty={t.key === 'models.default' ? 'First available model' : 'Same as default'} onChange={(value) => void saveSetting({ key: t.key, value }, onChange)} />
         </Field>
       ))}
+    </section>
+  );
+}
+
+/** The security engineer (ADR 0023): ATLAS's scan at the gate, and the AI security review in every plan. */
+function SecuritySection({ settings, onChange }: { settings: SettingsState; onChange: OnSettings }) {
+  const blocking = settings.values['security.gate'] !== 'advisory';
+  return (
+    <section className="lv-section" data-testid="security-settings">
+      <div className="at-label">Security engineer</div>
+      <span className="at-muted lv-small">Every integrated change is scanned before release: committed secrets, injection-prone code (shell, SQL, eval, HTML), disabled TLS checks, new dependencies and install scripts, look-alike package names, and CI workflows a pull request could abuse. A security engineer agent also reviews each change the way an attacker would read it, in parallel with the reviewer.</span>
+      <label className="lv-toggle-row"><Toggle on={blocking} onChange={(v) => void saveSetting({ key: 'security.gate', value: v ? 'blocking' : 'advisory' }, onChange)} label="Block release on high and medium scan results" /><span>Block release on high and medium scan results until fixed or dismissed {blocking ? '' : '(advisory: results are recorded, nothing blocks)'}</span></label>
+      <label className="lv-toggle-row"><Toggle on={settings.values['security.aiReview']} onChange={(v) => void saveSetting({ key: 'security.aiReview', value: v }, onChange)} label="Add a security engineer review to every plan" /><span>Add a security engineer review to every plan (uses the strong model)</span></label>
     </section>
   );
 }

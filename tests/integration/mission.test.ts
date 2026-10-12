@@ -21,7 +21,7 @@ describe('sample mission', () => {
 
     // Evidence: real check records on the integrated commit, a review gate, and patch artifacts.
     const checks = h.repo.checks(id);
-    expect(checks.map((c) => [c.name, c.result])).toEqual([['verification-definition', 'pass'], ['tests', 'pass'], ['review', 'pass']]);
+    expect(checks.map((c) => [c.name, c.result])).toEqual([['verification-definition', 'pass'], ['tests', 'pass'], ['review', 'pass'], ['security', 'pass']]);
     expect(checks[1]).toMatchObject({ required: true, exitCode: 0 });
     expect(m.integrationBranch).toBe(`atlas/${id}/integration`);
     expect(checks[1].commit).toBe(m.integrationCommit);
@@ -253,7 +253,7 @@ describe('cancellation and recovery', () => {
       await step('settle after recovery', second.orch.settle(id), 30_000);
     } catch (e) { throw new Error(`${(e as Error).message} at ${where}: ${state(second, id)}`); }
     const attempts = second.repo.attempts(id);
-    expect(attempts.map((x) => x.state)).toEqual(['lost', 'succeeded', 'succeeded']); // coder (lost, then fresh), reviewer
+    expect(attempts.map((x) => x.state)).toEqual(['lost', 'succeeded', 'succeeded', 'succeeded']); // coder (lost, then fresh), reviewer, security engineer
     expect(second.repo.mission(id)!.state, explainChecks(second, id)).toBe('completed');
     expect(replay(second.repo.eventsSince(id, 0)).mission).toBe('completed');
   }, 90_000);

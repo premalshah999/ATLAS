@@ -4,12 +4,12 @@ import type { AtlasEvent } from '@atlas/contracts';
 export type Tone = 'muted' | 'accent' | 'success' | 'warning' | 'danger' | 'human';
 export interface Row { title: string; detail?: string; meta?: string; tone: Tone; kind: 'activity' | 'decision' | 'file' | 'error' | 'approval' | 'milestone' | 'test' | 'delegation'; who: string }
 
-const ROLE_MARK: Record<string, string> = { coder: 'CO', tester: 'TE', reviewer: 'RV', orchestrator: 'OR', browser_qa: 'QA', desktop_operator: 'DK', deployment_verifier: 'DV' };
+const ROLE_MARK: Record<string, string> = { coder: 'CO', tester: 'TE', reviewer: 'RV', orchestrator: 'OR', browser_qa: 'QA', desktop_operator: 'DK', deployment_verifier: 'DV', security_reviewer: 'SE' };
 export const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join('') || '?';
-export const markOf = (e: AtlasEvent) => e.actor.kind === 'operator' ? 'YOU' : e.actor.kind === 'agent' ? ROLE_MARK[e.actor.role] ?? 'AG' : e.actor.kind === 'teammate' ? initials(e.actor.name) : e.actor.component === 'pipeline' ? 'PL' : 'AT';
+export const markOf = (e: AtlasEvent) => e.actor.kind === 'operator' ? 'YOU' : e.actor.kind === 'agent' ? ROLE_MARK[e.actor.role] ?? 'AG' : e.actor.kind === 'teammate' ? initials(e.actor.name) : e.actor.component === 'pipeline' ? 'PL' : e.actor.component === 'security-scan' ? 'SE' : 'AT';
 /** Who did it, in words: you, an agent role, a teammate by name, the pipeline, or ATLAS. */
-export const actorName = (a: AtlasEvent['actor']) => a.kind === 'operator' ? 'You' : a.kind === 'agent' ? roleName(a.role) : a.kind === 'teammate' ? a.name : a.component === 'pipeline' ? 'Pipeline' : a.component === 'team-runner' ? 'Team runner' : 'ATLAS';
-export const roleName = (r: string) => ({ coder: 'Coder', tester: 'Tester', reviewer: 'Reviewer', orchestrator: 'Orchestrator', browser_qa: 'Browser QA', desktop_operator: 'Desktop operator', deployment_verifier: 'Deployment verifier' } as Record<string, string>)[r] ?? r;
+export const actorName = (a: AtlasEvent['actor']) => a.kind === 'operator' ? 'You' : a.kind === 'agent' ? roleName(a.role) : a.kind === 'teammate' ? a.name : a.component === 'pipeline' ? 'Pipeline' : a.component === 'team-runner' ? 'Team runner' : a.component === 'security-scan' ? 'Security scan' : 'ATLAS';
+export const roleName = (r: string) => ({ coder: 'Coder', tester: 'Tester', reviewer: 'Reviewer', orchestrator: 'Orchestrator', browser_qa: 'Browser QA', desktop_operator: 'Desktop operator', deployment_verifier: 'Deployment verifier', security_reviewer: 'Security engineer' } as Record<string, string>)[r] ?? r;
 export const roleMark = (r: string) => ROLE_MARK[r] ?? r.slice(0, 2).toUpperCase();
 
 const STATE_WORD: Record<string, string> = {
