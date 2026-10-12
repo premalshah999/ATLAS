@@ -224,7 +224,9 @@ export class TeamHub {
     clearTimeout(this.shareTimers.get(e.missionId));
     this.shareTimers.set(e.missionId, setTimeout(() => {
       this.shareTimers.delete(e.missionId);
-      void this.publishSnapshot(e.missionId, false).then(() => this.reactMission(e)).catch((err: Error) => this.o.log.warn('team share failed', { missionId: e.missionId, error: err.message }));
+      // Coalesced: react to the mission as it is now, not to whichever event came last (CI: a task.state event
+      // closing the window meant the linked item never moved to review).
+      void this.publishSnapshot(e.missionId, false).then(() => this.reactMission(e.missionId)).catch((err: Error) => this.o.log.warn('team share failed', { missionId: e.missionId, error: err.message }));
     }, 600));
   }
 
@@ -293,14 +295,13 @@ export class TeamHub {
     await this.runner(workspaceId, st);
   }
 
-  private async reactMission(e: AtlasEvent) {
-    if (e.type !== 'mission.state' && e.type !== 'plan.proposed' && e.type !== 'pipeline.step' && e.type !== 'mission.decision') return;
-    const m = this.o.repo.mission(e.missionId);
+  private async reactMission(missionId: string) {
+    const m = this.o.repo.mission(missionId);
     if (!m) return;
     const sp = this.space(m.workspaceId);
     const st = await sp.state();
     await this.maybeApprovePlan(m.workspaceId, st, m);
-    await this.followItem(m.workspaceId, st, m, e);
+    await this.followItem(m.workspaceId, st, m);
   }
 
   private teammate(st: TeamState, keyId: string): Actor {
@@ -366,12 +367,13 @@ export class TeamHub {
   }
 
   /** Move a linked item along as its mission does: in review once verified, done when CI passed on its pull request. */
-  private async followItem(workspaceId: string, st: TeamState, m: Mission, e: AtlasEvent) {
+  private async followItem(workspaceId: string, st: TeamState, m: Mission) {
     const itemId = this.shared()[m.id];
     const it = itemId ? st.items.get(itemId) : undefined;
     const sp = this.space(workspaceId);
     if (!it || it.assignee !== sp.me || it.status === 'done' || it.status === 'closed') return;
-    const status = e.type === 'pipeline.step' && e.payload.step === 'ready' ? 'done' : m.state === 'completed' && m.verdict === 'verified' && it.status === 'in_progress' ? 'review' : null;
+    const ready = this.o.repo.eventsSince(m.id, 0, 100_000).some((x) => x.type === 'pipeline.step' && x.payload.step === 'ready');
+    const status = ready ? 'done' : m.state === 'completed' && m.verdict === 'verified' && it.status === 'in_progress' ? 'review' : null;
     if (status && status !== it.status) await this.write(workspaceId, 'item.update', { item: it.id, status }).catch(() => {});
   }
 

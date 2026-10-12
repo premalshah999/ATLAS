@@ -142,6 +142,8 @@ describe('team spaces through the daemon (ADR 0021)', () => {
     await waitFor(() => bob.h.repo.mission(runs[0].id)!.state !== 'awaiting_approval');
     await bob.h.orch.settle(runs[0].id);
     expect(bob.h.repo.mission(runs[0].id)!.verdict, explainChecks(bob.h, runs[0].id)).toBe('verified');
+    // Regression (CI): the update is coalesced; an unrelated event closing the window must not stop the item moving.
+    bob.h.repo.append({ missionId: runs[0].id, taskId: null, attemptId: null, type: 'task.state', actor: { kind: 'system', component: 'test' }, payload: { key: 'x', from: 'done', to: 'done' }, artifactIds: [] });
     await new Promise((r) => setTimeout(r, 1500)); // the snapshot and item update are debounced
     await syncAll([alice, bob]);
     view = await alice.hub.view(alice.ws);
