@@ -16,7 +16,14 @@ async function openTeam(page: Page) {
   await page.getByRole('button', { name: 'Team' }).click();
   await expect(page.getByTestId('team')).toBeVisible();
 }
-const sync = async (page: Page) => { await page.getByTestId('team-sync-now').click(); await expect(page.getByTestId('team-sync')).toHaveAttribute('data-state', 'idle', { timeout: 30_000 }); };
+/** Sync now and wait for that sync to finish: the status is already "idle" from the last one, so wait for its time to change. */
+const sync = async (page: Page) => {
+  const pill = page.getByTestId('team-sync');
+  const before = await pill.getAttribute('data-at');
+  await page.getByTestId('team-sync-now').click();
+  await expect(pill).not.toHaveAttribute('data-at', before ?? '', { timeout: 30_000 });
+  await expect(pill).toHaveAttribute('data-state', 'idle', { timeout: 30_000 });
+};
 
 test('two people collaborate through a team space: invite, board, mission, owner review', async () => {
   test.setTimeout(process.platform === 'win32' ? 420_000 : 240_000);
@@ -63,9 +70,10 @@ test('two people collaborate through a team space: invite, board, mission, owner
     await sync(b.page);
 
     // Alice sees it, starts a mission for it, and runs it.
-    await sync(a.page);
     await a.page.getByRole('tab', { name: /Board/ }).click();
-    await a.page.locator('[data-testid="team-item"][data-title="Fix slug generation"] .lv-item-main').click();
+    const item = a.page.locator('[data-testid="team-item"][data-title="Fix slug generation"] .lv-item-main');
+    await expect(async () => { await sync(a.page); await expect(item).toBeVisible({ timeout: 1000 }); }).toPass({ timeout: 30_000, intervals: [1000, 2000, 3000] });
+    await item.click();
     await a.page.getByTestId('team-item-start').click();
     await expect(a.page.getByTestId('mission-for-item')).toContainText('Fix slug generation');
     await expect(a.page.getByTestId('preflight')).toHaveAttribute('data-ready', 'true');

@@ -42,7 +42,7 @@ export function TeamScreen({ workspaceId }: { workspaceId?: string }) {
         <span style={{ flex: 1 }} />
         {view && (
           <Tip label={sync?.error ?? (view.remote ? `Shared through ${view.remote} on the ref refs/atlas/team` : 'No origin remote')}>
-            <span className="lv-small at-row" style={{ gap: 6 }} data-testid="team-sync" data-state={sync?.state}>
+            <span className="lv-small at-row" style={{ gap: 6 }} data-testid="team-sync" data-state={sync?.state} data-at={sync?.at ?? ''}>
               <span className={`lv-pulse lv-pulse--${sync?.state ?? 'idle'}`} />
               {sync?.state === 'syncing' ? 'Syncing…' : sync?.state === 'error' ? 'Sync failed' : sync?.state === 'local' ? 'This machine only' : sync?.at ? `Synced ${ago(sync.at)}` : 'Not synced yet'}
             </span>

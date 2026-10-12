@@ -21,7 +21,9 @@ export class BrowserSession {
     const exe = resolveBrowser();
     if (!exe.path) throw new Error(exe.detail);
     const { chromium } = await import('playwright-core');
-    this.browser = await chromium.launch({ executablePath: exe.path, headless: true, args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+    this.browser = await chromium.launch({ executablePath: exe.path, headless: true, // No proxy: QA only ever loads the app on loopback. On Windows, proxy auto-detection (WPAD) made the first
+    // navigation exceed its 10 s timeout on CI while the API checks against the same app passed in milliseconds.
+    args: ['--no-sandbox', '--disable-dev-shm-usage', '--no-proxy-server'] });
     // A fresh, non-persistent context per session: no cookies or storage shared across projects or tasks.
     this.context = await this.browser.newContext({ viewport: { width: 1280, height: 800 }, acceptDownloads: false, serviceWorkers: 'block', ignoreHTTPSErrors: false });
     if (opts.trace) await this.context.tracing.start({ screenshots: true, snapshots: true });
