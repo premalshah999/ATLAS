@@ -38,7 +38,17 @@ test('staging deploy, task graph, browser steps, terminal, export and read-only 
     const card = page.getByTestId('approval').first();
     await expect(card).toContainText('local-staging', { timeout: 90_000 });
     await card.getByTestId('approve').click();
-    await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'completed', { timeout: process.platform === 'win32' ? 300_000 : 120_000 });
+    await expect(page.getByTestId('mission')).toHaveAttribute('data-state', /completed|failed/, { timeout: process.platform === 'win32' ? 300_000 : 120_000 });
+    // On failure, say why: the outcome and every check that did not pass, with the end of its output.
+    const why = await page.evaluate(async () => {
+      const a = (window as any).atlas;
+      const [m] = (await a.invoke('mission.list', {})) as { id: string; state: string }[];
+      const s = await a.invoke('mission.get', { missionId: m.id });
+      const checks = (s.checks as { name: string; result: string; reason: string; artifactId: string | null }[]).filter((c) => c.result !== 'pass');
+      const out = await Promise.all(checks.map(async (c) => `[${c.name}: ${c.result}] ${c.reason}${c.artifactId ? `\n${String((await a.invoke('artifact.read', { artifactId: c.artifactId })).text ?? '').slice(-1500)}` : ''}`));
+      return `${s.mission.state}: ${s.mission.outcome ?? ''}\n${out.join('\n---\n')}`;
+    });
+    expect(why.startsWith('completed'), why).toBe(true);
     await expect(page.getByTestId('outcome')).toContainText('staging:revision');
 
     await page.getByRole('tab', { name: /Tasks/ }).click();
