@@ -90,7 +90,7 @@ Report date 2026-10-12 for lint, typecheck, unit, integration and e2e; the eval,
 1. **Real-model path.** It is not exercised against a live provider in CI. The Pi adapter is contract-tested with Pi's faux provider. `ATLAS_EVAL_RUNTIME=pi pnpm eval` runs the corpus with a real model when a key is present; that has not been run for this report.
 2. **Weak project tests produce false passes.** The `weak-tests` eval case shows that ATLAS cannot know an overfit change is wrong when the project's own checks pass it.
 3. **Windows** runs agent and check commands as visible sandbox accounts that the operator sets up from Settings (ADR 0020, decided after ADR 0016). The operator terminal is a ConPTY hosted as the account.
-   - **Evidence.** CI run 38219399706 (commit `ad90563`, Windows Server 2025) passed every step: lint, typecheck, unit (including the PTY tests typing into PowerShell, plain and as the account), integration, eval, the full Electron e2e, and packaging.
+   - **Evidence.** CI run 38221699664 (commit `138b846`) passed every step on Windows Server 2025, Ubuntu 24.04 and macOS 15: lint, typecheck, unit (including the PTY tests typing into PowerShell, plain and as the account), integration, eval, the full Electron e2e (including two-installation team spaces), and packaging.
    - **Without accounts, Windows commands fail closed.** An AppContainer cannot create the pipes Node uses for child stdio.
    - **macOS** runs the full unit, integration and e2e suites in CI, including the Seatbelt sandbox and XQuartz desktop control.
    - Neither platform's build is signed.
