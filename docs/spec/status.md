@@ -6,12 +6,12 @@ Report date 2026-10-12 for lint, typecheck, unit, integration and e2e; the eval,
 
 | Command | Result |
 | --- | --- |
-| `pnpm lint` | dependency graph acyclic (15 workspaces); ESLint 0 errors (13 react-hooks `exhaustive-deps` warnings in the renderer) |
+| `pnpm lint` | dependency graph acyclic (16 workspaces); ESLint 0 errors (13 react-hooks `exhaustive-deps` warnings in the renderer) |
 | `pnpm typecheck` | every workspace, plus `tests/` and `evals/` |
-| `pnpm test` | 231 passed, 5 skipped (27 files; skips are platform- or tool-gated) |
-| `pnpm test:integration` | 106 passed, 1 skipped (15 files, real git repositories, real sandbox) |
+| `pnpm test` | 240 passed, 7 skipped (28 files; skips are platform- or tool-gated) |
+| `pnpm test:integration` | 113 passed, 1 skipped (17 files, real git repositories, real sandbox) |
 | `pnpm eval` | 11 / 11 cases behaved as expected; false pass rate 1/7 (the deliberate `weak-tests` case) — [report](../eval/latest.md) |
-| `xvfb-run -a pnpm test:e2e` | 16 / 16 passed (built Electron app) |
+| `xvfb-run -a pnpm test:e2e` | 17 / 17 passed (built Electron app; `team.spec.ts` runs two app instances) |
 | `pnpm screenshots` | both capture runs passed; `docs/screenshots` regenerated |
 | `pnpm pi:version` | installed Pi packages match pin 0.87.1, MIT |
 | `pnpm package` | `apps/desktop/release/ATLAS-0.1.0.AppImage` (153 MB); launched under xvfb, daemon reached ready (schema v4) |
