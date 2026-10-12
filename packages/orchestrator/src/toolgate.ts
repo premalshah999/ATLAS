@@ -1,6 +1,7 @@
 // The governed tool surface (manual §21–22). Every agent tool call: validate args → policy → (approval) → executor.
 // A denied call returns before any executor is touched.
 import { report as securityReport } from '@atlas/security';
+import { describeFile, findSymbol, overview as graphOverview, related, type CodeGraph } from '@atlas/graph';
 import { scanWorktree } from './security';
 import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -23,6 +24,8 @@ export const TOOL_SPECS: ToolSpec[] = [
   { name: 'shell_exec', description: 'Run one program with an argument array (no shell). Privileged commands need human approval.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Executable, e.g. "npm"' }, args: { type: 'array', items: { type: 'string' } }, timeoutSec: { type: 'number' } }, required: ['command', 'args'], additionalProperties: false } },
   { name: 'git_status', description: 'Show git status and the diff summary of the worktree.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'run_tests', description: "Run the project's configured test command and return its output and exit code.", parameters: { type: 'object', properties: {}, additionalProperties: false } },
+  { name: 'mission_memory', description: 'ATLAS\'s exact records of this mission for you: objective, constraints, your task and acceptance criteria, the plan and task states, files you wrote, commands you ran with exit codes, findings, denied approvals, and the current change. Use it whenever you are unsure what you already did, and always after your earlier conversation was summarized.', parameters: { type: 'object', properties: { section: { type: 'string', enum: ['all', 'task', 'files', 'commands', 'findings', 'change'], description: 'Default all' } }, additionalProperties: false } },
+  { name: 'code_graph', description: 'Query ATLAS\'s code graph of the repository (your worktree\'s edits included): "overview" (core modules, entry points), "file" (what a file defines, imports, who imports it, its tests), "symbol" (where a name is defined and who uses that file), "related" (files within two import steps).', parameters: { type: 'object', properties: { query: { type: 'string', enum: ['overview', 'file', 'symbol', 'related'] }, target: { type: 'string', description: 'A path for file/related, a name for symbol' } }, required: ['query'], additionalProperties: false } },
   { name: 'security_scan', description: 'Run ATLAS\'s deterministic security scan over your worktree\'s change against the mission base: leaked secrets, injection-prone calls, disabled TLS checks, risky dependency and CI changes. Returns each result with file, line, severity and the fix.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'view_diff', description: 'Show the diff of the worktree (committed and uncommitted) against the mission base commit.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Optional: limit to one path' } }, additionalProperties: false } },
   {
@@ -77,6 +80,8 @@ const ARGS: Record<string, z.ZodTypeAny> = {
   run_tests: z.object({}).strict(),
   view_diff: z.object({ path: z.string().min(1).optional() }).strict(),
   security_scan: z.object({}).strict(),
+  mission_memory: z.object({ section: z.enum(['all', 'task', 'files', 'commands', 'findings', 'change']).default('all') }).strict(),
+  code_graph: z.object({ query: z.enum(['overview', 'file', 'symbol', 'related']), target: z.string().min(1).max(300).optional() }).strict().refine((a) => a.query === 'overview' || !!a.target, 'target is required for file, symbol and related'),
   report_finding: FindingArgs,
   load_skill: z.object({ name: z.string().min(1).max(64) }).strict(),
   read_skill_file: z.object({ name: z.string().min(1).max(64), path: z.string().min(1).max(300) }).strict(),
@@ -143,6 +148,8 @@ export interface GateContext {
   /** Trusted skills (bundled and operator-installed) this attempt may load. */
   skills?: SkillLibrary;
   mcp?: McpProvider;
+  /** The code graph of this worktree (base commit's graph with the worktree's edits), ADR 0024. */
+  graph?(): Promise<CodeGraph>;
   /** Run a delegated subtask to completion. */
   delegate?(args: { role: 'coder' | 'tester' | 'reviewer'; title: string; reason: string; acceptance: string[] }, signal: AbortSignal): Promise<ToolResult>;
 }
@@ -227,6 +234,13 @@ export class ToolGate implements ToolInvoker {
         return ok(`${st.out || '(clean)'}\n${diff.out}`.trim());
       }
       case 'shell_exec': return this.process(a.command, a.args, (a.timeoutSec ?? 300) * 1000, signal, 'shell', network);
+      case 'mission_memory': return ok(await this.missionMemory(a.section, cwd));
+      case 'code_graph': {
+        if (!this.ctx.graph) return this.fail('unknown_tool', 'The code graph is not available for this task.');
+        const g = await this.ctx.graph();
+        const target = a.target ? String(a.target).replace(/\\/g, '/').replace(/^\.\//, '') : '';
+        return ok(a.query === 'overview' ? graphOverview(g) : a.query === 'file' ? describeFile(g, target) : a.query === 'symbol' ? findSymbol(g, target) : related(g, target));
+      }
       case 'security_scan': {
         const hits = await scanWorktree(cwd, this.ctx.base);
         return ok(securityReport(hits));
@@ -305,6 +319,48 @@ ${r.text}`) });
     const tail = r.output.length > 12_000 ? `… [${r.output.length - 12_000} earlier characters omitted]\n${r.output.slice(-12_000)}` : r.output;
     const status = r.spawnError ? `Failed to start: ${r.spawnError}` : r.timedOut ? 'Timed out' : r.cancelled ? 'Cancelled' : `Exit code ${r.exitCode}`;
     return { ok: r.exitCode === 0, output: `${tail}\n${status} · log ${log.id}`, exitCode: r.exitCode, artifactIds: [log.id], error: r.timedOut ? 'timeout' : r.cancelled ? 'cancelled' : r.exitCode === 0 ? null : 'process_failed' };
+  }
+
+  /** Exact records of the mission for this task (ADR 0024): what ATLAS observed, not what anyone remembers. */
+  private async missionMemory(section: string, cwd: string): Promise<string> {
+    const { missionId, taskId } = this.ctx;
+    const m = this.repo.mission(missionId);
+    const task = this.repo.task(taskId);
+    if (!m || !task) return 'No mission record.';
+    const ev = this.repo.eventsSince(missionId, 0, 100_000);
+    const mine = ev.filter((e) => e.taskId === taskId);
+    const want = (s: string) => section === 'all' || section === s;
+    const out: string[] = ['Mission memory: exact records kept by ATLAS (ground truth, not a summary).'];
+    if (want('task')) {
+      const plan = this.repo.plan(missionId, m.planVersion)?.plan;
+      out.push(`\n# Mission\n${m.title}\nObjective: ${m.goal.slice(0, 1500)}${m.constraints ? `\nConstraints: ${m.constraints.slice(0, 600)}` : ''}`);
+      out.push(`\n# Your task\n${task.key}: ${task.title} (${task.role})\nAcceptance criteria:\n${task.acceptance.map((a) => `- ${a}`).join('\n')}`);
+      if (plan) out.push(`\n# Plan v${plan.version}\n${plan.summary}\n${this.repo.tasks(missionId).map((t) => `- ${t.key} (${t.role}): ${t.state}`).join('\n')}`);
+      const attempts = this.repo.attempts(missionId).filter((a) => a.taskId === taskId);
+      if (attempts.length > 1) out.push(`\nEarlier attempts of this task: ${attempts.slice(0, -1).map((a) => `#${a.number} ${a.state}${a.error ? ` (${a.error.slice(0, 120)})` : ''}`).join('; ')}`);
+    }
+    if (want('files')) {
+      const writes = new Map<string, number>();
+      for (const e of mine) if (e.type === 'agent.tool_call' && e.payload.tool === 'write_file') { const p = String((e.payload.args as { path?: string })?.path ?? ''); writes.set(p, (writes.get(p) ?? 0) + 1); }
+      out.push(`\n# Files you wrote\n${writes.size ? [...writes].map(([p, n]) => `- ${p}${n > 1 ? ` (${n} times)` : ''}`).join('\n') : 'none'}`);
+    }
+    if (want('commands')) {
+      const runs = mine.filter((e) => e.type === 'process.exited').slice(-20);
+      out.push(`\n# Commands you ran (last ${runs.length})\n${runs.length ? runs.map((e) => `- ${e.payload.command} → ${e.payload.timedOut ? 'timed out' : e.payload.cancelled ? 'cancelled' : `exit ${e.payload.exitCode}`}${e.payload.durationMs != null ? ` (${e.payload.durationMs} ms)` : ''}`).join('\n') : 'none'}`);
+      const denied = this.repo.approvals(missionId).filter((a) => a.taskId === taskId && (a.status === 'denied' || a.status === 'expired'));
+      const policy = mine.filter((e) => e.type === 'policy.decision' && e.payload.decision === 'deny').slice(-10);
+      if (denied.length || policy.length) out.push(`\n# Refused\n${[...denied.map((a) => `- approval ${a.status}: ${a.action}`), ...policy.map((e) => `- policy denied ${e.payload.tool}: ${e.payload.reason}`)].join('\n')}`);
+    }
+    if (want('findings')) {
+      const f = this.repo.findings(missionId);
+      out.push(`\n# Findings (${f.length})\n${f.length ? f.slice(0, 30).map((x) => `- [${x.severity}/${x.kind}/${x.status}] ${x.title} · ${x.file}${x.line ? `:${x.line}` : ''}`).join('\n') : 'none'}`);
+    }
+    if (want('change')) {
+      const st = await git(cwd, ['diff', '--stat', '--no-color', this.ctx.base]);
+      const untracked = await git(cwd, ['ls-files', '--others', '--exclude-standard']);
+      out.push(`\n# Your change against the mission base\n${st.out || 'no differences'}${untracked.out ? `\nUntracked: ${untracked.out.split('\n').slice(0, 30).join(', ')}` : ''}`);
+    }
+    return out.join('\n');
   }
 }
 

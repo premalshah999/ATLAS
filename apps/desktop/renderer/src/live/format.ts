@@ -92,6 +92,9 @@ export function describeEvent(e: AtlasEvent): Row | null {
     case 'pipeline.step': return { title: p.text, tone: p.ok ? (p.step === 'ready' ? 'success' : 'accent') : 'warning', kind: p.ok ? 'milestone' : 'decision', who };
     case 'team.shared': return { title: 'Shared with the team', detail: [p.teams?.length ? `Review requested from ${p.teams.join(', ')}` : '', p.item ? 'Linked to a team item' : ''].filter(Boolean).join(' · ') || undefined, tone: 'human', kind: 'activity', who };
     case 'team.review': return { title: p.verdict === 'approve' ? `${who} approved${p.current ? '' : ' an earlier commit'}` : `${who} asked for changes`, detail: p.note || undefined, meta: `@ ${String(p.commit).slice(0, 7)}`, tone: p.verdict === 'approve' ? 'success' : 'warning', kind: 'decision', who };
+    case 'context.compacted': return p.ok
+      ? { title: `Context compacted${p.tokensBefore ? `: ${Math.round(p.tokensBefore / 1000)}k → ${p.tokensAfter ? `${Math.round(p.tokensAfter / 1000)}k` : 'less'} tokens` : ''}`, detail: 'Older conversation was summarized to stay within the model\'s window. Exact records stay in mission memory and the code graph.', meta: p.reason, tone: 'muted', kind: 'activity', who }
+      : { title: 'Context compaction failed', detail: p.detail, meta: p.reason, tone: 'warning', kind: 'error', who };
     case 'error': return { title: 'Error', detail: p.message, tone: 'danger', kind: 'error', who };
     default: return null;
   }

@@ -47,6 +47,8 @@ export type AgentEvent =
   | { type: 'tool_result'; callId: string; tool: string; ok: boolean; summary: string }
   | { type: 'usage'; inputTokens: number; outputTokens: number }
   | { type: 'completed'; summary: string }
+  /** The runtime summarized earlier conversation to free context (ADR 0024). Token counts are the runtime's estimates. */
+  | { type: 'context'; phase: 'compacting' | 'compacted' | 'failed'; reason: string; tokensBefore?: number; tokensAfter?: number; detail?: string }
   | { type: 'error'; kind: 'model_auth' | 'model_rate_limit' | 'model_unavailable' | 'budget_exceeded' | 'cancelled' | 'internal'; message: string };
 
 export interface AgentHandle {

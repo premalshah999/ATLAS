@@ -153,6 +153,9 @@ export const TOOL_CAPABILITY: Record<string, Capability | 'shell'> = {
   inspect_logs: 'fs.read',
   // ATLAS's deterministic scanner over the worktree's change: reads only (ADR 0023).
   security_scan: 'fs.read',
+  // ATLAS's own records of the mission, and its code graph of the repository (ADR 0024): read-only.
+  mission_memory: 'fs.read',
+  code_graph: 'fs.read',
   // Reviewed procedures from ATLAS's own skill library: read-only text, never repository content.
   load_skill: 'fs.read',
   read_skill_file: 'fs.read',

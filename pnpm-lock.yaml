@@ -261,6 +261,9 @@ importers:
       '@atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@atlas/graph':
+        specifier: workspace:*
+        version: link:../graph
       '@atlas/policy':
         specifier: workspace:*
         version: link:../policy

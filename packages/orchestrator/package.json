@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@atlas/contracts": "workspace:*",
+    "@atlas/graph": "workspace:*",
     "@atlas/policy": "workspace:*",
     "@atlas/security": "workspace:*",
     "@atlas/storage": "workspace:*",

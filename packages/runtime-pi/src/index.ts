@@ -24,6 +24,11 @@ export interface PiRuntimeOptions {
   apiKeys?: Record<string, string>;
   /** Test hook: prepare the ModelRuntime (e.g. register a scripted provider). */
   configure?: (rt: ModelRuntime) => void | Promise<void>;
+  /**
+   * Automatic context compaction for agent sessions (ADR 0024): when the conversation nears the model's window, Pi
+   * summarizes the older part and keeps the recent turns. On by default; the thresholds are Pi's unless set here.
+   */
+  compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
 }
 
 type PiSdk = typeof import('@earendil-works/pi-coding-agent');
@@ -190,7 +195,7 @@ export class PiRuntime implements AgentRuntime {
       customTools,
       sessionManager,
       // No Pi telemetry or attribution headers (manual §43).
-      settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: true, maxRetries: 2 }, enableInstallTelemetry: false, enableAnalytics: false }),
+      settingsManager: SettingsManager.inMemory({ compaction: { enabled: true, ...this.opts.compaction }, retry: { enabled: true, maxRetries: 2 }, enableInstallTelemetry: false, enableAnalytics: false }),
     });
 
     // Defense in depth: refuse to run if anything other than ATLAS tools is active.
@@ -225,6 +230,15 @@ export class PiRuntime implements AgentRuntime {
           queue.push({ type: 'tool_result', callId: e.toolCallId, tool: e.toolName, ok: !e.isError && e.result?.details?.ok !== false, summary: text.slice(0, 2000) });
           break;
         }
+        // Context compaction (ADR 0024): reported to ATLAS, which records it and keeps exact facts in mission_memory.
+        case 'compaction_start':
+          queue.push({ type: 'context', phase: 'compacting', reason: String(e.reason) });
+          break;
+        case 'compaction_end':
+          queue.push(e.result && !e.aborted
+            ? { type: 'context', phase: 'compacted', reason: String(e.reason), tokensBefore: e.result.tokensBefore, tokensAfter: e.result.estimatedTokensAfter }
+            : { type: 'context', phase: 'failed', reason: String(e.reason), detail: e.errorMessage ?? (e.aborted ? 'aborted' : 'no result') });
+          break;
       }
     });
 

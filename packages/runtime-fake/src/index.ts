@@ -14,7 +14,9 @@ export type FakeStep =
   /** Simulated model usage, for budget tests. */
   | { usage: number }
   /** Pause, for concurrency tests. */
-  | { wait: number };
+  | { wait: number }
+  /** Simulated context compaction (ADR 0024): the runtime reports it summarized earlier conversation. */
+  | { compact: { tokensBefore: number; tokensAfter: number } };
 
 export interface FakeScript {
   name: string;
@@ -103,6 +105,7 @@ export class FakeRuntime implements AgentRuntime {
       if (this.stepDelayMs) await new Promise((r) => setTimeout(r, this.stepDelayMs));
       if ('say' in step) q.push({ type: 'message', text: step.say });
       else if ('claim' in step) summary = step.claim;
+      else if ('compact' in step) { q.push({ type: 'context', phase: 'compacting', reason: 'threshold' }); q.push({ type: 'context', phase: 'compacted', reason: 'threshold', ...step.compact }); }
       else if ('usage' in step) q.push({ type: 'usage', inputTokens: step.usage, outputTokens: 0 });
       else if ('wait' in step) await new Promise((r) => { const t = setTimeout(r, step.wait); signal.addEventListener('abort', () => { clearTimeout(t); r(undefined); }, { once: true }); });
       else {

@@ -26,6 +26,8 @@ import { scanWorktree } from './security';
 import { report as securityReport } from '@atlas/security';
 import { deleteMission, exportMission, importMission } from './archive';
 import { Pipeline } from './pipeline';
+import { GraphStore } from './codegraph';
+import { overview as graphOverview } from '@atlas/graph';
 import { ciState, parseRemote, type CiState, type Forge, type RemoteRef } from './forge';
 import { mkdirSync, readdirSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 
@@ -131,6 +133,8 @@ export class Orchestrator {
   private readonly exportKeys: ExportKeys;
   /** Automated delivery after acceptance (ADR 0022); does nothing until a repository turns it on. */
   readonly pipeline: Pipeline;
+  /** Code graphs of mission base commits (ADR 0024). */
+  readonly graphs: GraphStore;
 
   constructor(private readonly o: OrchestratorOptions) {
     this.repo = o.repo;
@@ -142,6 +146,7 @@ export class Orchestrator {
     this.skills = new SkillLibrary({ bundled: o.skillDirs?.bundled, operator: o.skillDirs?.operator ?? path.join(path.dirname(o.worktreeDir), 'skills') }, () => this.repo.setting<string[]>('skills.disabled', []));
     this.acceptance = new AcceptanceStore(o.acceptanceDir ?? path.join(path.dirname(o.worktreeDir), 'acceptance'));
     this.pipeline = new Pipeline(this, this.repo);
+    this.graphs = new GraphStore(path.join(path.dirname(o.worktreeDir), 'graphs'));
     this.repo.onEvent((e) => {
       const s = e.attemptId ? this.signals.get(e.attemptId) : undefined;
       if (s && e.type !== 'attempt.stalled') {
@@ -418,6 +423,8 @@ export class Orchestrator {
     const base = m.followUp?.headSha ?? w.head;
     if (m.followUp && (await git(w.root, ['cat-file', '-e', `${base}^{commit}`])).code !== 0) throw new AtlasError('workspace_conflict', `The pull request head ${base.slice(0, 7)} is not in this repository any more`);
     this.repo.updateMission(m.id, { baseCommit: base });
+    // Index the base commit in the background while agents start (ADR 0024).
+    void this.graphs.ensure(w.root, base).catch(() => {});
     this.emit({ missionId, type: 'plan.approved', actor: by, payload: { version: p.plan.version, baseCommit: base } });
 
     const deps = new Map(p.plan.tasks.map((t) => [t.key, new Set(t.dependsOn)]));
@@ -576,6 +583,8 @@ export class Orchestrator {
     if (this.skills.forRole(t.role).length) tools = [...new Set([...tools, 'load_skill', 'read_skill_file'])];
     // MCP tools are offered to the roles the operator chose per server; every call is still checked by the gate.
     if (this.o.mcp?.permits(t.role)) tools = [...new Set([...tools, 'mcp_call'])];
+    // ATLAS's records of the mission and its code graph: read-only, for every role, so context is never lost (ADR 0024).
+    tools = [...new Set([...tools, 'mission_memory', 'code_graph'])];
     return tools;
   }
 
@@ -680,6 +689,7 @@ export class Orchestrator {
       approvalTtlMs: this.approvalTtlMs, awaitApproval: (a: Approval, s: AbortSignal) => this.awaitApproval(a, s),
       onFinding: (args, failing) => this.recordFinding(m, t, attempt.id, args, failing),
       skills: this.skills, mcp: this.o.mcp,
+      graph: () => this.graphs.forWorktree(dir, m.baseCommit!),
       delegate: (args, s) => this.delegate(m, t, dir, args, s),
     }, this.repo, this.artifacts, this.o.executors ?? realExecutors);
 
@@ -688,7 +698,7 @@ export class Orchestrator {
       .map((e) => `${e.ts} ${e.type}: ${JSON.stringify(e.payload).slice(0, 240)}`);
     const ctx = await buildContext({
       worktree: dir, base: m.baseCommit!, role: t.role, objective: m.goal, constraints: m.constraints, task: t, planSummary: `${plan.summary}\nTasks: ${plan.tasks.map((x) => `${x.key} (${x.role})`).join(', ')}`,
-      facts: this.facts(w.id), decisions, includeDiff: t.role === 'reviewer' || t.role === 'tester' || t.role === 'security_reviewer', skills: this.skills.index(t.role), mcp: permitted.includes('mcp_call') ? this.o.mcp?.index(t.role) : undefined,
+      facts: this.facts(w.id), decisions, graph: (() => { const g = this.graphs.peek(m.baseCommit!); return g ? graphOverview(g, 15) : undefined; })(), includeDiff: t.role === 'reviewer' || t.role === 'tester' || t.role === 'security_reviewer', skills: this.skills.index(t.role), mcp: permitted.includes('mcp_call') ? this.o.mcp?.index(t.role) : undefined,
     });
     const ctxArt = this.artifacts.put({ missionId: m.id, taskId: t.id, kind: 'context', name: `Context · ${t.key} attempt ${number}`, content: ctx.text });
     this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'context.built', actor: SYSTEM('context'), payload: { sources: ctx.sources, chars: ctx.text.length } });
@@ -723,6 +733,11 @@ export class Orchestrator {
           this.liveTokens.set(m.id, (this.liveTokens.get(m.id) ?? 0) + ev.inputTokens + ev.outputTokens);
           this.emit({ ...base, type: 'agent.usage', payload: { inputTokens: ev.inputTokens, outputTokens: ev.outputTokens, total: tokens } });
           if (this.tokensUsed(m.id) > m.budget.maxTokens) this.exceedBudget(m.id, `Token budget of ${m.budget.maxTokens.toLocaleString('en')} exhausted`);
+        }
+        else if (ev.type === 'context') {
+          // The runtime summarized earlier conversation to stay within the model's window (ADR 0024). Recorded so the
+          // operator sees it; the agent's standing instructions send it to mission_memory for exact facts.
+          if (ev.phase !== 'compacting') this.emit({ ...base, type: 'context.compacted', payload: { ok: ev.phase === 'compacted', reason: ev.reason, tokensBefore: ev.tokensBefore ?? null, tokensAfter: ev.tokensAfter ?? null, detail: ev.detail ?? null } });
         }
         else if (ev.type === 'completed') outcome = { kind: 'completed', summary: ev.summary };
         else if (ev.type === 'error') outcome = { kind: 'error', errorKind: ev.kind, message: ev.message };
