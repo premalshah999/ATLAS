@@ -6,8 +6,9 @@ import { existsSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSy
 import os from 'node:os';
 import path from 'node:path';
 import * as win from './win/appcontainer';
+import * as acct from './win/account';
 
-export type SandboxKind = 'bwrap' | 'sandbox-exec' | 'appcontainer' | 'none';
+export type SandboxKind = 'bwrap' | 'sandbox-exec' | 'windows-account' | 'appcontainer' | 'none';
 
 export interface SandboxSpec {
   /** Directory the command may write (the task worktree). Mounted at the same path. */
@@ -72,13 +73,23 @@ export function detectSandbox(force = false): SandboxInfo {
     } catch (e) { return (cached = { kind: 'none', detail: `sandbox-exec cannot run here (${(e as Error).message.slice(0, 120)})`, path: null }); }
   }
   if (process.platform === 'win32') {
+    // ADR 0020: the operator's sandbox accounts, once set up, are the Windows sandbox. Without them, the AppContainer
+    // mode remains (it cannot host Node's piped child processes, ADR 0016, so test runs fail closed there).
+    let accountProblem = '';
+    try {
+      const accounts = acct.readAccounts();
+      if (accounts) {
+        acct.probeAccount(accounts);
+        return (cached = { kind: 'windows-account', detail: `Windows sandbox account ${accounts.offline.name} + Job Object · ${accounts.firewall ? 'network blocked by a Windows Firewall rule' : 'network NOT enforced: the firewall rule could not be created'}`, path: win.ensureHelper() });
+      }
+    } catch (e) { accountProblem = ` The sandbox accounts are set up but could not run a command: ${String((e as { stderr?: Buffer }).stderr ?? (e as Error).message).trim().slice(0, 200)}.`; }
     try {
       const helper = win.ensureHelper();
       // Probe: a real contained process must start and exit cleanly.
       // Parallel workers can create the same AppContainer profile at once; one retry, and stderr kept for diagnosis.
       const probe = () => execFileSync(helper, ['run', 'atlas.probe', '--cmdline', `${win.quoteArg(process.env.ComSpec ?? 'C:\\Windows\\System32\\cmd.exe')} /d /c exit 0`], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, timeout: 60_000 });
       try { probe(); } catch { probe(); }
-      return (cached = { kind: 'appcontainer', detail: 'Windows AppContainer + Job Object', path: helper });
+      return (cached = { kind: 'appcontainer', detail: `Windows AppContainer + Job Object. Test runs cannot work in this mode; set up the sandbox accounts in Settings.${accountProblem}`, path: helper });
     } catch (e) {
       const stderr = String((e as { stderr?: Buffer }).stderr ?? '').trim();
       return (cached = { kind: 'none', detail: `Windows AppContainer sandbox unavailable (${(stderr || (e as Error).message).slice(0, 300)})`, path: null });
@@ -218,6 +229,7 @@ export function wrapCommand(command: string, args: string[], cwd: string, spec: 
     const scratchEnv = { HOME: scratch, TMPDIR: scratch, npm_config_cache: path.join(scratch, '.npm'), XDG_CACHE_HOME: path.join(scratch, '.cache') };
     return { command: info.path!, args: ['-f', file, inner.command, ...inner.args], env: { ...envOut, ...scratchEnv }, cleanup: () => rmSync(scratch, { recursive: true, force: true }) };
   }
+  if (info.kind === 'windows-account') return wrapWindowsAccount(command, args, spec, env, net);
   if (info.kind === 'appcontainer') return wrapWindows(command, args, spec, env, net);
   throw Object.assign(new Error(`No OS sandbox is available: ${info.detail}`), { kind: 'sandbox_unavailable' });
 }
@@ -251,4 +263,31 @@ function wrapWindows(command: string, args: string[], spec: SandboxSpec, env: Re
   };
   const cmd = win.windowsCommand(command, args, envOut);
   return { command: helper, args: ['run', name, ...(spec.network ? ['--net'] : []), ...caps.flatMap((c) => ['--cap', c]), '--parent', String(process.pid), '--cmdline', cmd.line], env: envOut };
+}
+
+/**
+ * Windows with sandbox accounts (ADR 0020): the command runs as atlas-sbx (no network) or, for an approved network
+ * command, atlas-sbx-net. The account gets the root (and the worktree's git admin directory), the read-only paths
+ * and the toolchain by ACL, and a private home; the operator's profile, other projects and credentials stay out of
+ * reach because their ACLs name only the operator.
+ */
+function wrapWindowsAccount(command: string, args: string[], spec: SandboxSpec, env: Record<string, string>, net: { env: Record<string, string>; files: string[] }): { command: string; args: string[]; env: Record<string, string> } {
+  const info = acct.readAccounts();
+  if (!info) throw Object.assign(new Error('The Windows sandbox accounts are not set up'), { kind: 'sandbox_unavailable' });
+  const a = spec.network ? info.network : info.offline;
+  acct.grantFor(a.sid, spec.root, spec.writable ? 'rw' : 'rx');
+  for (const p of spec.readWrite ?? []) acct.grantFor(a.sid, p, 'rw');
+  for (const p of [...(spec.readOnly ?? []), ...net.files]) acct.grantFor(a.sid, p, 'rx');
+  for (const p of toolchainPaths(env)) { try { acct.grantFor(a.sid, p, 'rx'); } catch { /* not ours to change */ } }
+  const home = acct.accountHome(spec.root, a.sid);
+  const envOut: Record<string, string> = {
+    ...env, ...net.env,
+    USERPROFILE: home, HOME: home, APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local'),
+    TEMP: path.join(home, 'Temp'), TMP: path.join(home, 'Temp'), npm_config_cache: path.join(home, 'npm-cache'),
+    NODE_OPTIONS: '--preserve-symlinks --preserve-symlinks-main',
+    // Without the firewall rule, a proxy that refuses connections is the remaining guard (labelled in Settings).
+    ...(!spec.network && !info.firewall ? { HTTP_PROXY: 'http://127.0.0.1:9', HTTPS_PROXY: 'http://127.0.0.1:9', http_proxy: 'http://127.0.0.1:9', https_proxy: 'http://127.0.0.1:9' } : {}),
+  };
+  const cmd = win.windowsCommand(command, args, envOut);
+  return { command: win.ensureHelper(), args: ['run', '-', '--account', spec.network ? 'network' : 'offline', '--store', info.store, '--parent', String(process.pid), '--cmdline', cmd.line], env: envOut };
 }

@@ -10,7 +10,7 @@ import { GitHubForge, Orchestrator, replay, ROLES, suiteHash, type Skill } from 
 import { ROLE_GRANTS } from '@atlas/policy';
 import { FakeRuntime, sampleDesktopScript, samplePlanner, sampleSlugifyScript } from '@atlas/runtime-fake';
 import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
-import { detectSandbox, reapJournaled, setProcessJournal } from '@atlas/terminal';
+import { detectSandbox, reapJournaled, removeWindowsAccounts, setProcessJournal, setupWindowsAccounts, windowsAccounts } from '@atlas/terminal';
 import { applicationStage, createBrowserTool, resolveBrowser } from '@atlas/browser';
 import { DeployManager, stagingStage } from '@atlas/deploy';
 import { createDesktopTool, DesktopManager, desktopSupport } from '@atlas/desktop-control';
@@ -374,14 +374,30 @@ export class DaemonService {
         try { await this.mcp.test(p.name); } catch { /* the error is part of the view */ }
         return this.mcpView();
       }
-      case 'settings.get': return { values: this.settingValues(), sandbox: detectSandbox(true) };
+      case 'settings.get': return { values: this.settingValues(), sandbox: detectSandbox(true), windowsAccounts: this.windowsAccountsView() };
+      case 'sandbox.windows.setup': {
+        const info = setupWindowsAccounts();
+        this.log.warn('windows sandbox accounts set up', { offline: info.offline.name, network: info.network.name, firewall: info.firewall });
+        return { values: this.settingValues(), sandbox: detectSandbox(true), windowsAccounts: this.windowsAccountsView() };
+      }
+      case 'sandbox.windows.remove': {
+        removeWindowsAccounts();
+        this.log.warn('windows sandbox accounts removed');
+        return { values: this.settingValues(), sandbox: detectSandbox(true), windowsAccounts: this.windowsAccountsView() };
+      }
       case 'settings.set': {
         this.repo.setSetting(p.key, p.value);
         this.log.warn('setting changed', { key: p.key, value: p.value });
-        return { values: this.settingValues(), sandbox: detectSandbox() };
+        return { values: this.settingValues(), sandbox: detectSandbox(), windowsAccounts: this.windowsAccountsView() };
       }
       default: throw new AtlasError('invalid_request', `${method} is handled by the desktop shell`);
     }
+  }
+
+  private windowsAccountsView() {
+    if (process.platform !== 'win32') return null;
+    const a = windowsAccounts();
+    return a ? { set: true, offline: a.offline.name, network: a.network.name, firewall: a.firewall } : { set: false };
   }
 
   private settingValues() {

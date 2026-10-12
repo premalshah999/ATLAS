@@ -89,6 +89,9 @@ export const Requests = {
   'runtime.health': empty,
   'models.list': empty,
   'settings.get': empty,
+  /** Windows only (ADR 0020): create or remove the sandbox accounts; Windows asks the operator for administrator consent. */
+  'sandbox.windows.setup': empty,
+  'sandbox.windows.remove': empty,
   'settings.set': z.discriminatedUnion('key', [
     z.object({ key: z.literal('execution.allowUnsandboxed'), value: z.boolean() }).strict(),
     z.object({ key: z.literal('retention.days'), value: z.number().int().min(0).max(3650) }).strict(),

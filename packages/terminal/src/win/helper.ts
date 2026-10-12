@@ -10,6 +10,16 @@
 //     removed, the restricting SIDs in SIDLIST (comma separated SIDs or the names everyone, users, authusers,
 //     interactive, logon, restricted), and with --low the low integrity level. Unlike an AppContainer it lets Node
 //     create the named pipes it needs for child stdio. Not used by ATLAS until it passes the sandbox test suite.
+//   atlas-sandbox.exe account-setup STORE    (administrator, operator-approved; ADR 0020) create or refresh two
+//     standard local accounts: atlas-sbx (no network: an outbound Windows Firewall block rule for its SID) and
+//     atlas-sbx-net (used only for network commands the operator approved). The accounts are visible like any other
+//     local account and carry a description naming ATLAS. Random passwords are protected with DPAPI for the current
+//     user and written to STORE with each account's SID; re-running rotates them.
+//   atlas-sandbox.exe account-remove         (administrator) delete both accounts and the firewall rule
+//   run - --account offline|network --store STORE ...   start the command as that sandbox account
+//     (CreateProcessWithLogonW). Its token is an ordinary one, so Node's piped child processes work; the operator's
+//     profile is unreadable to it, and it can write only where ATLAS granted it. With --pty, a copy of this helper
+//     started as the account hosts the ConPTY.
 //   atlas-sandbox.exe logonsid               print the logon SID of the current session
 //   atlas-sandbox.exe grant PATH SID rw|rx|ra [--inherit]   add an allow ACE for any SID (icacls only takes SIDs it
 //                                             can name; per-root sandbox SIDs are not accounts)
@@ -23,7 +33,7 @@
 // user's files except paths explicitly granted to the container SID, and no network unless --net adds the
 // internetClient/privateNetwork capabilities. The process is created suspended, placed in a Job Object that
 // kills the whole tree when the launcher exits, then resumed. --pty hosts it in a ConPTY.
-export const HELPER_VERSION = '8';
+export const HELPER_VERSION = '9';
 
 export const HELPER_SOURCE = String.raw`
 using System;
@@ -96,6 +106,138 @@ static class AtlasSandbox {
   [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetSecurityDescriptorDacl(IntPtr sd, out bool present, out IntPtr dacl, out bool defaulted);
   [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessAsUser(IntPtr tok, string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string cwd, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
   [DllImport("kernelbase.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool DeriveCapabilitySidsFromName(string name, out IntPtr groupSids, out int groupCount, out IntPtr capSids, out int capCount);
+
+  // ------------------------------------------------------------------ sandbox accounts (ADR 0020)
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct USER_INFO_1 { public string name, password; public int password_age, priv; public string home_dir, comment; public int flags; public string script_path; }
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct USER_INFO_1003 { public string password; }
+  [StructLayout(LayoutKind.Sequential)] struct DATA_BLOB { public int cbData; public IntPtr pbData; }
+  [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] static extern int NetUserAdd(string server, int level, ref USER_INFO_1 buf, out int parmErr);
+  [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] static extern int NetUserSetInfo(string server, string user, int level, ref USER_INFO_1003 buf, out int parmErr);
+  [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] static extern int NetUserDel(string server, string user);
+  [DllImport("netapi32.dll", CharSet = CharSet.Unicode)] static extern int NetLocalGroupAddMembers(string server, string group, int level, ref IntPtr members, int count);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool LookupAccountName(string system, string name, IntPtr sid, ref int cbSid, StringBuilder domain, ref int cchDomain, out int use);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool LookupAccountSid(string system, IntPtr sid, StringBuilder name, ref int cchName, StringBuilder domain, ref int cchDomain, out int use);
+  [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CryptProtectData(ref DATA_BLOB data, string desc, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, ref DATA_BLOB output);
+  [DllImport("crypt32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CryptUnprotectData(ref DATA_BLOB data, IntPtr desc, IntPtr entropy, IntPtr reserved, IntPtr prompt, int flags, ref DATA_BLOB output);
+  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p);
+  [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern bool CreateProcessWithLogonW(string user, string domain, string password, uint logonFlags, string app, StringBuilder cmd, uint flags, IntPtr env, string cwd, ref STARTUPINFO si, out PROCESS_INFORMATION pi);
+
+  const string FIREWALL_RULE = "ATLAS sandbox (no network)";
+  static readonly string[][] ACCOUNTS = { new[] { "offline", "atlas-sbx" }, new[] { "network", "atlas-sbx-net" } };
+
+  static byte[] Dpapi(byte[] input, bool protect) {
+    var inBlob = new DATA_BLOB { cbData = input.Length, pbData = Marshal.AllocHGlobal(Math.Max(1, input.Length)) };
+    Marshal.Copy(input, 0, inBlob.pbData, input.Length);
+    var outBlob = new DATA_BLOB();
+    bool ok = protect ? CryptProtectData(ref inBlob, "ATLAS sandbox account", IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 1, ref outBlob)
+                      : CryptUnprotectData(ref inBlob, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, 1, ref outBlob);
+    Marshal.FreeHGlobal(inBlob.pbData);
+    if (!ok) Fail("DPAPI " + (protect ? "protect" : "unprotect") + ": " + Marshal.GetLastWin32Error());
+    var bytes = new byte[outBlob.cbData];
+    Marshal.Copy(outBlob.pbData, bytes, 0, outBlob.cbData);
+    LocalFree(outBlob.pbData);
+    return bytes;
+  }
+
+  static IntPtr AccountSid(string name) {
+    int cb = 0, cch = 0, use;
+    LookupAccountName(null, name, IntPtr.Zero, ref cb, null, ref cch, out use);
+    if (cb == 0) Fail("look up account " + name + ": " + Marshal.GetLastWin32Error());
+    IntPtr sid = Marshal.AllocHGlobal(cb); var dom = new StringBuilder(cch);
+    if (!LookupAccountName(null, name, sid, ref cb, dom, ref cch, out use)) Fail("look up account " + name + ": " + Marshal.GetLastWin32Error());
+    return sid;
+  }
+  static string AccountName(IntPtr sid) {
+    int cn = 0, cd = 0, use;
+    LookupAccountSid(null, sid, null, ref cn, null, ref cd, out use);
+    var n = new StringBuilder(cn); var d = new StringBuilder(cd);
+    if (!LookupAccountSid(null, sid, n, ref cn, d, ref cd, out use)) Fail("look up SID: " + Marshal.GetLastWin32Error());
+    return n.ToString();
+  }
+
+  static int RunPowerShell(string script) {
+    var psi = new System.Diagnostics.ProcessStartInfo("powershell.exe", "-NoProfile -NonInteractive -Command \"" + script.Replace("\"", "\\\"") + "\"") { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true, RedirectStandardOutput = true };
+    var p = System.Diagnostics.Process.Start(psi);
+    string err = p.StandardError.ReadToEnd(); p.StandardOutput.ReadToEnd(); p.WaitForExit();
+    if (p.ExitCode != 0) Console.Error.WriteLine("atlas-sandbox: powershell: " + err.Trim());
+    return p.ExitCode;
+  }
+
+  /** Create or refresh both accounts (visible, described as ATLAS's), write STORE, block outbound traffic for the offline one. */
+  static int AccountSetup(string store) {
+    var lines = new List<string>();
+    var rng = new System.Security.Cryptography.RNGCryptoServiceProvider();
+    string usersGroup = AccountName(Sid("S-1-5-32-545"));
+    string offlineSid = null;
+    foreach (var a in ACCOUNTS) {
+      var raw = new byte[24]; rng.GetBytes(raw);
+      string pw = Convert.ToBase64String(raw) + "aA1!";
+      int perr;
+      // UF_SCRIPT | UF_PASSWD_CANT_CHANGE | UF_DONT_EXPIRE_PASSWD; USER_PRIV_USER (a standard user, never an administrator).
+      var ui = new USER_INFO_1 { name = a[1], password = pw, priv = 1, flags = 0x1 | 0x40 | 0x10000, comment = "ATLAS sandbox account (" + a[0] + "): runs untrusted project commands. Remove it in ATLAS Settings." };
+      int e = NetUserAdd(null, 1, ref ui, out perr);
+      if (e == 2224) { var u = new USER_INFO_1003 { password = pw }; e = NetUserSetInfo(null, a[1], 1003, ref u, out perr); } // NERR_UserExists: rotate the password
+      if (e != 0) Fail("cannot create account " + a[1] + " (error " + e + (e == 5 ? ": run as administrator" : "") + ")");
+      IntPtr sid = AccountSid(a[1]);
+      IntPtr m = sid;
+      int ge = NetLocalGroupAddMembers(null, usersGroup, 0, ref m, 1);
+      if (ge != 0 && ge != 1378) Fail("cannot add " + a[1] + " to " + usersGroup + " (error " + ge + ")"); // 1378: already a member
+      string s = SidString(sid);
+      if (a[0] == "offline") offlineSid = s;
+      lines.Add("account " + a[0] + " " + a[1] + " " + s + " " + Convert.ToBase64String(Dpapi(Encoding.UTF8.GetBytes(pw), true)));
+    }
+    int fw = RunPowerShell("Remove-NetFirewallRule -DisplayName '" + FIREWALL_RULE + "' -ErrorAction SilentlyContinue; New-NetFirewallRule -DisplayName '" + FIREWALL_RULE + "' -Direction Outbound -Action Block -LocalUser 'D:(A;;CC;;;" + offlineSid + ")' -Profile Any | Out-Null");
+    lines.Add("firewall " + (fw == 0 ? "ok" : "failed"));
+    string tmp = store + ".tmp";
+    File.WriteAllLines(tmp, lines.ToArray());
+    if (File.Exists(store)) File.Delete(store);
+    File.Move(tmp, store);
+    foreach (var l in lines) { var f = l.Split(' '); Console.WriteLine(f[0] == "account" ? f[0] + " " + f[1] + " " + f[2] + " " + f[3] : l); }
+    return 0;
+  }
+
+  static int AccountRemove() {
+    foreach (var a in ACCOUNTS) { int e = NetUserDel(null, a[1]); if (e != 0 && e != 2221) Console.Error.WriteLine("atlas-sandbox: delete " + a[1] + ": error " + e); } // 2221: no such user
+    RunPowerShell("Remove-NetFirewallRule -DisplayName '" + FIREWALL_RULE + "' -ErrorAction SilentlyContinue");
+    return 0;
+  }
+
+  /** Name and password of a sandbox account from STORE. */
+  static string[] ReadAccount(string store, string kind) {
+    if (!File.Exists(store)) Fail("the Windows sandbox accounts are not set up (" + store + " is missing)");
+    foreach (var l in File.ReadAllLines(store)) {
+      var f = l.Split(' ');
+      if (f.Length == 5 && f[0] == "account" && f[1] == kind) return new[] { f[2], Encoding.UTF8.GetString(Dpapi(Convert.FromBase64String(f[4]), false)) };
+    }
+    Fail("no " + kind + " account in " + store);
+    return null;
+  }
+
+  /** One argument for CommandLineToArgvW. */
+  static string QuoteArg(string a) {
+    if (a.Length > 0 && a.IndexOfAny(new[] { ' ', '\t', '"' }) < 0) return a;
+    var sb = new StringBuilder("\"");
+    int bs = 0;
+    foreach (char c in a) {
+      if (c == '\\') { bs++; continue; }
+      if (c == '"') { sb.Append('\\', bs * 2 + 1); sb.Append('"'); bs = 0; continue; }
+      sb.Append('\\', bs); bs = 0; sb.Append(c);
+    }
+    sb.Append('\\', bs * 2); sb.Append('"');
+    return sb.ToString();
+  }
+
+  /** This process's environment as a CreateProcess environment block (sorted, as Windows expects). */
+  static IntPtr EnvironmentBlock() {
+    var keys = new List<string>();
+    var vars = Environment.GetEnvironmentVariables();
+    foreach (System.Collections.DictionaryEntry e in vars) keys.Add((string)e.Key);
+    keys.Sort(StringComparer.OrdinalIgnoreCase);
+    var sb = new StringBuilder();
+    foreach (var k in keys) sb.Append(k).Append('=').Append((string)vars[k]).Append('\0');
+    sb.Append('\0');
+    return Marshal.StringToHGlobalUni(sb.ToString());
+  }
 
   /** Every ATLAS container holds this capability; toolchain directories grant it read access once. */
   const string TOOLCHAIN_CAPABILITY = "atlasToolchain";
@@ -253,6 +395,8 @@ static class AtlasSandbox {
 
   static int Main(string[] argv) {
     if (argv.Length >= 1 && argv[0] == "pipetest") return PipeTest();
+    if (argv.Length >= 2 && argv[0] == "account-setup") return AccountSetup(argv[1]);
+    if (argv.Length >= 1 && argv[0] == "account-remove") return AccountRemove();
     if (argv.Length >= 4 && argv[0] == "grant") return Grant(argv[1], argv[2], argv[3], argv.Length > 4 && argv[4] == "--inherit");
     if (argv.Length >= 1 && argv[0] == "logonsid") { string l = LogonSid(OwnToken()); if (l == null) Fail("no logon SID"); Console.WriteLine(l); return 0; }
     if (argv.Length >= 2 && argv[0] == "sid") {
@@ -262,7 +406,7 @@ static class AtlasSandbox {
       string s; ConvertSidToStringSid(CapabilitySid(argv[1]), out s); Console.WriteLine(s); return 0;
     }
     if (argv.Length < 4 || argv[0] != "run") Fail("usage: atlas-sandbox run <container|-> [--net] [--mem MB] [--pty COLSxROWS] --cmdline <command line>");
-    string name = argv[1]; bool net = false, low = false; string restrictedSids = null; long memMb = 0; int parent = 0; short cols = 0, rows = 0; string line = null; var extraCaps = new List<string>();
+    string name = argv[1]; bool net = false, low = false; string restrictedSids = null, account = null, store = null; long memMb = 0; int parent = 0; short cols = 0, rows = 0; string line = null; var extraCaps = new List<string>();
     for (int i = 2; i < argv.Length; i++) {
       if (argv[i] == "--net") net = true;
       else if (argv[i] == "--mem") memMb = long.Parse(argv[++i]);
@@ -272,12 +416,22 @@ static class AtlasSandbox {
       else if (argv[i] == "--parent") parent = int.Parse(argv[++i]);
       else if (argv[i] == "--restricted") restrictedSids = argv[++i];
       else if (argv[i] == "--low") low = true;
+      else if (argv[i] == "--account") account = argv[++i];
+      else if (argv[i] == "--store") store = argv[++i];
       else Fail("unknown option " + argv[i]);
     }
     if (string.IsNullOrEmpty(line)) Fail("missing --cmdline");
     var cmd = new StringBuilder(line, 32768);
     bool contained = name != "-";
     if (restrictedSids != null && contained) Fail("--restricted runs without an AppContainer: use - as the container");
+    if (account != null && (contained || restrictedSids != null || store == null)) Fail("--account needs - as the container and --store");
+    string[] cred = account != null ? ReadAccount(store, account) : null;
+    if (cred != null && cols > 0) {
+      // CreateProcessWithLogonW takes no attribute list, so the ConPTY is hosted by a copy of this helper running as
+      // the account: the shell and everything it starts belong to the sandbox account.
+      cmd = new StringBuilder(QuoteArg(System.Reflection.Assembly.GetExecutingAssembly().Location) + " run - --pty " + cols + "x" + rows + " --cmdline " + QuoteArg(line), 32768);
+      cols = 0; rows = 0;
+    }
     IntPtr rtoken = restrictedSids != null ? RestrictedToken(restrictedSids, low) : IntPtr.Zero;
 
     IntPtr sid = contained ? ContainerSid(name) : IntPtr.Zero;
@@ -311,6 +465,7 @@ static class AtlasSandbox {
     if (pty && !UpdateProcThreadAttribute(list, 0, ATTR_PSEUDOCONSOLE, hpc, (IntPtr)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) Fail("pseudoconsole: " + Marshal.GetLastWin32Error());
 
     var si = new STARTUPINFOEX(); si.StartupInfo.cb = Marshal.SizeOf(si); si.lpAttributeList = list;
+    if (cred != null) si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFO)); // CreateProcessWithLogonW takes a plain STARTUPINFO
     if (!pty) { si.StartupInfo.dwFlags = STARTF_USESTDHANDLES; si.StartupInfo.hStdInput = GetStdHandle(-10); si.StartupInfo.hStdOutput = GetStdHandle(-11); si.StartupInfo.hStdError = GetStdHandle(-12); }
 
     IntPtr job = CreateJobObject(IntPtr.Zero, null);
@@ -321,7 +476,10 @@ static class AtlasSandbox {
 
     PROCESS_INFORMATION pi;
     uint cflags = EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT;
-    bool started = rtoken != IntPtr.Zero
+    // Account mode: LOGON_WITH_PROFILE; CREATE_NO_WINDOW keeps a console window off the operator's desktop.
+    bool started = cred != null
+      ? CreateProcessWithLogonW(cred[0], ".", cred[1], 1, null, cmd, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | 0x08000000, EnvironmentBlock(), Environment.CurrentDirectory, ref si.StartupInfo, out pi)
+      : rtoken != IntPtr.Zero
       ? CreateProcessAsUser(rtoken, null, cmd, IntPtr.Zero, IntPtr.Zero, !pty, cflags, IntPtr.Zero, Environment.CurrentDirectory, ref si, out pi)
       : CreateProcess(null, cmd, IntPtr.Zero, IntPtr.Zero, !pty, cflags, IntPtr.Zero, Environment.CurrentDirectory, ref si, out pi);
     if (!started) {

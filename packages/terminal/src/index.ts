@@ -20,6 +20,7 @@ export function spawnPlan(command: string, args: string[], env: Record<string, s
 
 export { detectSandbox, wrapCommand, seatbeltProfile, toolchainPaths, SANDBOX_HOME, type SandboxSpec, type SandboxInfo, type SandboxKind } from './sandbox';
 export { quoteArg, resolveWindowsCommand, windowsCommand } from './win/appcontainer';
+export { readAccounts as windowsAccounts, removeAccounts as removeWindowsAccounts, setupAccounts as setupWindowsAccounts, type AccountsInfo } from './win/account';
 
 /** Environment variables passed through to child processes. Everything else is dropped. */
 export const ENV_ALLOWLIST = ['PATH', 'HOME', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'TERM', 'TMPDIR', 'TEMP', 'TMP', 'SHELL', 'SYSTEMROOT', 'COMSPEC', 'PATHEXT', 'APPDATA', 'LOCALAPPDATA', 'USERPROFILE',

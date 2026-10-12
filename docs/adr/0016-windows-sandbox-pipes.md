@@ -1,6 +1,6 @@
 # ADR 0016 — Windows: AppContainers cannot host Node's piped child processes
 
-Status: **proposed. The decision is the operator's** · 2026-10-11
+Status: decided by [ADR 0020](0020-windows-sandbox-accounts.md) (sandbox accounts) · 2026-10-12
 
 ## Evidence (CI runs 38127174519 and 38130392107, bisection inside the AppContainer)
 

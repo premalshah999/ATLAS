@@ -33,6 +33,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Browser for QA checks
         run: pnpm exec playwright install chromium
+      - name: Windows sandbox accounts (ADR 0020)
+        if: runner.os == 'Windows'
+        run: pnpm exec vite-node scripts/win-sandbox.ts setup
       - run: pnpm doctor
       - run: pnpm pi:version
       - if: success() || failure()
@@ -41,7 +44,7 @@ jobs:
         run: pnpm typecheck
       - if: success() || failure()
         run: pnpm test
-        env: { ATLAS_REQUIRE_DESKTOP: "${{ runner.os != 'Windows' && '1' || '' }}" }
+        env: { ATLAS_REQUIRE_DESKTOP: "${{ runner.os != 'Windows' && '1' || '' }}", ATLAS_EXPECT_WINDOWS_ACCOUNTS: "${{ runner.os == 'Windows' && '1' || '' }}" }
       - if: success() || failure()
         run: pnpm test:integration
         env: { ATLAS_REQUIRE_DESKTOP: "${{ runner.os != 'Windows' && '1' || '' }}" }

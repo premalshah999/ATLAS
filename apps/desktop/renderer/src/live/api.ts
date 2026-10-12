@@ -36,7 +36,7 @@ export type Preflight = { level: 'block' | 'warn' | 'info'; message: string }[];
 export type MissionListItem = Mission & { tasks: { key: string; state: string }[]; pendingApprovals: number };
 export type RoleInfo = { id: string; version: string; title: string; tools: string[]; writes: boolean; modelPreference: string; budget: { maxToolCalls: number; maxTokens: number; wallClockMs: number }; capabilities: string[]; instructions: string };
 export type DesktopState = { support: { ok: boolean; detail: string }; enabled: boolean; sessions: DesktopSessionInfo[] };
-export type SettingsState = { values: { 'execution.allowUnsandboxed': boolean; 'retention.days': number; 'deploy.allowedTargets': string[]; 'deploy.autoRollback': boolean; 'desktop.enabled': boolean; 'models.default': string | null; 'models.fast': string | null; 'models.strong': string | null }; sandbox: { kind: 'bwrap' | 'sandbox-exec' | 'none'; detail: string; path: string | null } };
+export type SettingsState = { values: { 'execution.allowUnsandboxed': boolean; 'retention.days': number; 'deploy.allowedTargets': string[]; 'deploy.autoRollback': boolean; 'desktop.enabled': boolean; 'models.default': string | null; 'models.fast': string | null; 'models.strong': string | null }; sandbox: { kind: 'bwrap' | 'sandbox-exec' | 'windows-account' | 'appcontainer' | 'none'; detail: string; path: string | null }; windowsAccounts?: { set: boolean; offline?: string; network?: string; firewall?: boolean } | null };
 /** Pull request and CI state of a mission (ADR 0015). */
 export interface ForgeView {
   configured: boolean;
@@ -123,6 +123,8 @@ type Results = {
   'mcp.secret.remove': McpServerView[];
   'settings.get': SettingsState;
   'settings.set': SettingsState;
+  'sandbox.windows.setup': SettingsState;
+  'sandbox.windows.remove': SettingsState;
   'credentials.list': Credentials;
   'credentials.set': Credentials;
   'credentials.remove': Credentials;

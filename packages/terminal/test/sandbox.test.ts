@@ -183,10 +183,12 @@ setInterval(() => {}, 1000);`, { signal: ac.signal, timeoutMs: 60_000 });
 });
 
 it('reports sandbox availability for this platform', () => {
-  const expected = { linux: ['bwrap', 'none'], darwin: ['sandbox-exec', 'none'], win32: ['appcontainer', 'none'] }[process.platform as 'linux'] ?? ['none'];
+  const expected = { linux: ['bwrap', 'none'], darwin: ['sandbox-exec', 'none'], win32: ['windows-account', 'appcontainer', 'none'] }[process.platform as 'linux'] ?? ['none'];
   expect(expected).toContain(info.kind);
   // CI runs on machines where the sandbox must work; a silent fallback to "none" would hide a regression.
   if (process.env.CI) expect(info.kind, info.detail).not.toBe('none');
+  // Windows CI sets up the sandbox accounts first (ADR 0020): a silent fall back to the AppContainer is a regression.
+  if (process.env.ATLAS_EXPECT_WINDOWS_ACCOUNTS) expect(info.kind, info.detail).toBe('windows-account');
   mkdirSync(tmpDir(), { recursive: true });
 });
 

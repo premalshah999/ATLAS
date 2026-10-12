@@ -61,7 +61,7 @@ export function Settings() {
             <div className="at-label">Execution isolation</div>
             {settings && (
               <div className="lv-rt">
-                <Status s={settings.sandbox.kind === 'none' ? 'failed' : 'done'} label={settings.sandbox.kind === 'bwrap' ? 'Sandboxed · bubblewrap' : settings.sandbox.kind === 'sandbox-exec' ? 'Sandboxed · macOS Seatbelt' : 'No OS sandbox'} />
+                <Status s={settings.sandbox.kind === 'none' ? 'failed' : 'done'} label={settings.sandbox.kind === 'bwrap' ? 'Sandboxed · bubblewrap' : settings.sandbox.kind === 'sandbox-exec' ? 'Sandboxed · macOS Seatbelt' : settings.sandbox.kind === 'windows-account' ? 'Sandboxed · Windows sandbox account' : settings.sandbox.kind === 'appcontainer' ? 'Partly sandboxed · Windows AppContainer' : 'No OS sandbox'} />
                 <span className="at-muted lv-small">
                   {settings.sandbox.kind === 'none'
                     ? settings.sandbox.detail
@@ -69,7 +69,8 @@ export function Settings() {
                 </span>
               </div>
             )}
-            {settings?.sandbox.kind === 'none' && (
+            {settings?.windowsAccounts && <WindowsAccounts settings={settings} onChange={setSettings} />}
+          {settings?.sandbox.kind === 'none' && (
               <div className="lv-callout" style={{ marginTop: 0 }}>
                 <div style={{ flex: 1 }}>
                   <b>Allow unsandboxed execution.</b> Verification checks would run repository scripts as your user, and could read your files and credentials. Agent commands that run project code (tests, scripts, node) would each ask for your approval first. Only enable this for repositories you fully trust.
@@ -151,6 +152,34 @@ const TIERS: { key: 'models.default' | 'models.fast' | 'models.strong'; label: s
   { key: 'models.strong', label: 'Strong model', help: 'Planner and reviewer. Falls back to the default model.' },
   { key: 'models.fast', label: 'Fast model', help: 'Roles that ask for speed. Falls back to the default model.' },
 ];
+
+/**
+ * Windows sandbox accounts (ADR 0020): two standard local accounts, created only here, with the operator's
+ * administrator consent; visible in Windows like any other account; removed here too.
+ */
+function WindowsAccounts({ settings, onChange }: { settings: SettingsState; onChange: OnSettings }) {
+  const a = settings.windowsAccounts!;
+  const [busy, setBusy] = useState(false);
+  const act = async (method: 'sandbox.windows.setup' | 'sandbox.windows.remove') => {
+    setBusy(true);
+    try { onChange(await call(method)); } catch (e) { toast({ tone: 'danger', title: 'Windows sandbox not changed', body: (e as Error).message }); } finally { setBusy(false); }
+  };
+  return (
+    <div className="lv-callout" data-testid="windows-accounts" style={{ marginTop: 0 }}>
+      <div style={{ flex: 1 }}>
+        <b>Windows sandbox accounts.</b> Agent commands and checks run as a separate standard Windows account that cannot read your profile, other projects or credentials, and can write only where ATLAS allows. A Windows Firewall rule blocks its network; approved network commands use a second account. Setting up creates two local accounts ({a.offline ?? 'atlas-sbx'} and {a.network ?? 'atlas-sbx-net'}) and the firewall rule, and Windows asks you for administrator consent.
+        <div className="at-row" style={{ gap: 8, marginTop: 8 }}>
+          {a.set ? <>
+            <Badge tone="success">set up</Badge>
+            {!a.firewall && <Badge tone="danger">network not enforced: firewall rule missing</Badge>}
+            <Button size="sm" disabled={busy} onClick={() => void act('sandbox.windows.setup')}>Repair</Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => { if (window.confirm('Delete both ATLAS sandbox accounts and the firewall rule? Windows will ask for administrator consent.')) void act('sandbox.windows.remove'); }}>Remove</Button>
+          </> : <Button size="sm" variant="primary" disabled={busy} onClick={() => void act('sandbox.windows.setup')}>{busy ? 'Waiting for Windows…' : 'Set up sandbox accounts'}</Button>}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function ModelsSection({ settings, models, onChange }: { settings: SettingsState; models: ModelInfo[]; onChange: OnSettings }) {
   return (

@@ -91,7 +91,7 @@ export function grant(sid: string, target: string, mode: 'rw' | 'rx'): void {
 }
 
 /** Directories that are readable by every AppContainer already (Windows, Program Files). */
-function alreadyReadable(p: string): boolean {
+export function alreadyReadable(p: string): boolean {
   const l = p.toLowerCase();
   const roots = [process.env.SystemRoot, process.env.ProgramFiles, process.env['ProgramFiles(x86)'], process.env.ProgramW6432].filter(Boolean).map((r) => r!.toLowerCase());
   return roots.some((r) => l === r || l.startsWith(r + '\\'));
