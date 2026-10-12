@@ -86,8 +86,8 @@ const needsMe = (v: TeamView, m: SharedMissionView) => !m.mine && (
   || m.owners.some((o) => !o.approvedBy && v.teams.find((t) => t.slug === o.team)?.members.includes(v.me.keyId))
   || m.requested.people.includes(v.me.keyId) && !m.reviews.some((r) => r.by === v.me.keyId && r.current));
 
-function Avatar({ name, agents, me }: { name: string; agents?: boolean; me?: boolean }) {
-  return <span className={`lv-avatar${agents ? ' lv-avatar--agents' : ''}${me ? ' lv-avatar--me' : ''}`} title={name}>{agents ? <Icon as={IAgents} size="sm" /> : initials(name)}</span>;
+function Avatar({ name, agents, me, empty }: { name: string; agents?: boolean; me?: boolean; empty?: boolean }) {
+  return <span className={`lv-avatar${agents ? ' lv-avatar--agents' : ''}${me ? ' lv-avatar--me' : ''}${empty ? ' lv-avatar--empty' : ''}`} title={name}>{agents ? <Icon as={IAgents} size="sm" /> : empty ? '' : initials(name)}</span>;
 }
 
 // ---- Joining ----
@@ -221,7 +221,7 @@ function ItemCard({ view, item, open, onToggle, busy, act }: { view: TeamView; i
           {missions.map((m) => <Badge key={m.missionId} tone={m.verdict === 'verified' ? 'success' : m.state === 'failed' ? 'danger' : 'accent'}>{m.pipeline ?? m.state}</Badge>)}
           {item.comments.length > 0 && <span className="at-subtle lv-small"><Icon as={IMessage} size="sm" /> {item.comments.length}</span>}
           <span style={{ flex: 1 }} />
-          <Avatar name={nameOf(view, item.assignee)} agents={item.assignee === 'agents'} me={mine} />
+          <Avatar name={item.assignee ? nameOf(view, item.assignee) : 'Unassigned'} agents={item.assignee === 'agents'} me={mine} empty={!item.assignee} />
         </span>
       </button>
       {open && (
@@ -276,7 +276,7 @@ function SharedMissionCard({ view, m, busy, act }: { view: TeamView; m: SharedMi
     <div className="lv-card" data-testid="team-mission" data-title={m.title} style={{ display: 'grid', gap: 8 }}>
       <div className="at-row" style={{ gap: 8, flexWrap: 'wrap' }}>
         <Avatar name={nameOf(view, m.author)} me={mine} />
-        {local ? <a href="#" data-testid="team-mission-open" onClick={(e) => { e.preventDefault(); go({ screen: 'mission', missionId: m.missionId }); }}><b>{m.title}</b></a> : <b>{m.title}</b>}
+        {local ? <a href="#" className="lv-link" data-testid="team-mission-open" onClick={(e) => { e.preventDefault(); go({ screen: 'mission', missionId: m.missionId }); }}><b>{m.title}</b></a> : <b>{m.title}</b>}
         <Badge tone={m.verdict === 'verified' ? 'success' : m.verdict === 'failed' || m.state === 'failed' ? 'danger' : 'accent'}>{m.pipeline ?? m.state}</Badge>
         {m.pullRequest && <a className="lv-small" href={m.pullRequest.url} target="_blank" rel="noreferrer">#{m.pullRequest.number}<Icon as={IExternal} size="sm" /></a>}
         {needsMe(view, m) && <Badge tone="warning">needs you</Badge>}

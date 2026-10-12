@@ -12,7 +12,7 @@ Report date 2026-10-12 for lint, typecheck, unit, integration and e2e; the eval,
 | `pnpm test:integration` | 113 passed, 1 skipped (17 files, real git repositories, real sandbox) |
 | `pnpm eval` | 11 / 11 cases behaved as expected; false pass rate 1/7 (the deliberate `weak-tests` case) — [report](../eval/latest.md) |
 | `xvfb-run -a pnpm test:e2e` | 17 / 17 passed (built Electron app; `team.spec.ts` runs two app instances) |
-| `pnpm screenshots` | both capture runs passed; `docs/screenshots` regenerated |
+| `pnpm screenshots` | all three capture runs passed on 2026-10-12; `docs/screenshots` regenerated (35 screens, project `northwind-blog`, team spaces with a second installation) |
 | `pnpm pi:version` | installed Pi packages match pin 0.87.1, MIT |
 | `pnpm package` | `apps/desktop/release/ATLAS-0.1.0.AppImage` (153 MB); launched under xvfb, daemon reached ready (schema v4) |
 

@@ -38,6 +38,9 @@ importers:
       '@atlas/storage':
         specifier: workspace:*
         version: link:packages/storage
+      '@atlas/team':
+        specifier: workspace:*
+        version: link:packages/team
       '@atlas/terminal':
         specifier: workspace:*
         version: link:packages/terminal
