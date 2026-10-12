@@ -4,7 +4,7 @@
 // other account; removed with one click. File access is by explicit grants to the account's SID.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { alreadyReadable, atlasLocalDir, containerHome, ensureHelper, grant, quoteArg } from './appcontainer';
 
@@ -74,7 +74,10 @@ export function grantFor(sid: string, target: string, mode: 'rw' | 'rx') {
   const p = real(target);
   if (!existsSync(p)) return;
   if (!grantCache) { try { grantCache = new Set(JSON.parse(readFileSync(grantsFile(), 'utf8'))); } catch { grantCache = new Set(); } }
-  const key = `${sid}|${p.toLowerCase()}|${mode}`;
+  // Keyed by the folder's identity, not only its path: worktrees are deleted and recreated at the same path
+  // (re-verification, the original-suite run), and a recreated folder carries no grant (CI: error 267 on start).
+  const st = statSync(p);
+  const key = `${sid}|${p.toLowerCase()}|${mode}|${st.ino}|${Math.round(st.birthtimeMs)}`;
   if (grantCache.has(key)) return;
   if (!(mode === 'rx' && alreadyReadable(p))) grant(sid, p, mode);
   for (let d = path.dirname(p); path.dirname(d) !== d; d = path.dirname(d)) {

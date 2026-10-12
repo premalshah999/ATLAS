@@ -484,7 +484,7 @@ static class AtlasSandbox {
       : CreateProcess(null, cmd, IntPtr.Zero, IntPtr.Zero, !pty, cflags, IntPtr.Zero, Environment.CurrentDirectory, ref si, out pi);
     if (!started) {
       int err = Marshal.GetLastWin32Error();
-      Console.Error.WriteLine("atlas-sandbox: cannot start " + line + " (error " + err + (err == 2 ? ": not found" : err == 5 ? ": access denied — the container cannot read this program" : "") + ")");
+      Console.Error.WriteLine("atlas-sandbox: cannot start " + line + " (error " + err + (err == 2 ? ": not found" : err == 5 ? ": access denied — the sandbox cannot read this program" : err == 267 ? ": the working directory is not accessible to the sandbox" : "") + ")");
       return 127;
     }
     if (!AssignProcessToJobObject(job, pi.hProcess)) { TerminateProcess(pi.hProcess, 1); Fail("cannot assign the process to a job: " + Marshal.GetLastWin32Error()); }
