@@ -97,7 +97,7 @@ test('two people collaborate through a team space: invite, board, mission, owner
     await sync(a.page);
     await a.page.getByRole('tab', { name: /Missions/ }).click();
     await expect(a.page.locator('[data-testid="team-mission"][data-title="Fix slug generation"] [data-testid="team-owners"]')).toContainText('Web: approved by Bob');
-    await a.page.getByRole('button', { name: 'Missions' }).click();
+    await a.page.locator('[data-testid="team-mission"][data-title="Fix slug generation"]').getByTestId('team-mission-open').click();
     await expect(a.page.getByTestId('pull-request')).not.toContainText('Needs an approving review', { timeout: 15_000 });
     await a.page.getByRole('tab', { name: /Activity/ }).click();
     await expect(a.page.getByTestId('timeline')).toContainText('Bob approved');

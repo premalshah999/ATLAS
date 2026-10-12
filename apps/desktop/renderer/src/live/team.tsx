@@ -267,6 +267,8 @@ function SharedMissionCard({ view, m, busy, act }: { view: TeamView; m: SharedMi
   const [comment, setComment] = useState('');
   const ws = view.workspaceId;
   const mine = m.mine;
+  // Missions that run on this machine open in place.
+  const local = useLive((st) => st.missions).some((x) => x.id === m.missionId);
   const myReview = m.reviews.filter((r) => r.by === view.me.keyId && r.current).at(-1);
   const planApprovedByMe = m.plan && m.planApprovals.some((a) => a.by === view.me.keyId && a.planVersion === m.plan!.version);
   const review = (verdict: 'approve' | 'changes') => void act('Review not recorded', () => call('team.review', { workspaceId: ws, missionId: m.missionId, commit: m.commit!, verdict, note }), () => { setNote(''); toast({ tone: 'info', title: verdict === 'approve' ? 'Approved' : 'Changes requested', body: `${nameOf(view, m.author)} sees it after the next sync.` }); });
@@ -274,7 +276,7 @@ function SharedMissionCard({ view, m, busy, act }: { view: TeamView; m: SharedMi
     <div className="lv-card" data-testid="team-mission" data-title={m.title} style={{ display: 'grid', gap: 8 }}>
       <div className="at-row" style={{ gap: 8, flexWrap: 'wrap' }}>
         <Avatar name={nameOf(view, m.author)} me={mine} />
-        <b>{m.title}</b>
+        {local ? <a href="#" data-testid="team-mission-open" onClick={(e) => { e.preventDefault(); go({ screen: 'mission', missionId: m.missionId }); }}><b>{m.title}</b></a> : <b>{m.title}</b>}
         <Badge tone={m.verdict === 'verified' ? 'success' : m.verdict === 'failed' || m.state === 'failed' ? 'danger' : 'accent'}>{m.pipeline ?? m.state}</Badge>
         {m.pullRequest && <a className="lv-small" href={m.pullRequest.url} target="_blank" rel="noreferrer">#{m.pullRequest.number}<Icon as={IExternal} size="sm" /></a>}
         {needsMe(view, m) && <Badge tone="warning">needs you</Badge>}
