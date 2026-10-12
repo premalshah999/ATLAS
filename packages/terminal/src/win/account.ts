@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { alreadyReadable, atlasLocalDir, containerHome, ensureHelper, grant, quoteArg } from './appcontainer';
+import { alreadyReadable, atlasLocalDir, containerHome, ensureHelper, quoteArg } from './appcontainer';
 
 export interface SandboxAccount { kind: 'offline' | 'network'; name: string; sid: string }
 export interface AccountsInfo { offline: SandboxAccount; network: SandboxAccount; firewall: boolean; store: string }
@@ -79,7 +79,12 @@ export function grantFor(sid: string, target: string, mode: 'rw' | 'rx') {
   const st = statSync(p);
   const key = `${sid}|${p.toLowerCase()}|${mode}|${st.ino}|${Math.round(st.birthtimeMs)}`;
   if (grantCache.has(key)) return;
-  if (!(mode === 'rx' && alreadyReadable(p))) grant(sid, p, mode);
+  // icacls directly: appcontainer's grant() remembers grants by path alone, which is exactly what fails for a
+  // recreated worktree (CI round 3: still error 267 after keying this cache by identity).
+  if (!(mode === 'rx' && alreadyReadable(p))) {
+    const dir = statSync(p).isDirectory();
+    execFileSync('icacls', [p, '/grant:r', `*${sid}:${dir ? '(OI)(CI)' : ''}${mode === 'rw' ? 'M' : 'RX'}`, '/C', '/Q'], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, timeout: 300_000 });
+  }
   for (let d = path.dirname(p); path.dirname(d) !== d; d = path.dirname(d)) {
     const k = `${sid}|${d.toLowerCase()}|ra`;
     if (grantCache.has(k) || alreadyReadable(d)) continue;
