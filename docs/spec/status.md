@@ -89,6 +89,15 @@ Report date 2026-10-12 for lint, typecheck, unit, integration and e2e; the eval,
 ## Known gaps and risks
 1. **Real-model path.** It is not exercised against a live provider in CI. The Pi adapter is contract-tested with Pi's faux provider. `ATLAS_EVAL_RUNTIME=pi pnpm eval` runs the corpus with a real model when a key is present; that has not been run for this report.
 2. **Weak project tests produce false passes.** The `weak-tests` eval case shows that ATLAS cannot know an overfit change is wrong when the project's own checks pass it.
-3. **Windows** builds, but its sandbox fails closed: an AppContainer cannot create the named pipes Node uses for child stdio, so agent and check commands are refused there (ADR 0016, proposed; the restricted-token experiment is paused). **macOS** runs the full unit, integration and e2e suites in CI, including the Seatbelt sandbox and XQuartz desktop control. Neither platform's build is signed.
+3. **Windows** runs agent and check commands as visible sandbox accounts that the operator sets up from Settings (ADR 0020, decided after ADR 0016). The operator terminal is a ConPTY hosted as the account.
+   - **Evidence.** CI run 38219399706 (commit `ad90563`, Windows Server 2025) passed every step: lint, typecheck, unit (including the PTY tests typing into PowerShell, plain and as the account), integration, eval, the full Electron e2e, and packaging.
+   - **Without accounts, Windows commands fail closed.** An AppContainer cannot create the pipes Node uses for child stdio.
+   - **macOS** runs the full unit, integration and e2e suites in CI, including the Seatbelt sandbox and XQuartz desktop control.
+   - Neither platform's build is signed.
+6. **Team spaces (ADR 0021).**
+   - Signatures attribute entries. Access to the record is repository access.
+   - Order uses each author's clock.
+   - Owner approval is enforced on ATLAS's publish path, not on plain git pushes; protected branches on the forge cover that.
+   - The record is not compacted.
 4. **Pi resume** is supported for the Pi runtime (ADR 0014). Runtimes without it still restart a task as a new attempt in a fresh worktree.
 5. **Pi telemetry** is disabled in the adapter (`enableInstallTelemetry: false`, `PI_TELEMETRY=0`). Re-check on every Pi upgrade.
