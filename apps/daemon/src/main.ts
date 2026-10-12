@@ -17,7 +17,13 @@ async function main() {
   const apiKeys: Record<string, string> = {};
   for (const [provider, env] of Object.entries(PROVIDER_ENV)) {
     const v = process.env[env];
-    if (v) { apiKeys[provider] = v; delete process.env[env]; }
+    if (v) apiKeys[provider] = v;
+  }
+  for (const env of new Set(Object.values(PROVIDER_ENV))) delete process.env[env];
+  // From the desktop shell: one key per provider, even where providers share a variable (ADR 0017).
+  if (process.env.ATLAS_PROVIDER_KEYS) {
+    try { for (const [provider, key] of Object.entries(JSON.parse(process.env.ATLAS_PROVIDER_KEYS) as Record<string, string>)) if (PROVIDER_ENV[provider] && typeof key === 'string') apiKeys[provider] = key; } catch { /* ignored */ }
+    delete process.env.ATLAS_PROVIDER_KEYS;
   }
   const githubToken = process.env[SERVICE_ENV.github] || undefined;
   delete process.env[SERVICE_ENV.github];

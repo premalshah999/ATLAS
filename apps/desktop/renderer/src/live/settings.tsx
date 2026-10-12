@@ -1,14 +1,15 @@
 // Settings & models (manual §24, §43): runtime health, provider credentials, versions and provenance.
 import React, { useEffect, useState } from 'react';
-import type { RuntimeHealth } from '@atlas/contracts';
+import { PROVIDERS, type ModelInfo, type RuntimeHealth } from '@atlas/contracts';
 import { Badge, Button, Field, Input, KV, Status, Toggle } from '../ui/primitives';
 import { call, type AppInfo, type Credentials, type DesktopState, type RoleInfo, type SettingsState, type SkillsState, type SkillView } from './api';
 import { useLive } from './store';
 import { roleName } from './format';
 import { toast } from './toast';
+import { ModelSelect } from './models';
 
-const NAMES: Record<string, string> = { anthropic: 'Anthropic', openai: 'OpenAI', google: 'Google Gemini', github: 'GitHub' };
-type Provider = 'anthropic' | 'openai' | 'google' | 'github';
+const NAMES: Record<string, string> = { ...Object.fromEntries(PROVIDERS.map((p) => [p.id, p.label])), github: 'GitHub' };
+type Provider = string;
 
 export function Settings() {
   const [health, setHealth] = useState<RuntimeHealth[] | null>(null);
@@ -17,11 +18,14 @@ export function Settings() {
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [settings, setSettings] = useState<SettingsState | null>(null);
   const [confirmUnsafe, setConfirmUnsafe] = useState(false);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [adding, setAdding] = useState('');
   const load = () => {
     void call('runtime.health').then(setHealth).catch(() => {});
     void call('credentials.list').then(setCreds).catch(() => {});
     void call('app.info').then(setInfo).catch(() => {});
     void call('settings.get').then(setSettings).catch(() => {});
+    void call('models.list').then(setModels).catch(() => setModels([]));
   };
   const setUnsandboxed = async (value: boolean) => {
     try { setSettings(await call('settings.set', { key: 'execution.allowUnsandboxed', value })); setConfirmUnsafe(false); }
@@ -84,19 +88,28 @@ export function Settings() {
           <RolesSection />
           <SkillsSection />
           <ExportKeysSection />
-          <section className="lv-section">
-            <div className="at-label">Model provider keys</div>
-            <p className="at-muted lv-small">Keys are encrypted with the operating system credential store and passed only to the agent runtime process. They are redacted from every log, event and artifact.{creds && !creds.available ? ' No credential store is available on this system: export the variable before launching ATLAS instead.' : ''}</p>
-            {creds?.providers.filter((p) => p.provider !== 'github').map((p) => (
-              <Field key={p.provider} label={NAMES[p.provider]} aside={p.stored ? <Badge tone="success">saved</Badge> : p.fromEnvironment ? <Badge tone="outline">from {p.env}</Badge> : <Badge tone="outline">not set</Badge>}>
+          <section className="lv-section" data-testid="providers">
+            <div className="at-label">Model providers</div>
+            <p className="at-muted lv-small">Pi reaches {PROVIDERS.length} providers with an API key. Keys are encrypted with the operating system credential store and passed only to the agent runtime process. They are redacted from every log, event and artifact.{creds && !creds.available ? ' No credential store is available on this system: export the variable before launching ATLAS instead.' : ''}</p>
+            {creds?.providers.filter((p) => p.provider !== 'github' && (p.stored || p.fromEnvironment || adding === p.provider)).map((p) => (
+              <Field key={p.provider} label={NAMES[p.provider] ?? p.provider} aside={p.stored ? <Badge tone="success">saved</Badge> : p.fromEnvironment ? <Badge tone="outline">from {p.env}</Badge> : <Badge tone="outline">not set</Badge>}>
                 <div className="at-row" style={{ gap: 8 }}>
-                  <Input type="password" autoComplete="off" spellCheck={false} placeholder={p.stored ? '•••••••• saved' : p.provider === 'github' ? 'Paste a GitHub token' : `Paste a ${NAMES[p.provider]} API key`} value={draft[p.provider] ?? ''} onChange={(e) => setDraft((d) => ({ ...d, [p.provider]: e.target.value }))} style={{ flex: 1 }} disabled={!creds.available} />
-                  <Button disabled={!creds.available || (draft[p.provider] ?? '').trim().length < 8} onClick={() => void save(p.provider as any)}>Save</Button>
-                  {p.stored && <Button variant="ghost" onClick={() => void remove(p.provider as any)}>Remove</Button>}
+                  <Input data-testid={`key-${p.provider}`} type="password" autoComplete="off" spellCheck={false} placeholder={p.stored ? '•••••••• saved' : `Paste a ${NAMES[p.provider] ?? p.provider} API key`} value={draft[p.provider] ?? ''} onChange={(e) => setDraft((d) => ({ ...d, [p.provider]: e.target.value }))} style={{ flex: 1 }} disabled={!creds.available} />
+                  <Button data-testid={`key-${p.provider}-save`} disabled={!creds.available || (draft[p.provider] ?? '').trim().length < 8} onClick={() => void save(p.provider).then(() => setAdding(''))}>Save</Button>
+                  {p.stored && <Button variant="ghost" onClick={() => void remove(p.provider)}>Remove</Button>}
                 </div>
               </Field>
             ))}
+            {creds && (
+              <Field label="Add a provider" help={(() => { const info = PROVIDERS.find((x) => x.id === adding); return info ? <>Key variable {info.env}{info.keyUrl ? <> · create one at {info.keyUrl}</> : null}</> : 'Choose a provider, then paste its key above.'; })()}>
+                <select className="lv-native-select" data-testid="provider-add" value={adding} onChange={(e) => setAdding(e.target.value)}>
+                  <option value="">Choose a provider…</option>
+                  {PROVIDERS.filter((x) => !creds.providers.find((c) => c.provider === x.id && (c.stored || c.fromEnvironment))).map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+                </select>
+              </Field>
+            )}
           </section>
+          {settings && <ModelsSection settings={settings} models={models} onChange={setSettings} />}
           <section className="lv-section" data-testid="github-settings">
             <div className="at-label">GitHub</div>
             <p className="at-muted lv-small">Lets you open a pull request for an accepted, verified mission and read its CI results. ATLAS pushes only when you click Publish, never force-pushes, and never gives this token to an agent. A fine-grained token needs Contents and Pull requests (read and write), and Checks and Actions (read) on the repositories you publish to.</p>
@@ -128,6 +141,26 @@ type OnSettings = (s: SettingsState) => void;
 const saveSetting = async (body: Parameters<typeof call<'settings.set'>>[1], onChange: OnSettings) => {
   try { onChange(await call('settings.set', body)); } catch (e) { toast({ tone: 'danger', title: 'Setting not saved', body: (e as Error).message }); }
 };
+
+const TIERS: { key: 'models.default' | 'models.fast' | 'models.strong'; label: string; help: string }[] = [
+  { key: 'models.default', label: 'Default model', help: 'Coder, tester, browser QA, desktop operator, deployment verifier.' },
+  { key: 'models.strong', label: 'Strong model', help: 'Planner and reviewer. Falls back to the default model.' },
+  { key: 'models.fast', label: 'Fast model', help: 'Roles that ask for speed. Falls back to the default model.' },
+];
+
+function ModelsSection({ settings, models, onChange }: { settings: SettingsState; models: ModelInfo[]; onChange: OnSettings }) {
+  return (
+    <section className="lv-section" data-testid="models">
+      <div className="at-label">Models</div>
+      <p className="at-muted lv-small">{models.length ? `${models.length} models from ${new Set(models.map((m) => m.provider)).size} configured provider(s).` : 'Add a provider key to choose models.'} A mission can override these when you create it. Each attempt records the model it used.</p>
+      {TIERS.map((t) => (
+        <Field key={t.key} label={t.label} help={t.help}>
+          <ModelSelect testId={`model-${t.key.split('.')[1]}`} models={models} value={settings.values[t.key]} empty={t.key === 'models.default' ? 'First available model' : 'Same as default'} onChange={(value) => void saveSetting({ key: t.key, value }, onChange)} />
+        </Field>
+      ))}
+    </section>
+  );
+}
 
 function DesktopSection({ settings, onChange }: { settings: SettingsState; onChange: OnSettings }) {
   const [d, setD] = useState<DesktopState | null>(null);

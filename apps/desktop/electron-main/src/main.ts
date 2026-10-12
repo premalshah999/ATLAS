@@ -50,10 +50,10 @@ function daemonEnv(): Record<string, string> {
   env.ATLAS_VERSION = app.getVersion();
   env.PI_TELEMETRY = '0';
   if (process.env.ATLAS_MODEL) env.ATLAS_MODEL = process.env.ATLAS_MODEL;
-  for (const [provider, key] of Object.entries(credentials.keys())) {
-    const name = PROVIDER_ENV[provider] ?? SERVICE_ENV[provider];
-    if (name) env[name] = key;
-  }
+  const keys = credentials.keys();
+  const providerKeys = Object.fromEntries(Object.entries(keys).filter(([p]) => PROVIDER_ENV[p]));
+  if (Object.keys(providerKeys).length) env.ATLAS_PROVIDER_KEYS = JSON.stringify(providerKeys);
+  for (const [service, name] of Object.entries(SERVICE_ENV)) if (keys[service]) env[name] = keys[service];
   if (process.env.ATLAS_GITHUB_API) env.ATLAS_GITHUB_API = process.env.ATLAS_GITHUB_API;
   const ds = deploySecrets.decrypted();
   if (Object.keys(ds).length) env.ATLAS_DEPLOY_SECRETS = JSON.stringify(ds);

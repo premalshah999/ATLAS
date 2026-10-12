@@ -9,3 +9,4 @@ export * from './redact';
 export * from './release';
 export * from './config';
 export * from './desktop';
+export * from './providers';

@@ -3,9 +3,12 @@
 import { z } from 'zod';
 import { ApprovalMode, Id, MissionBudget, RuntimeKind } from './domain';
 import { DesktopAction, DesktopControl } from './desktop';
+import { MODEL_REF, PROVIDER_IDS } from './providers';
 
 const empty = z.object({}).strict();
 const missionRef = z.object({ missionId: Id }).strict();
+const modelRef = z.string().regex(MODEL_REF, 'expected provider/model');
+const credentialName = z.enum([...PROVIDER_IDS, 'github']);
 
 export const Requests = {
   'app.info': empty,
@@ -22,6 +25,8 @@ export const Requests = {
     runtime: RuntimeKind,
     budget: MissionBudget.partial().optional(),
     targetEnvironment: z.string().min(1).max(100).nullable().optional(),
+    /** Model for every agent of this mission (provider/model). Default: the Settings choice for each role's tier. */
+    model: modelRef.nullable().optional(),
   }).strict(),
   'mission.list': z.object({ workspaceId: Id.optional() }).strict(),
   'mission.get': missionRef,
@@ -74,6 +79,7 @@ export const Requests = {
   'events.since': z.object({ missionId: Id, afterSeq: z.number().int().min(0) }).strict(),
   'artifact.read': z.object({ artifactId: Id }).strict(),
   'runtime.health': empty,
+  'models.list': empty,
   'settings.get': empty,
   'settings.set': z.discriminatedUnion('key', [
     z.object({ key: z.literal('execution.allowUnsandboxed'), value: z.boolean() }).strict(),
@@ -81,10 +87,13 @@ export const Requests = {
     z.object({ key: z.literal('deploy.allowedTargets'), value: z.array(z.string().min(1).max(100)).max(50) }).strict(),
     z.object({ key: z.literal('deploy.autoRollback'), value: z.boolean() }).strict(),
     z.object({ key: z.literal('desktop.enabled'), value: z.boolean() }).strict(),
+    z.object({ key: z.literal('models.default'), value: modelRef.nullable() }).strict(),
+    z.object({ key: z.literal('models.fast'), value: modelRef.nullable() }).strict(),
+    z.object({ key: z.literal('models.strong'), value: modelRef.nullable() }).strict(),
   ]),
   'credentials.list': empty,
-  'credentials.set': z.object({ provider: z.enum(['anthropic', 'openai', 'google', 'github']), key: z.string().trim().min(8).max(500) }).strict(),
-  'credentials.remove': z.object({ provider: z.enum(['anthropic', 'openai', 'google', 'github']) }).strict(),
+  'credentials.set': z.object({ provider: credentialName, key: z.string().trim().min(8).max(500) }).strict(),
+  'credentials.remove': z.object({ provider: credentialName }).strict(),
 } as const;
 
 /** Methods only the main process may send to the daemon (never exposed to the renderer). */
@@ -96,7 +105,6 @@ export const InternalRequests = {
 } as const;
 export type InternalMethod = keyof typeof InternalRequests;
 
-export const PROVIDER_ENV: Record<string, string> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY', google: 'GEMINI_API_KEY' };
 /** Service tokens stored like provider keys but never given to a model runtime (ADR 0015). */
 export const SERVICE_ENV: Record<string, string> = { github: 'ATLAS_GITHUB_TOKEN' };
 

@@ -111,4 +111,11 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       ALTER TABLE missions ADD COLUMN follow_up TEXT;
     `,
   },
+  {
+    version: 7,
+    sql: `
+      -- The model chosen for a mission (provider/model, ADR 0017); NULL uses the Settings choice per role tier.
+      ALTER TABLE missions ADD COLUMN model TEXT;
+    `,
+  },
 ];

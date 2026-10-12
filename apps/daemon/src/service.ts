@@ -263,6 +263,7 @@ export class DaemonService {
         return { artifact: r.artifact, intact: r.intact, truncated: r.text.length > max, text: r.text.slice(0, max) };
       }
       case 'runtime.health': return Promise.all([this.fake.health(), this.pi.health()]);
+      case 'models.list': return this.pi.models();
       case 'settings.get': return { values: this.settingValues(), sandbox: detectSandbox(true) };
       case 'settings.set': {
         this.repo.setSetting(p.key, p.value);
@@ -278,6 +279,7 @@ export class DaemonService {
       'execution.allowUnsandboxed': this.repo.setting('execution.allowUnsandboxed', false), 'retention.days': this.repo.setting('retention.days', 0),
       'deploy.allowedTargets': this.repo.setting<string[]>('deploy.allowedTargets', []), 'deploy.autoRollback': this.repo.setting('deploy.autoRollback', true),
       'desktop.enabled': this.repo.setting('desktop.enabled', false),
+      'models.default': this.repo.setting<string | null>('models.default', null), 'models.fast': this.repo.setting<string | null>('models.fast', null), 'models.strong': this.repo.setting<string | null>('models.strong', null),
     };
   }
 

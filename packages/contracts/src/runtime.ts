@@ -1,6 +1,7 @@
 // AgentRuntime contract (manual §9). Adapters convert this into SDK calls; SDK objects never leak out.
 import type { AgentRole, RuntimeKind } from './domain';
 import type { ToolResult } from './capabilities';
+import type { ModelInfo } from './providers';
 
 export interface ToolSpec {
   name: string;
@@ -36,6 +37,8 @@ export interface AgentInput {
    * its edits matches what it finds. A runtime that cannot honour it starts a fresh conversation with `prompt`.
    */
   resume?: { attemptId: string; prompt: string };
+  /** provider/model chosen by ATLAS for this attempt (ADR 0017). Absent: the runtime's default. */
+  model?: string;
 }
 
 export type AgentEvent =
@@ -76,6 +79,8 @@ export interface PlanRequest {
   maxTasks: number;
   /** Issues from a previous attempt, for one repair round. */
   previousIssues?: string[];
+  /** provider/model for the planner (ADR 0017). Absent: the runtime's default. */
+  model?: string;
   signal: AbortSignal;
 }
 
@@ -95,6 +100,8 @@ export interface AgentRuntime {
   canResume?(attemptId: string): boolean;
   /** Delete whatever the runtime saved for this attempt. Called once an attempt has ended or been resumed. */
   discard?(attemptId: string): void;
+  /** Models this runtime can use now (a key is configured for the provider). Optional. */
+  models?(): Promise<ModelInfo[]>;
 }
 
 /**

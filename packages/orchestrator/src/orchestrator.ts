@@ -3,7 +3,7 @@
 import path from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import {
-  AtlasError, DEFAULT_BUDGET, MissionBudget, newId, nowIso, RETRYABLE, type AgentRuntime, type Approval, type ApprovalMode, type Attempt, type AtlasEvent,
+  AtlasError, DEFAULT_BUDGET, MissionBudget, newId, nowIso, RETRYABLE, type AgentRole, type AgentRuntime, type Approval, type ApprovalMode, type Attempt, type AtlasEvent,
   type CheckRecord, type Mission, type MissionState, type NewEvent, type Plan, type ReleaseStage, type RuntimeKind, type StageContext, type Task, type TaskState,
   type ToolResult, type Workspace, redact,
 } from '@atlas/contracts';
@@ -280,17 +280,17 @@ export class Orchestrator {
 
   /* ---------------- mission lifecycle ---------------- */
 
-  createMission(input: { workspaceId: string; title: string; goal: string; constraints: string; approvalMode: ApprovalMode; runtime: RuntimeKind; budget?: Partial<MissionBudget>; targetEnvironment?: string | null; followUp?: Mission['followUp'] }): Mission {
+  createMission(input: { workspaceId: string; title: string; goal: string; constraints: string; approvalMode: ApprovalMode; runtime: RuntimeKind; budget?: Partial<MissionBudget>; targetEnvironment?: string | null; followUp?: Mission['followUp']; model?: string | null }): Mission {
     const w = this.repo.workspace(input.workspaceId);
     if (!w) throw new AtlasError('invalid_request', 'Unknown workspace');
     const now = nowIso();
     const budget = MissionBudget.parse({ ...DEFAULT_BUDGET, ...(input.budget ?? {}) });
     const m: Mission = {
       id: newId('msn'), workspaceId: input.workspaceId, title: input.title, goal: input.goal, constraints: input.constraints, approvalMode: input.approvalMode, runtime: input.runtime,
-      baseCommit: null, state: 'draft', planVersion: 0, policyId: 'default@2', outcome: null, decision: null, budget, integrationBranch: null, integrationCommit: null, archived: false, targetEnvironment: input.targetEnvironment ?? null, verdict: null, followUp: input.followUp ?? null, createdAt: now, updatedAt: now,
+      baseCommit: null, state: 'draft', planVersion: 0, policyId: 'default@2', outcome: null, decision: null, budget, integrationBranch: null, integrationCommit: null, archived: false, targetEnvironment: input.targetEnvironment ?? null, verdict: null, followUp: input.followUp ?? null, model: input.model ?? null, createdAt: now, updatedAt: now,
     };
     this.repo.insertMission(m);
-    this.emit({ missionId: m.id, type: 'mission.created', actor: OPERATOR, payload: { title: m.title, goal: m.goal, constraints: m.constraints, approvalMode: m.approvalMode, runtime: m.runtime, workspace: w.name, budget, targetEnvironment: m.targetEnvironment } });
+    this.emit({ missionId: m.id, type: 'mission.created', actor: OPERATOR, payload: { title: m.title, goal: m.goal, constraints: m.constraints, approvalMode: m.approvalMode, runtime: m.runtime, workspace: w.name, budget, targetEnvironment: m.targetEnvironment, ...(m.model ? { model: m.model } : {}) } });
     return m;
   }
 
@@ -349,7 +349,7 @@ export class Orchestrator {
         const req = {
           missionId, title: m.title, objective: m.goal, constraints: m.constraints, approvalMode: m.approvalMode, repoMap: await repoMap(w.root), excerpts: await this.excerpts(w.root),
           roles: Object.values(ROLES).filter((r) => r.id !== 'orchestrator').map((r) => ({ id: r.id, title: r.title, tools: r.tools })),
-          verification, maxTasks: m.budget.maxTasks, signal: ac.signal,
+          verification, maxTasks: m.budget.maxTasks, signal: ac.signal, model: this.modelFor(m, 'orchestrator'),
         };
         let p = await rt.plan(req);
         // A runtime may decline to plan (e.g. the scripted runtime outside its samples): use the deterministic plan.
@@ -542,6 +542,16 @@ export class Orchestrator {
     if (['running', 'verifying'].includes(m.state)) this.setMission(m, 'failed', { reason: m.outcome ?? 'Budget exceeded' });
   }
 
+  /**
+   * Model for an agent (ADR 0017): the mission's own choice, else the operator's Settings choice for the role's tier
+   * (fast/strong), else the default model. Undefined lets the runtime pick (the first model with a key).
+   */
+  modelFor(m: Mission, roleId: AgentRole): string | undefined {
+    if (m.model) return m.model;
+    const tier = ROLES[roleId]?.modelPreference ?? 'default';
+    return (tier !== 'default' ? this.repo.setting<string | null>(`models.${tier}`, null) : null) ?? this.repo.setting<string | null>('models.default', null) ?? undefined;
+  }
+
   private permittedTools(m: Mission, t: Task): string[] {
     const planTask = this.repo.plan(m.id, m.planVersion)?.plan.tasks.find((x) => x.key === t.key);
     let tools = planTask ? planTask.tools : [...ROLES[t.role].tools];
@@ -634,6 +644,7 @@ export class Orchestrator {
 
     const rt = this.o.runtimes[m.runtime]!;
     const permitted = this.permittedTools(m, t);
+    const model = this.modelFor(m, t.role);
     const isolation = await this.isolationFor(dir);
     const extras: Record<string, ExtraTool> = {};
     const stageLike = this.stageContext(m, dir, startCommit, isolation, ac.signal, [], { role: t.role, taskId: t.id });
@@ -667,7 +678,7 @@ export class Orchestrator {
     const prompt = `Mission: ${m.title}\n\n${ctx.text}\n\nWork on task ${t.key} now.`;
 
     this.repo.updateAttempt(attempt.id, { state: 'running' });
-    this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'attempt.started', actor: SYSTEM('scheduler'), payload: { number, runtime: m.runtime, role: t.role, roleVersion: def.version, worktree: dir, branch, tools: permitted, depth: t.depth, contextArtifact: ctxArt.id, sandbox: isolation.mode, startCommit, ...(resume ? { resumedFrom: { attemptId: resume.attemptId, number: resume.number, commit: resume.commit } } : {}) }, artifactIds: [ctxArt.id] });
+    this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'attempt.started', actor: SYSTEM('scheduler'), payload: { number, runtime: m.runtime, role: t.role, roleVersion: def.version, worktree: dir, branch, tools: permitted, depth: t.depth, contextArtifact: ctxArt.id, ...(model ? { model } : {}), sandbox: isolation.mode, startCommit, ...(resume ? { resumedFrom: { attemptId: resume.attemptId, number: resume.number, commit: resume.commit } } : {}) }, artifactIds: [ctxArt.id] });
 
     this.watchSignal(m.id, t.id, attempt.id);
     const agent = { kind: 'agent' as const, role: t.role, taskId: t.id };
@@ -678,7 +689,7 @@ export class Orchestrator {
       handle = await rt.start({
         missionId: m.id, taskId: t.id, attemptId: attempt.id, workspaceId: w.id, roleId: t.role, cwd: dir, instructions: def.instructions, prompt,
         permittedTools: permitted, contextRefs: [ctxArt.id], budget: def.budget, tools, signal: ac.signal,
-        resume: resume ? { attemptId: resume.attemptId, prompt: resumePrompt(t.key) } : undefined,
+        resume: resume ? { attemptId: resume.attemptId, prompt: resumePrompt(t.key) } : undefined, model,
       });
       if (resume) {
         // The fork is the attempt's own copy now; the lost attempt's saved conversation is no longer needed.
@@ -1543,7 +1554,7 @@ export class Orchestrator {
     ].join('\n');
     const follow = this.createMission({
       workspaceId: m.workspaceId, title: `Fix CI · ${m.title}`.slice(0, 200), goal, constraints: m.constraints, approvalMode: m.approvalMode, runtime: m.runtime,
-      budget: m.budget, followUp: { parentMissionId: m.id, branch: published.branch, headSha, pullRequest: published.number },
+      budget: m.budget, followUp: { parentMissionId: m.id, branch: published.branch, headSha, pullRequest: published.number }, model: m.model ?? null,
     });
     this.emit({ missionId: m.id, type: 'operator.action', actor: OPERATOR, payload: { action: 'fix_ci', followUp: follow.id, pullRequest: published.number, headSha } });
     return follow;

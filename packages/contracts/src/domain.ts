@@ -64,6 +64,8 @@ export interface Mission {
    * head instead of the checkout's HEAD, and its result is pushed to the same branch.
    */
   followUp: { parentMissionId: string; branch: string; headSha: string; pullRequest: number } | null;
+  /** provider/model for every agent of the mission; null: the Settings choice for each role's tier (ADR 0017). */
+  model?: string | null;
   createdAt: string;
   updatedAt: string;
 }
