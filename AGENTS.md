@@ -45,6 +45,8 @@ packages/orchestrator        state machines, plan validation, scheduler, ToolGat
 packages/browser             Playwright browser sessions, app start in the sandbox, API checks, browser_action tool
 packages/deploy              staging providers (local, command), independent verification, rollback, reconcile
 packages/desktop-control     Xvfb virtual displays, xdotool input, controller lease, desktop_action tool
+packages/mcp                 MCP client (stdio in the sandbox, streamable HTTP) and server manager behind mcp_call
+packages/sync                skills and MCP servers synced to Claude Code, Codex and OpenCode (preview, ownership, conflicts)
 packages/runtime-fake        deterministic scripted runtime (CI and the sample missions)
 packages/runtime-pi          Pi SDK adapter (pinned 0.87.1)
 fixtures/sample-app          sample project with a real bug and real tests

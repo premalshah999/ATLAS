@@ -2,12 +2,13 @@
 import React, { useEffect, useState } from 'react';
 import { PROVIDERS, type ModelInfo, type RuntimeHealth } from '@atlas/contracts';
 import { Badge, Button, Field, Input, KV, Status, Toggle } from '../ui/primitives';
-import { call, type AppInfo, type Credentials, type DesktopState, type RoleInfo, type SettingsState, type SkillsState, type SkillView } from './api';
-import { useLive } from './store';
+import { call, type AppInfo, type Credentials, type DesktopState, type RoleInfo, type SettingsState } from './api';
 import { roleName } from './format';
 import { toast } from './toast';
 import { ModelSelect } from './models';
 import { McpSection } from './mcp';
+import { SkillsSection } from './skills';
+import { SyncSection } from './sync';
 
 const NAMES: Record<string, string> = { ...Object.fromEntries(PROVIDERS.map((p) => [p.id, p.label])), github: 'GitHub' };
 type Provider = string;
@@ -89,6 +90,7 @@ export function Settings() {
           <RolesSection />
           <SkillsSection />
           <McpSection />
+          <SyncSection />
           <ExportKeysSection />
           <section className="lv-section" data-testid="providers">
             <div className="at-label">Model providers</div>
@@ -258,57 +260,6 @@ function RolesSection() {
           {open === r.id && <pre className="lv-proc-body" style={{ maxHeight: 240, whiteSpace: 'pre-wrap' }}>{r.instructions}</pre>}
         </div>
       ))}
-    </section>
-  );
-}
-
-/**
- * Skills (ADR 0013): reviewed procedures agents can load. Bundled skills ship with ATLAS; operator skills are
- * imported here. Skills found in a repository are untrusted until imported at the exact version reviewed.
- */
-function SkillsSection() {
-  const all = useLive((s) => s.workspaces);
-  const workspaces = all.filter((w) => w.isGit);
-  const [ws, setWs] = useState<string>(workspaces[0]?.id ?? '');
-  const [state, setState] = useState<SkillsState | null>(null);
-  const [open, setOpen] = useState<{ key: string; text: string } | null>(null);
-  useEffect(() => { void call('skills.list', ws ? { workspaceId: ws } : {}).then(setState).catch(() => {}); }, [ws]);
-  const show = (s: SkillView) => {
-    const key = `${s.source}:${s.name}`;
-    if (open?.key === key) { setOpen(null); return; }
-    void call('skills.read', { name: s.name, source: s.source === 'repository' ? 'repository' : 'trusted', ...(s.source === 'repository' ? { workspaceId: ws } : {}) }).then((r) => setOpen({ key, text: r.text })).catch((e) => toast({ tone: 'danger', title: 'Not readable', body: (e as Error).message }));
-  };
-  const row = (s: SkillView) => (
-    <div key={`${s.source}:${s.name}`} className="lv-rt" data-testid="skill-row" data-source={s.source}>
-      <div className="at-row" style={{ gap: 8 }}>
-        <span className="body-strong at-mono">{s.name}</span><span className="at-mono at-subtle lv-small">v{s.version} · {s.hash.slice(0, 12)}</span>
-        <Badge tone={s.source === 'repository' ? 'warning' : 'outline'}>{s.source === 'repository' ? 'in repository · not trusted' : s.source}</Badge>
-        <span style={{ flex: 1 }} />
-        <Button size="sm" variant="ghost" onClick={() => show(s)}>{open?.key === `${s.source}:${s.name}` ? 'Hide' : 'Read'}</Button>
-        {s.source === 'repository' && open?.key === `repository:${s.name}` && <Button size="sm" onClick={() => void call('skills.import', { workspaceId: ws, name: s.name, hash: s.hash }).then((r) => { setState(r); toast({ tone: 'info', title: `Imported ${s.name}`, body: 'This exact version is now offered to agents.' }); }).catch((e) => toast({ tone: 'danger', title: 'Not imported', body: (e as Error).message }))} data-testid="skill-import">Import this version</Button>}
-        {s.source === 'operator' && <Button size="sm" variant="ghost" onClick={() => void call('skills.remove', { name: s.name }).then(() => call('skills.list', ws ? { workspaceId: ws } : {}).then(setState))}>Remove</Button>}
-      </div>
-      <span className="at-muted lv-small">{s.description}</span>
-      <span className="at-subtle lv-small">Offered to: {s.roles.length ? s.roles.map(roleName).join(', ') : 'every role'}{s.files.length > 1 ? ` · ${s.files.length - 1} reference file${s.files.length > 2 ? 's' : ''}` : ''}</span>
-      {open?.key === `${s.source}:${s.name}` && <pre className="lv-proc-body" style={{ maxHeight: 300, whiteSpace: 'pre-wrap' }}>{open.text}</pre>}
-    </div>
-  );
-  return (
-    <section className="lv-section" data-testid="skills">
-      <div className="at-label">Skills</div>
-      <p className="at-muted lv-small" style={{ margin: 0 }}>Reviewed procedures agents can load when relevant. Every load is recorded with the skill's hash. Skills describe how to work; ATLAS still verifies every result independently.</p>
-      {state?.trusted.map(row)}
-      {workspaces.length > 0 && (
-        <>
-          <div className="at-row" style={{ gap: 8, marginTop: 8 }}>
-            <span className="at-label">Found in repository</span>
-            <select className="lv-native-select" value={ws} onChange={(e) => setWs(e.target.value)}>{workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}</select>
-          </div>
-          {state && !state.repository.length && <span className="at-subtle lv-small">No skills in .agents/skills or .pi/skills.</span>}
-          {state?.repository.map(row)}
-        </>
-      )}
-      {state?.errors.length ? <span className="at-subtle lv-small">Not loaded: {state.errors.join('; ')}</span> : null}
     </section>
   );
 }

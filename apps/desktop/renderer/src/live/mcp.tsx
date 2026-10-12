@@ -12,6 +12,9 @@ function LabeledCheck({ on, onChange, label }: { on: boolean; onChange: (v: bool
   return <span className="at-row lv-small" style={{ gap: 6, cursor: 'pointer' }}><Check on={on} onChange={onChange} label={label} /><span onClick={() => onChange(!on)}>{label}</span></span>;
 }
 
+/** Fired when another panel changed the MCP server list. */
+export const MCP_CHANGED = 'atlas:mcp-changed';
+
 const ROLES: AgentRole[] = ['coder', 'reviewer', 'tester', 'browser_qa', 'deployment_verifier'];
 type Draft = { name: string; transport: 'stdio' | 'http'; url: string; command: string; args: string; env: string; readPaths: string; network: boolean; secrets: string; approval: 'ask' | 'allow'; roles: AgentRole[] };
 const EMPTY: Draft = { name: '', transport: 'http', url: '', command: '', args: '', env: '', readPaths: '', network: false, secrets: '', approval: 'ask', roles: ['coder', 'reviewer', 'tester'] };
@@ -46,7 +49,13 @@ export function McpSection() {
     setBusy(label);
     try { setServers(await f()); } catch (e) { toast({ tone: 'danger', title: 'MCP server not updated', body: (e as Error).message }); } finally { setBusy(null); }
   };
-  useEffect(() => { void call('mcp.list').then(setServers).catch(() => {}); }, []);
+  useEffect(() => {
+    const load = () => void call('mcp.list').then(setServers).catch(() => {});
+    load();
+    // Servers added elsewhere (Sync → bring into ATLAS) show up here at once.
+    window.addEventListener(MCP_CHANGED, load);
+    return () => window.removeEventListener(MCP_CHANGED, load);
+  }, []);
   const save = (cfg: McpServerConfig) => run('save', () => call('mcp.save', { server: cfg }));
 
   return (

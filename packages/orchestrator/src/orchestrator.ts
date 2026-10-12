@@ -129,7 +129,7 @@ export class Orchestrator {
     this.approvalTtlMs = o.approvalTtlMs ?? 15 * 60_000;
     this.stallAfterMs = o.stallAfterMs ?? 120_000;
     this.exportKeys = new ExportKeys(o.keysDir ?? path.join(path.dirname(o.worktreeDir), 'keys'));
-    this.skills = new SkillLibrary({ bundled: o.skillDirs?.bundled, operator: o.skillDirs?.operator ?? path.join(path.dirname(o.worktreeDir), 'skills') });
+    this.skills = new SkillLibrary({ bundled: o.skillDirs?.bundled, operator: o.skillDirs?.operator ?? path.join(path.dirname(o.worktreeDir), 'skills') }, () => this.repo.setting<string[]>('skills.disabled', []));
     this.acceptance = new AcceptanceStore(o.acceptanceDir ?? path.join(path.dirname(o.worktreeDir), 'acceptance'));
     this.repo.onEvent((e) => {
       const s = e.attemptId ? this.signals.get(e.attemptId) : undefined;

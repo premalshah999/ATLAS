@@ -4,6 +4,7 @@ import path from 'node:path';
 import { mkdirSync, readFileSync } from 'node:fs';
 import { AtlasError, InternalRequests, McpServerConfig, mcpSecretEnv, parseRequest, PROVIDER_ENV, registerSecret, type AtlasEvent, type McpServerView, type McpToolInfo, type Method } from '@atlas/contracts';
 import { McpManager } from '@atlas/mcp';
+import { apply as syncApply, foreignServers, locations as syncLocations, plan as syncPlan, type SyncState, type Target as SyncTarget } from '@atlas/sync';
 import { ArtifactStore, openDb, Repo, schemaVersion, type Db } from '@atlas/storage';
 import { GitHubForge, Orchestrator, replay, ROLES, suiteHash, type Skill } from '@atlas/orchestrator';
 import { ROLE_GRANTS } from '@atlas/policy';
@@ -127,6 +128,20 @@ export class DaemonService {
     return this.mcpServers().map((config) => ({ config, tools: cache[config.name]?.tools ?? [], toolsAt: cache[config.name]?.at ?? null, secretsSet: Object.keys(this.mcpSecretValues(config.name)), ...this.mcp.status(config.name) }));
   }
 
+  /** A harness sync target (ADR 0019). Project scope writes into the workspace's repository. */
+  private syncTarget(p: { harness: SyncTarget['harness']; scope: SyncTarget['scope']; workspaceId?: string }): SyncTarget {
+    if (p.scope === 'user') return { harness: p.harness, scope: 'user' };
+    const w = p.workspaceId ? this.repo.workspace(p.workspaceId) : null;
+    if (!w?.isGit) throw new AtlasError('invalid_request', 'Choose a repository for project scope');
+    return { harness: p.harness, scope: 'project', projectRoot: w.root };
+  }
+
+  /** What ATLAS syncs: enabled trusted skills, enabled MCP servers. */
+  private syncInput() {
+    const off = new Set(this.repo.setting<string[]>('skills.disabled', []));
+    return { skills: this.orch.skills.trusted().skills.filter((s) => !off.has(s.name)), mcp: this.mcpServers() };
+  }
+
   private makePi() {
     return new PiRuntime({ agentDir: path.join(this.o.dataDir, 'pi'), apiKeys: this.keys, model: this.o.model });
   }
@@ -175,15 +190,23 @@ export class DaemonService {
   private exportKeysView() { return { own: this.orch.exportKeyId(), trusted: this.repo.setting<string[]>('export.trustedKeys', []) }; }
 
   private skillsView(workspaceId?: string) {
-    const view = (s: Skill) => ({ name: s.name, description: s.description, roles: s.roles, version: s.version, source: s.source, hash: s.hash, files: s.files });
+    const off = new Set(this.repo.setting<string[]>('skills.disabled', []));
+    const view = (s: Skill) => ({ name: s.name, description: s.description, roles: s.roles, version: s.version, source: s.source, hash: s.hash, files: s.files, enabled: !off.has(s.name), ...(s.origin ? { origin: s.origin } : {}) });
     const t = this.orch.skills.trusted();
     const w = workspaceId ? this.repo.workspace(workspaceId) : null;
     const r = w?.isGit ? this.orch.skills.inRepository(w.root) : { skills: [], errors: [] };
-    return { trusted: t.skills.map(view), repository: r.skills.map(view), errors: [...t.errors, ...r.errors] };
+    const x = this.orch.skills.inHarnesses(undefined, w?.isGit ? w.root : undefined);
+    return { trusted: t.skills.map(view), repository: r.skills.map(view), external: x.skills.map(view), errors: [...t.errors, ...r.errors, ...x.errors] };
   }
 
-  private readSkill(p: { name: string; source: 'trusted' | 'repository'; workspaceId?: string; path?: string }) {
+  private readSkill(p: { name: string; source: 'trusted' | 'repository' | 'external'; workspaceId?: string; path?: string; hash?: string }) {
     const rel = p.path ?? 'SKILL.md';
+    if (p.source === 'external') {
+      const w = p.workspaceId ? this.repo.workspace(p.workspaceId) : null;
+      const s = this.orch.skills.inHarnesses(undefined, w?.isGit ? w.root : undefined).skills.find((x) => x.name === p.name && (!p.hash || x.hash === p.hash));
+      if (!s || !s.files.includes(rel)) throw new AtlasError('invalid_request', 'Unknown skill file');
+      return { text: readFileSync(path.join(s.dir, rel), 'utf8'), hash: s.hash };
+    }
     if (p.source === 'trusted') {
       const s = this.orch.skills.trusted().skills.find((x) => x.name === p.name);
       if (!s || !s.files.includes(rel)) throw new AtlasError('invalid_request', 'Unknown skill file');
@@ -236,12 +259,39 @@ export class DaemonService {
       case 'skills.list': return this.skillsView(p.workspaceId);
       case 'skills.read': return this.readSkill(p);
       case 'skills.import': {
-        const w = this.repo.workspace(p.workspaceId);
-        if (!w?.isGit) throw new AtlasError('invalid_request', 'Unknown workspace');
-        const s = this.orch.skills.importFromRepository(w.root, p.name, p.hash);
-        this.log.info('skill imported', { name: s.name, hash: s.hash, from: w.root });
+        const w = p.workspaceId ? this.repo.workspace(p.workspaceId) : null;
+        if (p.from === 'repository' && !w?.isGit) throw new AtlasError('invalid_request', 'Unknown workspace');
+        const s = p.from === 'repository' ? this.orch.skills.importFromRepository(w!.root, p.name, p.hash) : this.orch.skills.importFromHarness(p.name, p.hash, undefined, w?.isGit ? w.root : undefined);
+        this.log.info('skill imported', { name: s.name, hash: s.hash, from: p.from === 'repository' ? w!.root : 'another tool' });
         return this.skillsView(p.workspaceId);
       }
+      case 'skills.save': {
+        const s = this.orch.skills.saveOperator({ name: p.name, description: p.description, roles: p.roles }, p.body);
+        this.log.info('skill saved', { name: s.name, hash: s.hash });
+        return this.skillsView();
+      }
+      case 'skills.setEnabled': {
+        const off = new Set(this.repo.setting<string[]>('skills.disabled', []));
+        if (p.enabled) off.delete(p.name); else off.add(p.name);
+        this.repo.setSetting('skills.disabled', [...off].sort());
+        return this.skillsView();
+      }
+      case 'sync.preview': {
+        const t = this.syncTarget(p);
+        const pl = syncPlan(t, this.syncInput(), this.repo.setting<SyncState>('sync.state', {}), { skills: p.skills, mcp: p.mcp });
+        const loc = syncLocations(t);
+        return { id: pl.id, changes: pl.changes, notes: pl.notes, locations: { skills: p.skills ? loc.skills : null, mcp: p.mcp ? loc.mcp?.file ?? null : null } };
+      }
+      case 'sync.apply': {
+        const t = this.syncTarget(p);
+        const r = syncApply(t, this.syncInput(), this.repo.setting<SyncState>('sync.state', {}), p.id, { skills: p.skills, mcp: p.mcp });
+        this.repo.setSetting('sync.state', r.state);
+        const at = new Date().toISOString();
+        this.repo.setSetting('sync.last', { ...this.repo.setting<Record<string, unknown>>('sync.last', {}), [`${p.harness}:${p.scope}`]: { at, changes: r.changes.length } });
+        this.log.warn('harness sync applied', { harness: p.harness, scope: p.scope, changes: r.changes.map((c) => `${c.action} ${c.kind} ${c.name}`) });
+        return { changes: r.changes, at };
+      }
+      case 'sync.foreign': return foreignServers(this.syncTarget(p), this.repo.setting<SyncState>('sync.state', {}));
       case 'skills.remove': this.orch.skills.removeOperator(p.name); return this.skillsView();
       case 'export.keys': return this.exportKeysView();
       case 'export.trust': this.repo.setSetting('export.trustedKeys', [...new Set([...this.repo.setting<string[]>('export.trustedKeys', []), p.keyId])]); return this.exportKeysView();

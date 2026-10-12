@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSkill, SkillLibrary } from '../src/skills';
@@ -76,5 +76,48 @@ describe('SkillLibrary', () => {
     const imported = lib.importFromRepository(repo, 'repo-trick', found[0].hash);
     expect(imported.source).toBe('operator');
     expect(lib.trusted().skills.map((s) => s.name)).toContain('repo-trick');
+  });
+});
+
+describe('skills authored in ATLAS, disabled skills, other tools\' skills (ADR 0019)', () => {
+  it('writes an operator skill that reads back exactly, and keeps its reference files on edit', () => {
+    const lib = new SkillLibrary({ operator: tmpDir() });
+    const s = lib.saveOperator({ name: 'release-notes', description: 'Write release notes: concise, "user-facing"', roles: ['coder'] }, '# Steps\n1. Read the diff.');
+    expect(s).toMatchObject({ name: 'release-notes', description: "Write release notes: concise, 'user-facing'", roles: ['coder'], source: 'operator' });
+    writeFileSync(path.join(s.dir, 'example.md'), 'example');
+    const edited = lib.saveOperator({ name: 'release-notes', description: 'Changed', roles: [] }, 'New body');
+    expect(edited.files).toEqual(['SKILL.md', 'example.md']);
+    expect(lib.read('release-notes', 'reviewer').text).toContain('New body');
+    expect(() => lib.saveOperator({ name: 'Bad Name', description: 'x', roles: [] }, 'b')).toThrow();
+  });
+
+  it('a disabled skill is neither offered nor loadable', () => {
+    let off: string[] = [];
+    const lib = new SkillLibrary({ bundled: BUNDLED, operator: tmpDir() }, () => off);
+    expect(lib.forRole('coder').some((s) => s.name === 'reproduce-before-fix')).toBe(true);
+    off = ['reproduce-before-fix'];
+    expect(lib.forRole('coder').some((s) => s.name === 'reproduce-before-fix')).toBe(false);
+    expect(() => lib.read('reproduce-before-fix', 'coder')).toThrow(/No skill named/);
+    expect(lib.index('coder')).not.toContain('reproduce-before-fix');
+  });
+
+  it('lists other tools\' skills as untrusted, hides copies ATLAS synced, imports only the reviewed version', () => {
+    const home = tmpDir();
+    const operator = tmpDir();
+    const lib = new SkillLibrary({ operator });
+    skill(path.join(home, '.claude', 'skills'), 'from-claude', 'name: from-claude\ndescription: A Claude Code skill');
+    skill(path.join(home, '.config', 'opencode', 'skills'), 'from-opencode', 'name: from-opencode\ndescription: An OpenCode skill');
+    const mine = lib.saveOperator({ name: 'mine', description: 'Mine', roles: [] }, 'body');
+    // A copy ATLAS synced to Codex is the same skill, not a new one.
+    mkdirSync(path.join(home, '.codex', 'skills', 'mine'), { recursive: true });
+    writeFileSync(path.join(home, '.codex', 'skills', 'mine', 'SKILL.md'), readFileSync(path.join(mine.dir, 'SKILL.md')));
+    const found = lib.inHarnesses(home);
+    expect(found.skills.map((s) => [s.name, s.origin, s.source])).toEqual([['from-claude', 'Claude Code', 'external'], ['from-opencode', 'OpenCode', 'external']]);
+    expect(lib.forRole('coder').map((s) => s.name)).toEqual(['mine']);
+    const claude = found.skills[0];
+    writeFileSync(path.join(claude.dir, 'SKILL.md'), '---\nname: from-claude\ndescription: changed after review\n---\nbody');
+    expect(() => lib.importFromHarness('from-claude', claude.hash, home)).toThrow(/No skill named/);
+    const oc = found.skills[1];
+    expect(lib.importFromHarness('from-opencode', oc.hash, home)).toMatchObject({ name: 'from-opencode', source: 'operator', hash: oc.hash });
   });
 });

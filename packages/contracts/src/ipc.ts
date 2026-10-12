@@ -1,7 +1,7 @@
 // The renderer-facing API (manual E4). Each method is an intent with a validated request schema.
 // Preload exposes exactly these methods; main validates sender + payload; the daemon authorizes and acts.
 import { z } from 'zod';
-import { ApprovalMode, Id, MissionBudget, RuntimeKind } from './domain';
+import { AgentRole, ApprovalMode, Id, MissionBudget, RuntimeKind } from './domain';
 import { DesktopAction, DesktopControl } from './desktop';
 import { MODEL_REF, PROVIDER_IDS } from './providers';
 import { MCP_NAME, McpServerConfig } from './mcp';
@@ -10,6 +10,8 @@ const empty = z.object({}).strict();
 const missionRef = z.object({ missionId: Id }).strict();
 const modelRef = z.string().regex(MODEL_REF, 'expected provider/model');
 const credentialName = z.enum([...PROVIDER_IDS, 'github']);
+/** A harness sync target (ADR 0019); project scope needs a workspace. */
+const syncTarget = z.object({ harness: z.enum(['claude-code', 'codex', 'opencode']), scope: z.enum(['user', 'project']), workspaceId: Id.optional(), skills: z.boolean().default(true), mcp: z.boolean().default(true) }).strict();
 
 export const Requests = {
   'app.info': empty,
@@ -53,8 +55,13 @@ export const Requests = {
   'workspace.acceptance.set': z.object({ workspaceId: Id, command: z.string().min(1).max(100), args: z.array(z.string().max(1000)).max(100), files: z.record(z.string().max(300), z.string().max(2_000_000)) }).strict(),
   'workspace.acceptance.remove': z.object({ workspaceId: Id }).strict(),
   'skills.list': z.object({ workspaceId: Id.optional() }).strict(),
-  'skills.read': z.object({ name: z.string().max(64), source: z.enum(['trusted', 'repository']), workspaceId: Id.optional(), path: z.string().max(300).optional() }).strict(),
-  'skills.import': z.object({ workspaceId: Id, name: z.string().max(64), hash: z.string().regex(/^[0-9a-f]{64}$/) }).strict(),
+  'skills.read': z.object({ name: z.string().max(64), source: z.enum(['trusted', 'repository', 'external']), workspaceId: Id.optional(), path: z.string().max(300).optional(), hash: z.string().regex(/^[0-9a-f]{64}$/).optional() }).strict(),
+  'skills.import': z.object({ workspaceId: Id.optional(), name: z.string().max(64), hash: z.string().regex(/^[0-9a-f]{64}$/), from: z.enum(['repository', 'external']).default('repository') }).strict(),
+  'skills.save': z.object({ name: z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/).max(64), description: z.string().trim().min(1).max(1024), roles: z.array(AgentRole).max(10).default([]), body: z.string().min(1).max(200_000) }).strict(),
+  'skills.setEnabled': z.object({ name: z.string().max(64), enabled: z.boolean() }).strict(),
+  'sync.preview': syncTarget,
+  'sync.apply': syncTarget.extend({ id: z.string().regex(/^[0-9a-f]{64}$/) }).strict(),
+  'sync.foreign': syncTarget,
   'skills.remove': z.object({ name: z.string().max(64) }).strict(),
   'export.keys': empty,
   'export.trust': z.object({ keyId: z.string().regex(/^[0-9a-f]{32}$/) }).strict(),

@@ -10,11 +10,13 @@
 // procedure with the load_skill / read_skill_file tools. Every load is recorded with the content hash, so the
 // evidence says which version of which procedure an agent followed.
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { AtlasError } from '@atlas/contracts';
 
-export type SkillSource = 'bundled' | 'operator' | 'repository';
+/** external: found in another harness's skill folder (Claude Code, Codex, OpenCode); untrusted until imported. */
+export type SkillSource = 'bundled' | 'operator' | 'repository' | 'external';
 
 export interface SkillMeta {
   name: string;
@@ -30,6 +32,8 @@ export interface Skill extends SkillMeta {
   /** SHA-256 over SKILL.md and every reference file (sorted). */
   hash: string;
   files: string[];
+  /** For external skills: which tool's folder it was found in. */
+  origin?: string;
 }
 
 const NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -118,8 +122,25 @@ function scan(root: string, source: SkillSource): { skills: Skill[]; errors: str
 
 export const REPO_SKILL_DIRS = ['.agents/skills', '.pi/skills'];
 
+/** Skill folders of other harnesses (ADR 0019): user-level, and inside a repository. */
+export function harnessSkillDirs(home = os.homedir(), root?: string): { origin: string; dir: string }[] {
+  return [
+    { origin: 'Claude Code', dir: path.join(home, '.claude', 'skills') },
+    { origin: 'Codex', dir: path.join(process.env.CODEX_HOME ?? path.join(home, '.codex'), 'skills') },
+    { origin: 'OpenCode', dir: path.join(home, '.config', 'opencode', 'skills') },
+    { origin: 'Agent Skills', dir: path.join(home, '.agents', 'skills') },
+    ...(root ? [{ origin: 'Claude Code (repository)', dir: path.join(root, '.claude', 'skills') }, { origin: 'OpenCode (repository)', dir: path.join(root, '.opencode', 'skills') }] : []),
+  ];
+}
+
+/** SKILL.md text for an operator-authored skill. Values are quoted; the parser below must read them back exactly. */
+export function renderSkill(m: { name: string; description: string; roles: string[]; version?: string }, body: string): string {
+  const q = (s: string) => `"${s.replace(/"/g, "'").replace(/\r?\n/g, ' ')}"`;
+  return `---\nname: ${m.name}\ndescription: ${q(m.description)}\n${m.roles.length ? `roles: [${m.roles.join(', ')}]\n` : ''}version: ${q(m.version ?? '1')}\n---\n${body.trim()}\n`;
+}
+
 export class SkillLibrary {
-  constructor(private readonly dirs: { bundled?: string; operator: string }) {}
+  constructor(private readonly dirs: { bundled?: string; operator: string }, private readonly disabled: () => string[] = () => []) {}
 
   /** Trusted skills offered to agents. An operator skill overrides a bundled one of the same name. */
   trusted(): { skills: Skill[]; errors: string[] } {
@@ -132,7 +153,8 @@ export class SkillLibrary {
 
   /** Skills offered to a role. */
   forRole(role: string): Skill[] {
-    return this.trusted().skills.filter((s) => !s.roles.length || s.roles.includes(role));
+    const off = new Set(this.disabled());
+    return this.trusted().skills.filter((s) => !off.has(s.name) && (!s.roles.length || s.roles.includes(role)));
   }
 
   get(name: string, role: string): Skill {
@@ -166,9 +188,46 @@ export class SkillLibrary {
    * Import a repository skill into the operator library, pinned by the hash the operator reviewed: if the files
    * changed since, nothing is imported.
    */
+  /**
+   * Skills in other harnesses' folders. Untrusted like repository skills; one ATLAS itself synced there (same hash
+   * as a trusted skill) is not listed again.
+   */
+  inHarnesses(home?: string, root?: string): { skills: Skill[]; errors: string[] } {
+    const mine = new Set(this.trusted().skills.map((s) => s.hash));
+    const out = { skills: [] as Skill[], errors: [] as string[] };
+    for (const { origin, dir } of harnessSkillDirs(home, root)) {
+      const r = scan(dir, 'external');
+      out.skills.push(...r.skills.filter((s) => !mine.has(s.hash)).map((s) => ({ ...s, origin })));
+      out.errors.push(...r.errors.map((e) => `${origin}: ${e.replace(/^external\//, '')}`));
+    }
+    return out;
+  }
+
   importFromRepository(root: string, name: string, expectedHash: string): Skill {
-    const found = this.inRepository(root).skills.find((s) => s.name === name);
-    if (!found) throw new AtlasError('invalid_request', `No skill named ${name} in this repository`);
+    return this.importReviewed(this.inRepository(root).skills, name, expectedHash, 'this repository');
+  }
+
+  importFromHarness(name: string, expectedHash: string, home?: string, root?: string): Skill {
+    return this.importReviewed(this.inHarnesses(home, root).skills.filter((s) => s.hash === expectedHash), name, expectedHash, 'another tool\'s skill folders');
+  }
+
+  /** Write or replace an operator skill authored in ATLAS. Reference files of an existing operator skill are kept. */
+  saveOperator(m: { name: string; description: string; roles: string[]; version?: string }, body: string): Skill {
+    const text = renderSkill(m, body);
+    const parsed = parseSkill(text);
+    if (parsed.meta.name !== m.name || parsed.meta.description !== m.description.replace(/"/g, "'").replace(/\r?\n/g, ' ')) throw new AtlasError('invalid_request', 'The skill could not be written faithfully');
+    if (Buffer.byteLength(text) > MAX_FILE) throw new AtlasError('invalid_request', 'Skill text is too large');
+    const target = path.join(this.dirs.operator, m.name);
+    mkdirSync(target, { recursive: true });
+    const tmp = path.join(target, `.SKILL.md.${process.pid}.tmp`);
+    writeFileSync(tmp, text);
+    renameSync(tmp, path.join(target, 'SKILL.md'));
+    return loadSkillDir(target, 'operator');
+  }
+
+  private importReviewed(candidates: Skill[], name: string, expectedHash: string, where: string): Skill {
+    const found = candidates.find((s) => s.name === name);
+    if (!found) throw new AtlasError('invalid_request', `No skill named ${name} in ${where}`);
     if (found.hash !== expectedHash) throw new AtlasError('invalid_request', 'The skill changed since you reviewed it; review it again');
     const target = path.join(this.dirs.operator, name);
     mkdirSync(this.dirs.operator, { recursive: true });

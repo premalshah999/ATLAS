@@ -85,6 +85,11 @@ type Results = {
   'skills.read': { text: string; hash: string };
   'skills.import': SkillsState;
   'skills.remove': SkillsState;
+  'skills.save': SkillsState;
+  'skills.setEnabled': SkillsState;
+  'sync.preview': SyncPreview;
+  'sync.apply': { changes: SyncChange[]; at: string };
+  'sync.foreign': ForeignServer[];
   'export.keys': { own: string; trusted: string[] };
   'export.trust': { own: string; trusted: string[] };
   'export.untrust': { own: string; trusted: string[] };
@@ -123,8 +128,11 @@ type Results = {
   'credentials.remove': Credentials;
 };
 
-export interface SkillView { name: string; description: string; roles: string[]; version: string; source: 'bundled' | 'operator' | 'repository'; hash: string; files: string[] }
-export interface SkillsState { trusted: SkillView[]; repository: SkillView[]; errors: string[] }
+export interface SkillView { name: string; description: string; roles: string[]; version: string; source: 'bundled' | 'operator' | 'repository' | 'external'; hash: string; files: string[]; enabled: boolean; origin?: string }
+export interface SkillsState { trusted: SkillView[]; repository: SkillView[]; external: SkillView[]; errors: string[] }
+export interface SyncChange { kind: 'skill' | 'mcp'; name: string; path: string; action: 'create' | 'update' | 'delete' | 'unchanged' | 'conflict'; reason?: string }
+export interface SyncPreview { id: string; changes: SyncChange[]; notes: string[]; locations: { skills: string | null; mcp: string | null } }
+export interface ForeignServer { name: string; config: Record<string, unknown> | null; secretNames: string[]; problem: string | null }
 export interface AcceptanceView { command: string; args: string[]; files: Record<string, string>; updatedAt: string; hash: string }
 
 export function call<M extends Method>(method: M, params: RequestOf<M> = {} as RequestOf<M>): Promise<Results[M]> {

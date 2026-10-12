@@ -104,6 +104,9 @@ importers:
       '@atlas/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@atlas/sync':
+        specifier: workspace:*
+        version: link:../../packages/sync
       '@atlas/terminal':
         specifier: workspace:*
         version: link:../../packages/terminal
@@ -296,6 +299,12 @@ importers:
         version: 1.3.27
 
   packages/storage:
+    dependencies:
+      '@atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+
+  packages/sync:
     dependencies:
       '@atlas/contracts':
         specifier: workspace:*

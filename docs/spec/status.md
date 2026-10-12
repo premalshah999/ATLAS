@@ -1,17 +1,17 @@
 # Implementation status — M0–M5
 
-Report date 2026-10-11 for lint, typecheck, unit, integration and e2e; the eval, screenshot, Pi-version and package rows are carried over from the 2026-10-10 run. Platform tested: Linux x64 (Node 22.22, Electron 44.1.1, bubblewrap, Xvfb, Chromium from Playwright 1.56). A **met** below means a test ran and passed on that date. Nothing here relies on an agent's own report.
+Report date 2026-10-12 for lint, typecheck, unit, integration and e2e; the eval, screenshot, Pi-version and package rows are carried over from the 2026-10-10 run. Platform tested: Linux x64 (Node 22.22, Electron 44.1.1, bubblewrap, Xvfb, Chromium from Playwright 1.56). A **met** below means a test ran and passed on that date. Nothing here relies on an agent's own report.
 
 ## Results of the last run
 
 | Command | Result |
 | --- | --- |
-| `pnpm lint` | dependency graph acyclic (13 workspaces); ESLint 0 errors (13 react-hooks `exhaustive-deps` warnings in the renderer) |
+| `pnpm lint` | dependency graph acyclic (15 workspaces); ESLint 0 errors (13 react-hooks `exhaustive-deps` warnings in the renderer) |
 | `pnpm typecheck` | every workspace, plus `tests/` and `evals/` |
-| `pnpm test` | 203 passed, 5 skipped (24 files; skips are platform- or tool-gated) |
-| `pnpm test:integration` | 99 passed, 1 skipped (13 files, real git repositories, real sandbox) |
+| `pnpm test` | 231 passed, 5 skipped (27 files; skips are platform- or tool-gated) |
+| `pnpm test:integration` | 106 passed, 1 skipped (15 files, real git repositories, real sandbox) |
 | `pnpm eval` | 11 / 11 cases behaved as expected; false pass rate 1/7 (the deliberate `weak-tests` case) — [report](../eval/latest.md) |
-| `xvfb-run -a pnpm test:e2e` | 13 / 13 passed (built Electron app) |
+| `xvfb-run -a pnpm test:e2e` | 16 / 16 passed (built Electron app) |
 | `pnpm screenshots` | both capture runs passed; `docs/screenshots` regenerated |
 | `pnpm pi:version` | installed Pi packages match pin 0.87.1, MIT |
 | `pnpm package` | `apps/desktop/release/ATLAS-0.1.0.AppImage` (153 MB); launched under xvfb, daemon reached ready (schema v4) |
@@ -74,6 +74,14 @@ Report date 2026-10-11 for lint, typecheck, unit, integration and e2e; the eval,
   - a desktop session with approval and operator takeover, with the agent's next input refused and recorded.
 - **`mission.spec.ts` and `security.spec.ts`:** the M1 flows, daemon crash and app restart, and the renderer hardening.
 - **`stress.spec.ts`:** six concurrent missions while the renderer's timer delay and palette latency are measured (§41).
+
+## Added after M5 (2026-10-12)
+| Capability | Evidence |
+| --- | --- |
+| Every key-based Pi provider (34); default, strong and fast models per role tier; model per mission, recorded per attempt (ADR 0017) | `runtime-pi/test/providers.test.ts` (checked against Pi offline), `tests/integration/models.test.ts`, `models.spec.ts` |
+| MCP servers: remote (streamable HTTP) and local (stdio in the OS sandbox) behind the governed `mcp_call`, approval by default (ADR 0018) | `packages/mcp/test/mcp.test.ts`, policy tests, `tests/integration/mcp.test.ts`, `mcp.spec.ts` |
+| Skills authored, customized and turned off in ATLAS; skills from other tools untrusted until imported (ADR 0019) | `orchestrator/test/skills.test.ts`, `sync.spec.ts` |
+| Skills and MCP servers synced to Claude Code, Codex and OpenCode with preview, ownership and conflicts; no secret values written (ADR 0019) | `packages/sync/test/sync.test.ts`, `sync.spec.ts` |
 
 ## Known gaps and risks
 1. **Real-model path.** It is not exercised against a live provider in CI. The Pi adapter is contract-tested with Pi's faux provider. `ATLAS_EVAL_RUNTIME=pi pnpm eval` runs the corpus with a real model when a key is present; that has not been run for this report.
