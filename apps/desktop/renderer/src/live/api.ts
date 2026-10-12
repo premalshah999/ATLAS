@@ -1,6 +1,6 @@
 // Typed client over the preload bridge. The renderer holds no authority: every call is an intent the
 // main process validates and the daemon authorizes.
-import type { Approval, Artifact, Attempt, AtlasEvent, CheckRecord, Deployment, DesktopSessionInfo, Finding, Method, Mission, MissionBudget, ModelInfo, Plan, RequestOf, RuntimeHealth, Task, Workspace } from '@atlas/contracts';
+import type { Approval, Artifact, Attempt, AtlasEvent, CheckRecord, Deployment, DesktopSessionInfo, Finding, McpServerView, Method, Mission, MissionBudget, ModelInfo, Plan, RequestOf, RuntimeHealth, Task, Workspace } from '@atlas/contracts';
 
 export type DaemonStatus = { state: 'starting' | 'ready' | 'restarting' | 'stopped'; pid: number | null; restarts: number; detail?: string };
 
@@ -110,6 +110,12 @@ type Results = {
   'artifact.read': { artifact: Artifact; intact: boolean; truncated: boolean; text: string; base64?: string | null };
   'runtime.health': RuntimeHealth[];
   'models.list': ModelInfo[];
+  'mcp.list': McpServerView[];
+  'mcp.save': McpServerView[];
+  'mcp.remove': McpServerView[];
+  'mcp.test': McpServerView[];
+  'mcp.secret.set': McpServerView[];
+  'mcp.secret.remove': McpServerView[];
   'settings.get': SettingsState;
   'settings.set': SettingsState;
   'credentials.list': Credentials;

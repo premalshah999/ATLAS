@@ -5,7 +5,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { IPC, parseRequest, PROVIDER_ENV, SERVICE_ENV, type Envelope, type Method } from '@atlas/contracts';
 import { DaemonClient, type DaemonStatus } from './daemon';
-import { credentials, deploySecrets } from './credentials';
+import { credentials, deploySecrets, mcpSecrets } from './credentials';
 
 const isMac = process.platform === 'darwin';
 const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -57,8 +57,15 @@ function daemonEnv(): Record<string, string> {
   if (process.env.ATLAS_GITHUB_API) env.ATLAS_GITHUB_API = process.env.ATLAS_GITHUB_API;
   const ds = deploySecrets.decrypted();
   if (Object.keys(ds).length) env.ATLAS_DEPLOY_SECRETS = JSON.stringify(ds);
+  // MCP secrets exported in the launching shell (for systems without a credential store); resolved by the daemon.
+  for (const [k, v] of Object.entries(process.env)) if (k.startsWith('ATLAS_MCP_SECRET_') && v) env[k] = v;
+  const ms = mcpSecrets.decrypted();
+  if (Object.keys(ms).length) env.ATLAS_MCP_SECRETS = JSON.stringify(ms);
   return env;
 }
+
+/** Hand the daemon every decrypted key and secret again after one changed. */
+const applySecrets = () => daemon.request('credentials.apply', { keys: credentials.keys(), deploySecrets: deploySecrets.decrypted(), mcpSecrets: mcpSecrets.decrypted() });
 
 async function route(method: Method, params: any): Promise<unknown> {
   switch (method) {
@@ -103,20 +110,34 @@ async function route(method: Method, params: any): Promise<unknown> {
     case 'credentials.list': return { available: credentials.available(), providers: credentials.list() };
     case 'credentials.set':
       credentials.set(params.provider, params.key);
-      await daemon.request('credentials.apply', { keys: credentials.keys(), deploySecrets: deploySecrets.decrypted() });
+      await applySecrets();
       return { available: credentials.available(), providers: credentials.list() };
+    case 'mcp.secret.set':
+      mcpSecrets.set(params.server, params.name, params.value);
+      await applySecrets();
+      return daemon.request('mcp.list', {});
+    case 'mcp.secret.remove':
+      mcpSecrets.remove(params.server, params.name);
+      await applySecrets();
+      return daemon.request('mcp.list', {});
+    case 'mcp.remove': {
+      const out = await daemon.request('mcp.remove', params);
+      mcpSecrets.removeAll(params.name);
+      await applySecrets();
+      return out;
+    }
     case 'deploy.secrets.list': return deploySecrets.list();
     case 'deploy.secrets.set':
       deploySecrets.set(params.target, params.name, params.value);
-      await daemon.request('credentials.apply', { keys: credentials.keys(), deploySecrets: deploySecrets.decrypted() });
+      await applySecrets();
       return deploySecrets.list();
     case 'deploy.secrets.remove':
       deploySecrets.remove(params.target, params.name);
-      await daemon.request('credentials.apply', { keys: credentials.keys(), deploySecrets: deploySecrets.decrypted() });
+      await applySecrets();
       return deploySecrets.list();
     case 'credentials.remove':
       credentials.remove(params.provider);
-      await daemon.request('credentials.apply', { keys: credentials.keys(), deploySecrets: deploySecrets.decrypted() });
+      await applySecrets();
       return { available: credentials.available(), providers: credentials.list() };
     default:
       return daemon.request(method, params);

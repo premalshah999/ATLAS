@@ -49,37 +49,49 @@ export const credentials = {
   },
 };
 
-/** Deploy-target secrets (manual §24): encrypted per value; names are listed, values never leave main except to the daemon. */
-const secretsFile = () => path.join(app.getPath('userData'), 'deploy-secrets.json');
-function loadSecrets(): Record<string, Record<string, string>> {
-  if (!existsSync(secretsFile())) return {};
-  try { return JSON.parse(readFileSync(secretsFile(), 'utf8')); } catch { return {}; }
-}
-function saveSecrets(d: Record<string, Record<string, string>>) {
-  const tmp = `${secretsFile()}.tmp`;
-  writeFileSync(tmp, JSON.stringify(d), { mode: 0o600 });
-  renameSync(tmp, secretsFile());
+/**
+ * Named secrets grouped by owner (a deploy target, an MCP server), encrypted per value with the OS credential store.
+ * Names are listed; values never leave main except to the daemon. One file per kind, so a deploy target can never
+ * be named to receive an MCP server's secrets.
+ */
+function secretStore(fileName: string, what: string) {
+  const file = () => path.join(app.getPath('userData'), fileName);
+  const read = (): Record<string, Record<string, string>> => {
+    if (!existsSync(file())) return {};
+    try { return JSON.parse(readFileSync(file(), 'utf8')); } catch { return {}; }
+  };
+  const write = (d: Record<string, Record<string, string>>) => {
+    const tmp = `${file()}.tmp`;
+    writeFileSync(tmp, JSON.stringify(d), { mode: 0o600 });
+    renameSync(tmp, file());
+  };
+  return {
+    list: () => Object.entries(read()).map(([target, vars]) => ({ target, names: Object.keys(vars).sort() })),
+    set(target: string, name: string, value: string) {
+      if (!safeStorage.isEncryptionAvailable()) throw Object.assign(new Error(`No OS credential store is available; ${what} cannot be stored safely.`), { kind: 'secrets' });
+      const d = read();
+      (d[target] ??= {})[name] = safeStorage.encryptString(value).toString('base64');
+      write(d);
+    },
+    remove(target: string, name: string) {
+      const d = read();
+      if (d[target]) { delete d[target][name]; if (!Object.keys(d[target]).length) delete d[target]; }
+      write(d);
+    },
+    /** Drop every secret of one owner (an MCP server that was removed). */
+    removeAll(target: string) { const d = read(); delete d[target]; write(d); },
+    decrypted(): Record<string, Record<string, string>> {
+      if (!safeStorage.isEncryptionAvailable()) return {};
+      const out: Record<string, Record<string, string>> = {};
+      for (const [t, vars] of Object.entries(read())) for (const [k, v] of Object.entries(vars)) {
+        try { (out[t] ??= {})[k] = safeStorage.decryptString(Buffer.from(v, 'base64')); } catch { /* unreadable */ }
+      }
+      return out;
+    },
+  };
 }
 
-export const deploySecrets = {
-  list: () => Object.entries(loadSecrets()).map(([target, vars]) => ({ target, names: Object.keys(vars).sort() })),
-  set(target: string, name: string, value: string) {
-    if (!safeStorage.isEncryptionAvailable()) throw Object.assign(new Error('No OS credential store is available; deploy secrets cannot be stored safely.'), { kind: 'secrets' });
-    const d = loadSecrets();
-    (d[target] ??= {})[name] = safeStorage.encryptString(value).toString('base64');
-    saveSecrets(d);
-  },
-  remove(target: string, name: string) {
-    const d = loadSecrets();
-    if (d[target]) { delete d[target][name]; if (!Object.keys(d[target]).length) delete d[target]; }
-    saveSecrets(d);
-  },
-  decrypted(): Record<string, Record<string, string>> {
-    if (!safeStorage.isEncryptionAvailable()) return {};
-    const out: Record<string, Record<string, string>> = {};
-    for (const [t, vars] of Object.entries(loadSecrets())) for (const [k, v] of Object.entries(vars)) {
-      try { (out[t] ??= {})[k] = safeStorage.decryptString(Buffer.from(v, 'base64')); } catch { /* unreadable */ }
-    }
-    return out;
-  },
-};
+/** Deploy-target secrets (manual §24). */
+export const deploySecrets = secretStore('deploy-secrets.json', 'deploy secrets');
+/** MCP server secrets: environment variables and headers (ADR 0018). */
+export const mcpSecrets = secretStore('mcp-secrets.json', 'MCP server secrets');

@@ -2,7 +2,8 @@
 // It receives already-validated intents from Electron main and re-validates them before acting.
 import path from 'node:path';
 import { mkdirSync, readFileSync } from 'node:fs';
-import { AtlasError, InternalRequests, parseRequest, PROVIDER_ENV, registerSecret, type AtlasEvent, type Method } from '@atlas/contracts';
+import { AtlasError, InternalRequests, McpServerConfig, mcpSecretEnv, parseRequest, PROVIDER_ENV, registerSecret, type AtlasEvent, type McpServerView, type McpToolInfo, type Method } from '@atlas/contracts';
+import { McpManager } from '@atlas/mcp';
 import { ArtifactStore, openDb, Repo, schemaVersion, type Db } from '@atlas/storage';
 import { GitHubForge, Orchestrator, replay, ROLES, suiteHash, type Skill } from '@atlas/orchestrator';
 import { ROLE_GRANTS } from '@atlas/policy';
@@ -18,6 +19,10 @@ import { lockDataDir } from './lock';
 
 export interface ServiceOptions {
   dataDir: string; skillsDir?: string; version: string; apiKeys?: Record<string, string>; model?: string; deploySecrets?: Record<string, Record<string, string>>;
+  /** MCP server secrets (ADR 0018): server → name → value. */
+  mcpSecrets?: Record<string, Record<string, string>>;
+  /** MCP secrets exported as ATLAS_MCP_SECRET_<SERVER>_<NAME> (no credential store). Stored values win. */
+  mcpEnvSecrets?: Record<string, string>;
   /** GitHub token for publishing pull requests and reading CI (ADR 0015). */
   githubToken?: string;
   /** GitHub API base, for GitHub-compatible test servers. Default https://api.github.com. */
@@ -34,6 +39,8 @@ export class DaemonService {
   private readonly fake = new FakeRuntime([sampleSlugifyScript, sampleDesktopScript], 350, samplePlanner);
   private keys: Record<string, string>;
   private deploySecrets: Record<string, Record<string, string>>;
+  private mcpSecrets: Record<string, Record<string, string>>;
+  readonly mcp: McpManager;
   private githubToken: string | null;
   readonly deploy: DeployManager;
   readonly desktop: DesktopManager;
@@ -50,6 +57,18 @@ export class DaemonService {
     for (const k of Object.values(this.keys)) registerSecret(k);
     this.pi = this.makePi();
     this.deploySecrets = o.deploySecrets ?? {};
+    this.mcpSecrets = o.mcpSecrets ?? {};
+    for (const t of Object.values(this.mcpSecrets)) for (const v of Object.values(t)) registerSecret(v);
+    for (const v of Object.values(o.mcpEnvSecrets ?? {})) registerSecret(v);
+    this.mcp = new McpManager({
+      dataDir: o.dataDir, version: o.version, servers: () => this.mcpServers(), secrets: (n) => this.mcpSecretValues(n),
+      toolCache: {
+        get: (n) => this.repo.setting<Record<string, { tools: McpToolInfo[]; at: string }>>('mcp.tools', {})[n] ?? null,
+        set: (n, tools) => this.repo.setSetting('mcp.tools', { ...this.repo.setting<Record<string, unknown>>('mcp.tools', {}), [n]: { tools, at: new Date().toISOString() } }),
+      },
+      allowUnsandboxed: () => this.repo.setting('execution.allowUnsandboxed', false),
+      log: (m, d) => this.log.info(m, d),
+    });
     this.githubToken = o.githubToken || null;
     if (this.githubToken) registerSecret(this.githubToken);
     for (const t of Object.values(this.deploySecrets)) for (const v of Object.values(t)) registerSecret(v);
@@ -65,6 +84,7 @@ export class DaemonService {
     });
     this.orch = new Orchestrator({ repo: this.repo, artifacts: this.artifacts, runtimes: { fake: this.fake, pi: this.pi }, worktreeDir: path.join(o.dataDir, 'worktrees'), factsDir: path.join(o.dataDir, 'facts'), skillDirs: { bundled: o.skillsDir, operator: path.join(o.dataDir, 'skills') },
       forge: () => (this.githubToken ? new GitHubForge({ token: this.githubToken, apiBase: o.githubApi }) : null),
+      mcp: this.mcp,
       stages: [applicationStage(), stagingStage(this.deploy)],
       toolFactories: {
         browser_action: (c) => createBrowserTool({ worktree: c.worktree, sandbox: c.sandbox, putScreenshot: (n, png) => c.putArtifact({ kind: 'screenshot', name: n, bytes: png }).id, emit: (p, ids) => c.emit('browser.step', p, ids) }),
@@ -87,6 +107,24 @@ export class DaemonService {
         }),
       },
     });
+  }
+
+  /** Operator-configured MCP servers (settings); entries that no longer validate are skipped, never guessed. */
+  private mcpServers(): McpServerConfig[] {
+    return this.repo.setting<unknown[]>('mcp.servers', []).flatMap((s) => { const r = McpServerConfig.safeParse(s); return r.success ? [r.data] : []; });
+  }
+
+  /** A server's secrets: stored in the credential store, else exported in the launching shell. */
+  private mcpSecretValues(server: string): Record<string, string> {
+    const c = this.mcpServers().find((s) => s.name === server);
+    const out: Record<string, string> = {};
+    for (const n of c?.secrets ?? []) { const v = this.mcpSecrets[server]?.[n] ?? this.o.mcpEnvSecrets?.[mcpSecretEnv(server, n)]; if (v) out[n] = v; }
+    return out;
+  }
+
+  private mcpView(): McpServerView[] {
+    const cache = this.repo.setting<Record<string, { tools: McpToolInfo[]; at: string }>>('mcp.tools', {});
+    return this.mcpServers().map((config) => ({ config, tools: cache[config.name]?.tools ?? [], toolsAt: cache[config.name]?.at ?? null, secretsSet: Object.keys(this.mcpSecretValues(config.name)), ...this.mcp.status(config.name) }));
   }
 
   private makePi() {
@@ -170,6 +208,7 @@ export class DaemonService {
     await this.desktop.shutdown();
     await this.deploy.shutdown();
     await this.orch.shutdown();
+    await this.mcp.closeAll();
     setProcessJournal(null);
     this.unlock();
     this.db.close();
@@ -264,6 +303,27 @@ export class DaemonService {
       }
       case 'runtime.health': return Promise.all([this.fake.health(), this.pi.health()]);
       case 'models.list': return this.pi.models();
+      case 'mcp.list': return this.mcpView();
+      case 'mcp.save': {
+        const others = this.mcpServers().filter((s) => s.name !== p.server.name);
+        this.repo.setSetting('mcp.servers', [...others, p.server].sort((a, b) => a.name.localeCompare(b.name)));
+        await this.mcp.disconnect(p.server.name);
+        this.log.warn('mcp server saved', { name: p.server.name, transport: p.server.transport, approval: p.server.approval, roles: p.server.roles });
+        return this.mcpView();
+      }
+      case 'mcp.remove': {
+        await this.mcp.disconnect(p.name);
+        this.repo.setSetting('mcp.servers', this.mcpServers().filter((s) => s.name !== p.name));
+        const cache = { ...this.repo.setting<Record<string, unknown>>('mcp.tools', {}) };
+        delete cache[p.name];
+        this.repo.setSetting('mcp.tools', cache);
+        this.log.warn('mcp server removed', { name: p.name });
+        return this.mcpView();
+      }
+      case 'mcp.test': {
+        try { await this.mcp.test(p.name); } catch { /* the error is part of the view */ }
+        return this.mcpView();
+      }
       case 'settings.get': return { values: this.settingValues(), sandbox: detectSandbox(true) };
       case 'settings.set': {
         this.repo.setSetting(p.key, p.value);
@@ -296,6 +356,10 @@ export class DaemonService {
       if (this.githubToken) registerSecret(this.githubToken);
       this.pi = this.makePi();
       this.orch.setRuntime('pi', this.pi);
+      if (params.mcpSecrets) {
+        this.mcpSecrets = params.mcpSecrets;
+        for (const t of Object.values(this.mcpSecrets)) for (const v of Object.values(t)) registerSecret(v);
+      }
       if (params.deploySecrets) {
         this.deploySecrets = params.deploySecrets;
         for (const t of Object.values(this.deploySecrets)) for (const v of Object.values(t)) registerSecret(v);

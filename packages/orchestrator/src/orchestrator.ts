@@ -13,7 +13,7 @@ import { detectSandbox, openPty, ptySupported, run, sanitizedEnv, startProcess, 
 import { assertMission, assertTask, TERMINAL_TASK } from './states';
 import { defaultPlan, validatePlan } from './plan';
 import { ROLES, role } from './roles';
-import { ToolGate, realExecutors, type Executors, type Isolation } from './toolgate';
+import { ToolGate, realExecutors, type Executors, type Isolation, type McpProvider } from './toolgate';
 import { detectRecipes, gate, noTestsRan, type Verdict } from './verification';
 import { definitionChange, weakening, type DefinitionChange } from './definition';
 import { buildContext, repoMap } from './context';
@@ -56,6 +56,8 @@ export interface OrchestratorOptions {
   diskFree?: (dir: string) => number;
   /** GitHub client when the operator configured a token (ADR 0015); null: publishing is unavailable. */
   forge?: () => Forge | null;
+  /** The operator's MCP servers (ADR 0018). */
+  mcp?: McpProvider;
 }
 
 /** What `forge.published` records: where a mission's result was pushed and which pull request shows it. */
@@ -559,6 +561,8 @@ export class Orchestrator {
     if (t.depth >= m.budget.maxDelegationDepth) tools = tools.filter((x) => x !== 'delegate');
     // Reviewed skills are read-only procedures: offered whenever the role has any (ADR 0013).
     if (this.skills.forRole(t.role).length) tools = [...new Set([...tools, 'load_skill', 'read_skill_file'])];
+    // MCP tools are offered to the roles the operator chose per server; every call is still checked by the gate.
+    if (this.o.mcp?.permits(t.role)) tools = [...new Set([...tools, 'mcp_call'])];
     return tools;
   }
 
@@ -662,7 +666,7 @@ export class Orchestrator {
       isolation, missionId: m.id, taskId: t.id, attemptId: attempt.id, role: t.role, mode: m.approvalMode, cwd: dir, permitted, base: m.baseCommit!,
       approvalTtlMs: this.approvalTtlMs, awaitApproval: (a: Approval, s: AbortSignal) => this.awaitApproval(a, s),
       onFinding: (args, failing) => this.recordFinding(m, t, attempt.id, args, failing),
-      skills: this.skills,
+      skills: this.skills, mcp: this.o.mcp,
       delegate: (args, s) => this.delegate(m, t, dir, args, s),
     }, this.repo, this.artifacts, this.o.executors ?? realExecutors);
 
@@ -671,7 +675,7 @@ export class Orchestrator {
       .map((e) => `${e.ts} ${e.type}: ${JSON.stringify(e.payload).slice(0, 240)}`);
     const ctx = await buildContext({
       worktree: dir, base: m.baseCommit!, role: t.role, objective: m.goal, constraints: m.constraints, task: t, planSummary: `${plan.summary}\nTasks: ${plan.tasks.map((x) => `${x.key} (${x.role})`).join(', ')}`,
-      facts: this.facts(w.id), decisions, includeDiff: t.role === 'reviewer' || t.role === 'tester', skills: this.skills.index(t.role),
+      facts: this.facts(w.id), decisions, includeDiff: t.role === 'reviewer' || t.role === 'tester', skills: this.skills.index(t.role), mcp: permitted.includes('mcp_call') ? this.o.mcp?.index(t.role) : undefined,
     });
     const ctxArt = this.artifacts.put({ missionId: m.id, taskId: t.id, kind: 'context', name: `Context · ${t.key} attempt ${number}`, content: ctx.text });
     this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'context.built', actor: SYSTEM('context'), payload: { sources: ctx.sources, chars: ctx.text.length } });

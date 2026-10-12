@@ -1,7 +1,7 @@
 // Terminal executor (manual §20). Commands are argument arrays, never shell strings. Each run owns a
 // process group so cancellation and timeouts terminate the whole tree.
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
-import type { Readable } from 'node:stream';
+import type { Readable, Writable } from 'node:stream';
 import { redact } from '@atlas/contracts';
 import { wrapCommand, type SandboxSpec } from './sandbox';
 import { windowsCommand } from './win/appcontainer';
@@ -207,10 +207,13 @@ export interface ProcessHandle {
   output(): string;
   exited(): { code: number | null } | null;
   stop(): Promise<void>;
+  /** With `io`: the process's stdin and stdout, owned by the caller (stderr still goes to output()). */
+  stdin?: Writable | null;
+  stdout?: Readable | null;
 }
 
 /** Start a long-lived process (an app server under test, a local staging deployment). Same isolation rules as run(). */
-export function startProcess(o: { command: string; args: string[]; cwd: string; env?: Record<string, string>; sandbox?: SandboxSpec; maxOutput?: number; onOutput?: (text: string) => void }): ProcessHandle {
+export function startProcess(o: { command: string; args: string[]; cwd: string; env?: Record<string, string>; sandbox?: SandboxSpec; maxOutput?: number; onOutput?: (text: string) => void; io?: boolean }): ProcessHandle {
   let cmd = o.command, argv = o.args, env = o.env ?? sanitizedEnv();
   let cleanup: (() => void) | undefined;
   let statusFd: number | undefined;
@@ -225,10 +228,10 @@ export function startProcess(o: { command: string; args: string[]; cwd: string; 
   let plan: ReturnType<typeof spawnPlan>;
   try { plan = spawnPlan(cmd, argv, env); }
   catch (e) { cleanup?.(); return { pid: null, spawnError: (e as Error).message, output: () => '', exited: () => ({ code: null }), stop: async () => {} }; }
-  const child = spawn(plan.file, plan.args, { cwd: o.cwd, env, detached: process.platform !== 'win32', shell: false, windowsHide: true, windowsVerbatimArguments: plan.verbatim, stdio: statusFd !== undefined ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(plan.file, plan.args, { cwd: o.cwd, env, detached: process.platform !== 'win32', shell: false, windowsHide: true, windowsVerbatimArguments: plan.verbatim, stdio: [o.io ? 'pipe' : 'ignore', 'pipe', 'pipe', ...(statusFd !== undefined ? ['pipe' as const] : [])] });
   const inner = trackSandboxChild(child, statusFd);
   const take = (b: Buffer) => { const t = redact(b.toString('utf8')); o.onOutput?.(t); buf = (buf + t).slice(-max); };
-  child.stdout!.on('data', take);
+  if (!o.io) child.stdout!.on('data', take);
   child.stderr!.on('data', take);
   child.on('error', (e) => { spawnError = e.message; exit = { code: null }; });
   const unjournal = journalStart(child.pid, 'service', [o.command, ...o.args].join(' '));
@@ -248,6 +251,7 @@ export function startProcess(o: { command: string; args: string[]; cwd: string; 
     get spawnError() { return spawnError; },
     output: () => buf,
     exited: () => exit,
+    ...(o.io ? { stdin: child.stdin, stdout: child.stdout } : {}),
     stop: async () => {
       if (exit || !child.pid) return;
       await inner.ready(2000);

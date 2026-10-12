@@ -86,6 +86,9 @@ importers:
       '@atlas/desktop-control':
         specifier: workspace:*
         version: link:../../packages/desktop-control
+      '@atlas/mcp':
+        specifier: workspace:*
+        version: link:../../packages/mcp
       '@atlas/orchestrator':
         specifier: workspace:*
         version: link:../../packages/orchestrator
@@ -222,6 +225,18 @@ importers:
       '@atlas/policy':
         specifier: workspace:*
         version: link:../policy
+      '@atlas/terminal':
+        specifier: workspace:*
+        version: link:../terminal
+      zod:
+        specifier: 3.24.1
+        version: 3.24.1
+
+  packages/mcp:
+    dependencies:
+      '@atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
       '@atlas/terminal':
         specifier: workspace:*
         version: link:../terminal

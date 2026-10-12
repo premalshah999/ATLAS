@@ -15,9 +15,9 @@ export interface PolicyDecision {
 /** Capabilities granted per role. Anything absent is denied. */
 export const ROLE_GRANTS: Record<AgentRole, readonly Capability[]> = {
   orchestrator: ['fs.read', 'agent.delegate'],
-  coder: ['fs.read', 'fs.write', 'shell.safe', 'shell.privileged', 'agent.delegate'],
-  reviewer: ['fs.read', 'shell.safe'],
-  tester: ['fs.read', 'shell.safe'],
+  coder: ['fs.read', 'fs.write', 'shell.safe', 'shell.privileged', 'agent.delegate', 'mcp.call'],
+  reviewer: ['fs.read', 'shell.safe', 'mcp.call'],
+  tester: ['fs.read', 'shell.safe', 'mcp.call'],
   browser_qa: ['fs.read', 'browser.navigate'],
   desktop_operator: ['fs.read', 'desktop.input'],
   deployment_verifier: ['fs.read', 'browser.navigate'],
@@ -153,6 +153,8 @@ export const TOOL_CAPABILITY: Record<string, Capability | 'shell'> = {
   // Reviewed procedures from ATLAS's own skill library: read-only text, never repository content.
   load_skill: 'fs.read',
   read_skill_file: 'fs.read',
+  // Tools of the operator's MCP servers (ADR 0018); which server and tool is checked before this.
+  mcp_call: 'mcp.call',
 };
 
 export interface EvaluateInput {
@@ -165,10 +167,12 @@ export interface EvaluateInput {
    * run project code are arbitrary code as the user, so they need approval (evolution P1-2).
    */
   sandboxed: boolean;
+  /** mcp_call: the server's approval policy, once the server, role and tool were checked (ADR 0018). */
+  mcpApproval?: 'ask' | 'allow';
 }
 
 /** Evaluate a proposed tool call before execution, independent of any prompt. Unknown ⇒ deny. */
-export function evaluate({ role, tool, args, mode, sandboxed }: EvaluateInput): PolicyDecision {
+export function evaluate({ role, tool, args, mode, sandboxed, mcpApproval }: EvaluateInput): PolicyDecision {
   const mapped = TOOL_CAPABILITY[tool];
   if (!mapped) return { decision: 'deny', capability: null, risk: 'high', reason: `Unknown tool "${tool}"` };
 
@@ -192,6 +196,12 @@ export function evaluate({ role, tool, args, mode, sandboxed }: EvaluateInput): 
   if (NEVER.has(capability)) return { decision: 'deny', capability, risk: 'high', reason: `${capability} is disabled in this release` };
   if (!ROLE_GRANTS[role].includes(capability)) return { decision: 'deny', capability, risk, reason: `Role ${role} does not hold ${capability}` };
 
+  if (capability === 'mcp.call') {
+    if (!mcpApproval) return { decision: 'deny', capability, risk: 'high', reason: 'No MCP server offers this tool to this role' };
+    // An MCP tool can change things outside ATLAS; the gate cannot know which ones do. Plan-only missions always ask.
+    if (mcpApproval === 'allow' && mode !== 'plan_only') return { decision: 'allow', capability, risk: 'elevated', reason: 'The operator trusts this MCP server' };
+    return { decision: 'ask', capability, risk: 'elevated', reason: mode === 'plan_only' ? 'Plan-only mission: calls to external services need approval' : 'Calls an external service the operator connected' };
+  }
   if (mode === 'plan_only' && (capability === 'fs.write' || capability === 'shell.privileged')) {
     return { decision: 'deny', capability, risk, reason: 'Mission runs in plan-only mode: no writes or privileged commands' };
   }

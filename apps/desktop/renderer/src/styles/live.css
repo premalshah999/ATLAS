@@ -174,3 +174,4 @@
 .lv-budget-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: var(--space-8); }
 .lv-budget-field { display: flex; flex-direction: column; gap: 4px; }
 .lv-toggle-row { display: flex; align-items: center; gap: var(--space-8); font-size: 13px; color: var(--ink); cursor: pointer; }
+.lv-card { padding: 10px 12px; border-radius: var(--radius-sm); background: var(--bg-surface); box-shadow: inset 0 0 0 1px var(--line-hair); }

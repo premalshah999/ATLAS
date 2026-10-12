@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { ApprovalMode, Id, MissionBudget, RuntimeKind } from './domain';
 import { DesktopAction, DesktopControl } from './desktop';
 import { MODEL_REF, PROVIDER_IDS } from './providers';
+import { MCP_NAME, McpServerConfig } from './mcp';
 
 const empty = z.object({}).strict();
 const missionRef = z.object({ missionId: Id }).strict();
@@ -91,6 +92,12 @@ export const Requests = {
     z.object({ key: z.literal('models.fast'), value: modelRef.nullable() }).strict(),
     z.object({ key: z.literal('models.strong'), value: modelRef.nullable() }).strict(),
   ]),
+  'mcp.list': empty,
+  'mcp.save': z.object({ server: McpServerConfig }).strict(),
+  'mcp.remove': z.object({ name: z.string().regex(MCP_NAME) }).strict(),
+  'mcp.test': z.object({ name: z.string().regex(MCP_NAME) }).strict(),
+  'mcp.secret.set': z.object({ server: z.string().regex(MCP_NAME), name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/), value: z.string().min(1).max(10_000) }).strict(),
+  'mcp.secret.remove': z.object({ server: z.string().regex(MCP_NAME), name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/) }).strict(),
   'credentials.list': empty,
   'credentials.set': z.object({ provider: credentialName, key: z.string().trim().min(8).max(500) }).strict(),
   'credentials.remove': z.object({ provider: credentialName }).strict(),
@@ -101,7 +108,7 @@ export const InternalRequests = {
   'workspace.register': z.object({ path: z.string().min(1).max(4096) }).strict(),
   'mission.exportTo': z.object({ missionId: Id, path: z.string().min(1).max(4096) }).strict(),
   'mission.importFrom': z.object({ path: z.string().min(1).max(4096) }).strict(),
-  'credentials.apply': z.object({ keys: z.record(z.string(), z.string()), deploySecrets: z.record(z.string(), z.record(z.string(), z.string())).optional() }).strict(),
+  'credentials.apply': z.object({ keys: z.record(z.string(), z.string()), deploySecrets: z.record(z.string(), z.record(z.string(), z.string())).optional(), mcpSecrets: z.record(z.string(), z.record(z.string(), z.string())).optional() }).strict(),
 } as const;
 export type InternalMethod = keyof typeof InternalRequests;
 

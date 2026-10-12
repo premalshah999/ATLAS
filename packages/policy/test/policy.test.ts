@@ -137,3 +137,17 @@ describe('long-option abbreviations (final audit finding)', () => {
     expect(classifyCommand(cmd, [...args]).capability).toBe('shell.safe');
   });
 });
+
+describe('mcp.call (ADR 0018)', () => {
+  const call = (o: Partial<Parameters<typeof evaluate>[0]> = {}) => evaluate({ role: 'coder', tool: 'mcp_call', args: { server: 's', tool: 't' }, mode: 'ask_risky', sandboxed: true, ...o });
+  it('denies when the gate found no server offering the tool', () => { expect(call().decision).toBe('deny'); });
+  it('denies roles without the capability, whatever the server says', () => {
+    expect(call({ role: 'browser_qa', mcpApproval: 'allow' }).decision).toBe('deny');
+    expect(call({ role: 'orchestrator', mcpApproval: 'allow' }).decision).toBe('deny');
+  });
+  it('asks for an untrusted server and allows a trusted one', () => {
+    expect(call({ mcpApproval: 'ask' }).decision).toBe('ask');
+    expect(call({ mcpApproval: 'allow' }).decision).toBe('allow');
+  });
+  it('always asks in plan-only missions', () => { expect(call({ mcpApproval: 'allow', mode: 'plan_only' }).decision).toBe('ask'); });
+});

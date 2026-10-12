@@ -1,5 +1,5 @@
 export { Orchestrator, type OrchestratorOptions, type ExtraTool, type ToolFactoryContext, type Published, type CiRecord, type ForgeView } from './orchestrator';
-export { ToolGate, TOOL_SPECS, realExecutors, describe, type Executors, type GateContext, type Isolation } from './toolgate';
+export { ToolGate, TOOL_SPECS, realExecutors, describe, type Executors, type GateContext, type Isolation, type McpProvider } from './toolgate';
 export { validatePlan, defaultPlan, findCycle } from './plan';
 export { detectRecipes, gate, type Recipe, type Verdict } from './verification';
 export { canMission, canTask, assertMission, assertTask, TERMINAL_MISSION, TERMINAL_TASK } from './states';

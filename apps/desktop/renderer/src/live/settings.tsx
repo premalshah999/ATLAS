@@ -7,6 +7,7 @@ import { useLive } from './store';
 import { roleName } from './format';
 import { toast } from './toast';
 import { ModelSelect } from './models';
+import { McpSection } from './mcp';
 
 const NAMES: Record<string, string> = { ...Object.fromEntries(PROVIDERS.map((p) => [p.id, p.label])), github: 'GitHub' };
 type Provider = string;
@@ -87,6 +88,7 @@ export function Settings() {
           {settings && <RetentionSection settings={settings} onChange={setSettings} />}
           <RolesSection />
           <SkillsSection />
+          <McpSection />
           <ExportKeysSection />
           <section className="lv-section" data-testid="providers">
             <div className="at-label">Model providers</div>
