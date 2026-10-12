@@ -2,7 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { PROVIDERS, type ModelInfo, type RuntimeHealth } from '@atlas/contracts';
 import { Badge, Button, Field, Input, KV, Status, Toggle } from '../ui/primitives';
-import { call, type AppInfo, type Credentials, type DesktopState, type RoleInfo, type SettingsState } from './api';
+import { call, type Maintenance, type AppInfo, type Credentials, type DesktopState, type RoleInfo, type SettingsState } from './api';
 import { roleName } from './format';
 import { toast } from './toast';
 import { ModelSelect } from './models';
@@ -86,6 +86,7 @@ export function Settings() {
             )}
           </section>
           {settings && <SecuritySection settings={settings} onChange={setSettings} />}
+          {settings && <StorageSection settings={settings} onChange={setSettings} />}
           {settings && <DesktopSection settings={settings} onChange={setSettings} />}
           {settings && <DeploySection settings={settings} onChange={setSettings} />}
           {settings && <RetentionSection settings={settings} onChange={setSettings} />}
@@ -192,6 +193,40 @@ function ModelsSection({ settings, models, onChange }: { settings: SettingsState
           <ModelSelect testId={`model-${t.key.split('.')[1]}`} models={models} value={settings.values[t.key]} empty={t.key === 'models.default' ? 'First available model' : 'Same as default'} onChange={(value) => void saveSetting({ key: t.key, value }, onChange)} />
         </Field>
       ))}
+    </section>
+  );
+}
+
+const bytes = (n: number) => n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${(n / 1024).toFixed(0)} KB` : n < 1024 ** 3 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${(n / 1024 ** 3).toFixed(2)} GB`;
+
+/** Storage and cleanup (ADR 0025): derived caches and logs are cleared; evidence never is. */
+function StorageSection({ settings, onChange }: { settings: SettingsState; onChange: OnSettings }) {
+  const [m, setM] = useState<Maintenance | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { void call('maintenance.report').then(setM).catch(() => {}); }, []);
+  const reclaimable = m?.rows.reduce((a, r) => a + r.reclaimable, 0) ?? 0;
+  const clean = async () => {
+    setBusy(true);
+    try { const r = await call('maintenance.cleanup', {}); setM(r); toast({ tone: 'info', title: `Freed ${bytes(r.result.freed)}`, body: Object.entries(r.result.removed).filter(([, n]) => n).map(([k, n]) => `${n} ${k}`).join(', ') || 'Nothing needed clearing.' }); }
+    catch (e) { toast({ tone: 'danger', title: 'Cleanup failed', body: (e as Error).message }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <section className="lv-section" data-testid="storage-settings">
+      <div className="at-label">Storage and cleanup</div>
+      <span className="at-muted lv-small">ATLAS clears what nothing needs any more: rotated logs, code-graph caches, saved conversations of finished attempts, worktrees of deleted missions, and the database's write-ahead log. Evidence (events, artifacts, the audit trail) is never cleared here; the retention setting below decides that.</span>
+      {m && (
+        <table className="lv-table lv-small" data-testid="storage-table">
+          <tbody>{m.rows.map((r) => (
+            <tr key={r.category} data-category={r.category}><td>{r.label}</td><td className="at-mono">{bytes(r.bytes)}</td><td className="at-subtle">{r.reclaimable ? `${bytes(r.reclaimable)} can be cleared` : r.note}</td></tr>
+          ))}</tbody>
+        </table>
+      )}
+      <div className="at-row" style={{ gap: 8 }}>
+        <Button size="sm" disabled={busy || !m} data-testid="cleanup-now" onClick={() => void clean()}>{busy ? 'Clearing…' : `Clean up now${reclaimable ? ` (${bytes(reclaimable)})` : ''}`}</Button>
+        {m?.last && <span className="at-subtle lv-small" data-testid="cleanup-last">Last {m.last.automatic ? 'automatic ' : ''}cleanup {new Date(m.last.at).toLocaleString()}: freed {bytes(m.last.freed)}</span>}
+      </div>
+      <label className="lv-toggle-row"><Toggle on={settings.values['maintenance.auto']} onChange={(v) => void saveSetting({ key: 'maintenance.auto', value: v }, onChange)} label="Clean up automatically" /><span>Clean up automatically (at start and every 30 minutes, when there is something worth clearing)</span></label>
     </section>
   );
 }

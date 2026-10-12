@@ -17,6 +17,9 @@ import { createDesktopTool, DesktopManager, desktopSupport } from '@atlas/deskto
 import { loadConfig } from '@atlas/workspace';
 import { createLogger, type Logger } from './log';
 import { TeamHub } from './team';
+import { cleanup as hygieneCleanup, CLEANABLE, report as hygieneReport, type Category, type CleanupResult, type HygieneInput } from './hygiene';
+import { rotateLog } from './log';
+import { git } from '@atlas/workspace';
 import { lockDataDir } from './lock';
 
 export interface ServiceOptions {
@@ -157,6 +160,7 @@ export class DaemonService {
   onTerminal(fn: (sessionId: string, data?: string, exit?: number | null, seq?: number) => void) { this.terminalSink = fn; }
   private retentionTimer: NodeJS.Timeout | null = null;
   private ciTimer: NodeJS.Timeout | null = null;
+  private hygieneTimer: NodeJS.Timeout | null = null;
 
   private unlock: () => void = () => {};
 
@@ -183,6 +187,10 @@ export class DaemonService {
     this.ciTimer = setInterval(() => void this.orch.pollCi().catch(() => {}), 60_000);
     this.ciTimer.unref();
     this.team.start();
+    // Session hygiene (ADR 0025): logs rotate as they grow; derived caches are cleared on start and every 30 minutes.
+    void this.autoCleanup();
+    this.hygieneTimer = setInterval(() => void this.autoCleanup(), 30 * 60_000);
+    this.hygieneTimer.unref();
     this.log.info('daemon started', { schema: schemaVersion(this.db), github: !!this.githubToken, ...recovered });
     return recovered;
   }
@@ -236,6 +244,7 @@ export class DaemonService {
     if (this.retentionTimer) clearInterval(this.retentionTimer);
     if (this.ciTimer) clearInterval(this.ciTimer);
     this.team.stop();
+    if (this.hygieneTimer) clearInterval(this.hygieneTimer);
     await this.desktop.shutdown();
     await this.deploy.shutdown();
     await this.orch.shutdown();
@@ -262,6 +271,11 @@ export class DaemonService {
         const m = this.orch.createMission(p);
         await this.team.shareMission(m.id, { item: p.item });
         return m;
+      }
+      case 'maintenance.report': return this.maintenanceView();
+      case 'maintenance.cleanup': {
+        const r = await this.cleanup(p.categories ?? CLEANABLE, false);
+        return { ...this.maintenanceView(), result: r };
       }
       case 'pipeline.get': return this.orch.pipeline.settings(p.workspaceId);
       case 'pipeline.set': { const r = this.orch.pipeline.setSettings(p.workspaceId, p.settings); this.log.warn('pipeline settings changed', { workspaceId: p.workspaceId, ...r }); return r; }
@@ -430,6 +444,40 @@ export class DaemonService {
     }
   }
 
+  /** What hygiene may and may not touch, from the live state of missions and attempts. */
+  private hygieneInput(): HygieneInput {
+    const missions = this.repo.missions();
+    const live = missions.filter((m) => !m.archived && !m.decision);
+    const resuming = new Set(this.repo.missionsInState(['planning', 'running', 'verifying']).map((m) => m.id));
+    const keep = new Set<string>();
+    for (const m of live) for (const a of this.repo.attempts(m.id)) if (['starting', 'running'].includes(a.state) || (a.state === 'lost' && resuming.has(m.id))) keep.add(a.id);
+    return { dataDir: this.o.dataDir, liveMissions: live.map((m) => ({ id: m.id, baseCommit: m.baseCommit })), keepAttempts: keep, knownMissions: new Set(missions.map((m) => m.id)) };
+  }
+
+  private maintenanceView() {
+    return { rows: hygieneReport(this.hygieneInput()), auto: this.repo.setting('maintenance.auto', true), last: this.repo.setting<CleanupResult | null>('maintenance.last', null) };
+  }
+
+  private async cleanup(categories: Category[], automatic: boolean): Promise<CleanupResult> {
+    if (this.log.file && categories.includes('logs')) rotateLog(this.log.file);
+    const r = hygieneCleanup(this.hygieneInput(), categories, () => { this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); }, automatic);
+    // Removed worktree folders leave stale registrations in their repositories: let git forget them.
+    if (r.removed.worktrees) for (const w of this.repo.workspaces()) if (w.isGit) await git(w.root, ['worktree', 'prune']).catch(() => null);
+    this.repo.setSetting('maintenance.last', r);
+    this.log.info('cleanup', { ...r });
+    return r;
+  }
+
+  private async autoCleanup() {
+    try {
+      if (!this.repo.setting('maintenance.auto', true)) return;
+      const rows = hygieneReport(this.hygieneInput());
+      const reclaimable = rows.reduce((a, x) => a + x.reclaimable, 0);
+      // Small amounts are not worth the I/O; caches above 64 MB, or any rotated logs, are cleared.
+      if (reclaimable > 64 * 1024 * 1024 || rows.some((x) => x.category === 'logs' && x.reclaimable > 0)) await this.cleanup(CLEANABLE, true);
+    } catch (e) { this.log.warn('automatic cleanup failed', { error: (e as Error).message }); }
+  }
+
   private windowsAccountsView() {
     if (process.platform !== 'win32') return null;
     const a = windowsAccounts();
@@ -443,6 +491,7 @@ export class DaemonService {
       'desktop.enabled': this.repo.setting('desktop.enabled', false),
       'models.default': this.repo.setting<string | null>('models.default', null), 'models.fast': this.repo.setting<string | null>('models.fast', null), 'models.strong': this.repo.setting<string | null>('models.strong', null),
       'security.gate': this.repo.setting<'blocking' | 'advisory'>('security.gate', 'blocking'), 'security.aiReview': this.repo.setting('security.aiReview', true),
+      'maintenance.auto': this.repo.setting('maintenance.auto', true),
     };
   }
 

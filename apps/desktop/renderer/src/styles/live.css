@@ -229,3 +229,8 @@
 .lv-diff-del { background: var(--diff-del); display: block; }
 .lv-diff-hunk { color: var(--accent); display: block; }
 @media (max-width: 1100px) { .lv-board { grid-template-columns: repeat(2, minmax(200px, 1fr)); } }
+
+/* ---- Storage and cleanup (ADR 0025) ---- */
+.lv-table { width: 100%; border-collapse: collapse; }
+.lv-table td { padding: 5px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.lv-table td:nth-child(2) { white-space: nowrap; text-align: right; width: 90px; }

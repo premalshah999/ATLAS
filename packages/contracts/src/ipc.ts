@@ -108,6 +108,7 @@ export const Requests = {
     z.object({ key: z.literal('models.strong'), value: modelRef.nullable() }).strict(),
     z.object({ key: z.literal('security.gate'), value: z.enum(['blocking', 'advisory']) }).strict(),
     z.object({ key: z.literal('security.aiReview'), value: z.boolean() }).strict(),
+    z.object({ key: z.literal('maintenance.auto'), value: z.boolean() }).strict(),
   ]),
   'mcp.list': empty,
   'mcp.save': z.object({ server: McpServerConfig }).strict(),
@@ -138,6 +139,9 @@ export const Requests = {
   'team.plan.approve': ws.extend({ missionId: Id }).strict(),
   'team.comment': ws.extend({ item: EntryId.optional(), missionId: Id.optional(), text: z.string().trim().min(1).max(4000) }).strict(),
   'team.settings': ws.extend({ settings: TeamSettingsPatch }).strict(),
+  /** Session hygiene (ADR 0025): what ATLAS keeps on disk, and clearing what nothing needs. Evidence is never cleared here. */
+  'maintenance.report': empty,
+  'maintenance.cleanup': z.object({ categories: z.array(z.enum(['logs', 'graphs', 'sessions', 'worktrees', 'database'])).min(1).max(5).optional() }).strict(),
   'credentials.list': empty,
   'credentials.set': z.object({ provider: credentialName, key: z.string().trim().min(8).max(500) }).strict(),
   'credentials.remove': z.object({ provider: credentialName }).strict(),
