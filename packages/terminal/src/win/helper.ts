@@ -239,6 +239,40 @@ static class AtlasSandbox {
     return Marshal.StringToHGlobalUni(sb.ToString());
   }
 
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool ReadFile(IntPtr h, IntPtr buf, int n, out int read, IntPtr overlapped);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern bool GetOverlappedResult(IntPtr h, IntPtr overlapped, out int n, bool wait);
+  [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr CreateEvent(IntPtr a, bool manualReset, bool initial, string name);
+
+  /**
+   * Operator keystrokes from our stdin into the ConPTY. Node may hand us a pipe opened for overlapped I/O, on which
+   * a plain synchronous read fails (CI: input never reached PowerShell). ReadFile with an OVERLAPPED and
+   * GetOverlappedResult(wait) works for both kinds of handle. Failures are reported, never swallowed.
+   */
+  static void RelayInput(Stream toPty) {
+    IntPtr h = GetStdHandle(-10);
+    const int SIZE = 8192;
+    IntPtr buf = Marshal.AllocHGlobal(SIZE);
+    int ovSize = IntPtr.Size * 3 + 8; // OVERLAPPED: Internal, InternalHigh, Offset+OffsetHigh (or Pointer), hEvent
+    IntPtr ov = Marshal.AllocHGlobal(ovSize);
+    IntPtr evt = CreateEvent(IntPtr.Zero, true, false, null);
+    var managed = new byte[SIZE];
+    try {
+      for (;;) {
+        for (int i = 0; i < ovSize; i++) Marshal.WriteByte(ov, i, 0);
+        Marshal.WriteIntPtr(ov, ovSize - IntPtr.Size, evt);
+        int n;
+        if (!ReadFile(h, buf, SIZE, out n, ov)) {
+          int e = Marshal.GetLastWin32Error();
+          if (e != 997) { if (e != 109) Console.Error.WriteLine("atlas-sandbox: terminal input: ReadFile error " + e); return; } // 997 IO_PENDING; 109 BROKEN_PIPE = closed
+        }
+        if (!GetOverlappedResult(h, ov, out n, true)) { int e = Marshal.GetLastWin32Error(); if (e != 109 && e != 38) Console.Error.WriteLine("atlas-sandbox: terminal input: error " + e); return; }
+        if (n <= 0) return;
+        Marshal.Copy(buf, managed, 0, n);
+        toPty.Write(managed, 0, n); toPty.Flush();
+      }
+    } catch (Exception ex) { Console.Error.WriteLine("atlas-sandbox: terminal input: " + ex.Message); }
+  }
+
   /** Every ATLAS container holds this capability; toolchain directories grant it read access once. */
   const string TOOLCHAIN_CAPABILITY = "atlasToolchain";
   static IntPtr CapabilitySid(string name) {
@@ -498,10 +532,10 @@ static class AtlasSandbox {
 
     if (pty) {
       CloseHandle(inR); CloseHandle(outW);
-      var stdin = Console.OpenStandardInput(); var stdout = Console.OpenStandardOutput();
+      var stdout = Console.OpenStandardOutput();
       var toPty = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(inW, true), FileAccess.Write);
       var fromPty = new FileStream(new Microsoft.Win32.SafeHandles.SafeFileHandle(outR, true), FileAccess.Read);
-      new Thread(() => { var b = new byte[8192]; int n; try { while ((n = stdin.Read(b, 0, b.Length)) > 0) { toPty.Write(b, 0, n); toPty.Flush(); } } catch { } }) { IsBackground = true }.Start();
+      new Thread(() => RelayInput(toPty)) { IsBackground = true }.Start();
       new Thread(() => { var b = new byte[8192]; int n; try { while ((n = fromPty.Read(b, 0, b.Length)) > 0) { stdout.Write(b, 0, n); stdout.Flush(); } } catch { } }) { IsBackground = true }.Start();
     }
     WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
