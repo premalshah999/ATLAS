@@ -80,23 +80,33 @@ test('two people collaborate through a team space: invite, board, mission, owner
     await expect(a.page.getByTestId('publish')).toBeDisabled();
 
     // Bob reads the change on his machine and approves it.
-    await sync(b.page);
     await b.page.getByRole('tab', { name: /Missions/ }).click();
     const card = b.page.locator('[data-testid="team-mission"][data-title="Fix slug generation"]');
+    // Alice's ATLAS shares the verified mission on its own; sync until it has arrived.
+    await expect(async () => {
+      await sync(b.page);
+      await expect(card.getByTestId('team-view-diff')).toBeVisible({ timeout: 1000 });
+    }).toPass({ timeout: 30_000, intervals: [1000, 2000, 3000] });
     await expect(card).toContainText('needs you');
     await expect(card.getByTestId('team-owners')).toContainText('Web: needs approval');
     await card.getByTestId('team-view-diff').click();
     await expect(card.getByTestId('team-diff')).toContainText('src/slugify.js');
     await card.getByTestId('team-approve').click();
-    await sync(b.page);
+    // Alice's ATLAS moves the item to review when her mission verified and pushes it on its own (keep in sync is on);
+    // Bob sees it once his sync comes after that push. Sync again until it does, within a bound.
     await b.page.getByRole('tab', { name: /Board/ }).click();
-    await expect(b.page.getByTestId('team-col-review')).toContainText('Fix slug generation');
+    await expect(async () => {
+      await sync(b.page);
+      await expect(b.page.getByTestId('team-col-review')).toContainText('Fix slug generation', { timeout: 1000 });
+    }).toPass({ timeout: 30_000, intervals: [1000, 2000, 3000] });
 
     // Back on Alice's machine: the approval arrived, the team blocker is gone, and her timeline shows who approved.
     await a.page.getByRole('button', { name: 'Team' }).click();
-    await sync(a.page);
     await a.page.getByRole('tab', { name: /Missions/ }).click();
-    await expect(a.page.locator('[data-testid="team-mission"][data-title="Fix slug generation"] [data-testid="team-owners"]')).toContainText('Web: approved by Bob');
+    await expect(async () => {
+      await sync(a.page);
+      await expect(a.page.locator('[data-testid="team-mission"][data-title="Fix slug generation"] [data-testid="team-owners"]')).toContainText('Web: approved by Bob', { timeout: 1000 });
+    }).toPass({ timeout: 30_000, intervals: [1000, 2000, 3000] });
     await a.page.locator('[data-testid="team-mission"][data-title="Fix slug generation"]').getByTestId('team-mission-open').click();
     await expect(a.page.getByTestId('pull-request')).not.toContainText('Needs an approving review', { timeout: 15_000 });
     await a.page.getByRole('tab', { name: /Activity/ }).click();

@@ -84,8 +84,12 @@ export function reapJournaled(j: ProcessJournal): { killed: { pid: number; kind:
     const now = processIdentity(e.pid);
     if (now === e.identity) {
       // The leader is still the process we started: its whole group is ours.
-      try { process.kill(-e.pid, 'SIGKILL'); } catch { /* not a group leader */ }
-      try { process.kill(e.pid, 'SIGKILL'); killed.push({ pid: e.pid, kind: e.kind, command: e.command }); } catch { /* gone or not ours */ }
+      // Either kill counts: an orphan's parent is init, which can reap the leader between the two calls, and the
+      // second one then fails with ESRCH although the process was killed (CI: reported as not killed).
+      let done = false;
+      try { process.kill(-e.pid, 'SIGKILL'); done = true; } catch { /* not a group leader */ }
+      try { process.kill(e.pid, 'SIGKILL'); done = true; } catch { /* gone (perhaps just now, by the group kill) or not ours */ }
+      if (done) killed.push({ pid: e.pid, kind: e.kind, command: e.command });
       continue;
     }
     // A live process with another identity means the pid was reused. POSIX never reuses a pid while a process
