@@ -15,11 +15,11 @@ const MODES: { id: ApprovalMode; label: string; help: string }[] = [
   { id: 'plan_only', label: 'Read-only', help: 'Agents may read and run tests but cannot change files or run privileged commands.' },
 ];
 
-export function NewMission({ workspaceId }: { workspaceId?: string }) {
+export function NewMission({ workspaceId, item }: { workspaceId?: string; item?: { id: string; title: string; detail: string } }) {
   const workspaces = useLive((s) => s.workspaces);
   const [ws, setWs] = useState<string | undefined>(workspaceId ?? workspaces[0]?.id);
-  const [title, setTitle] = useState('');
-  const [goal, setGoal] = useState('');
+  const [title, setTitle] = useState(item?.title ?? '');
+  const [goal, setGoal] = useState(item?.detail || item?.title || '');
   const [constraints, setConstraints] = useState('');
   const [mode, setMode] = useState<ApprovalMode>('ask_risky');
   const [runtime, setRuntime] = useState<RuntimeKind>('fake');
@@ -49,7 +49,7 @@ export function NewMission({ workspaceId }: { workspaceId?: string }) {
     if (!ws || !title.trim() || !goal.trim()) return;
     setBusy(true);
     try {
-      const m = await call('mission.create', { workspaceId: ws, title: title.trim(), goal: goal.trim(), constraints, approvalMode: mode, runtime, budget, targetEnvironment: target === 'none' ? null : target, model: runtime === 'pi' ? model : null });
+      const m = await call('mission.create', { workspaceId: ws, title: title.trim(), goal: goal.trim(), constraints, approvalMode: mode, runtime, budget, targetEnvironment: target === 'none' ? null : target, model: runtime === 'pi' ? model : null, ...(item ? { item: item.id } : {}) });
       await call('mission.plan', { missionId: m.id });
       await refreshLists();
       go({ screen: 'mission', missionId: m.id });
@@ -72,6 +72,7 @@ export function NewMission({ workspaceId }: { workspaceId?: string }) {
       <div className="at-pagehead"><span className="heading">New mission</span></div>
       <div className="lv-scroll">
         <form className="lv-narrow lv-form" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+          {item && <div className="lv-callout" data-testid="mission-for-item" style={{ marginTop: 0 }}><span>For the team item <b>{item.title}</b>. Starting it takes the item (refused if a teammate already has it) and shares this mission with the team.</span></div>}
           <Field label="Repository">
             <div className="at-row" style={{ gap: 8 }}>
               <Select value={ws ?? ''} width={360} onChange={(v) => setWs(v)} options={workspaces.map((w) => ({ id: w.id, label: w.name, hint: w.branch ?? 'no git' }))} />

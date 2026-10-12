@@ -5,9 +5,12 @@ import { AgentRole, ApprovalMode, Id, MissionBudget, RuntimeKind } from './domai
 import { DesktopAction, DesktopControl } from './desktop';
 import { MODEL_REF, PROVIDER_IDS } from './providers';
 import { MCP_NAME, McpServerConfig } from './mcp';
+import { PipelineSettings } from './pipeline';
+import { EntryBodies, EntryId, ItemPriority, ItemStatus, KeyId, MemberRole, TeamSettingsPatch, TeamSlug, Assignee } from './team';
 
 const empty = z.object({}).strict();
 const missionRef = z.object({ missionId: Id }).strict();
+const ws = z.object({ workspaceId: Id }).strict();
 const modelRef = z.string().regex(MODEL_REF, 'expected provider/model');
 const credentialName = z.enum([...PROVIDER_IDS, 'github']);
 /** A harness sync target (ADR 0019); project scope needs a workspace. */
@@ -30,6 +33,8 @@ export const Requests = {
     targetEnvironment: z.string().min(1).max(100).nullable().optional(),
     /** Model for every agent of this mission (provider/model). Default: the Settings choice for each role's tier. */
     model: modelRef.nullable().optional(),
+    /** A team work item this mission takes on (ADR 0021): it is claimed and the mission shared with the team. */
+    item: EntryId.optional(),
   }).strict(),
   'mission.list': z.object({ workspaceId: Id.optional() }).strict(),
   'mission.get': missionRef,
@@ -108,6 +113,29 @@ export const Requests = {
   'mcp.test': z.object({ name: z.string().regex(MCP_NAME) }).strict(),
   'mcp.secret.set': z.object({ server: z.string().regex(MCP_NAME), name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/), value: z.string().min(1).max(10_000) }).strict(),
   'mcp.secret.remove': z.object({ server: z.string().regex(MCP_NAME), name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/) }).strict(),
+  /** Automated delivery for one repository (ADR 0022). */
+  'pipeline.get': z.object({ workspaceId: Id }).strict(),
+  'pipeline.set': z.object({ workspaceId: Id, settings: PipelineSettings.partial() }).strict(),
+  /** Team spaces (ADR 0021). */
+  'team.get': ws,
+  'team.sync': ws,
+  'team.create': ws.extend({ name: z.string().trim().min(1).max(80), displayName: z.string().trim().min(1).max(80), email: z.string().trim().max(200).optional() }).strict(),
+  'team.join': ws.extend({ displayName: z.string().trim().min(1).max(80), email: z.string().trim().max(200).optional(), code: z.string().trim().max(60).optional() }).strict(),
+  'team.invite': ws.extend({ role: MemberRole, teams: z.array(TeamSlug).max(20).default([]), uses: z.number().int().min(1).max(50).default(1), days: z.number().int().min(1).max(30).default(7), note: z.string().max(200).optional() }).strict(),
+  'team.member.add': ws.extend({ keyId: KeyId, role: MemberRole, teams: z.array(TeamSlug).max(20).default([]) }).strict(),
+  'team.member.update': ws.extend({ keyId: KeyId, name: z.string().trim().min(1).max(80).optional(), role: MemberRole.optional(), teams: z.array(TeamSlug).max(20).optional() }).strict(),
+  'team.member.remove': ws.extend({ keyId: KeyId }).strict(),
+  'team.team.save': ws.extend({ team: EntryBodies['team.upsert'] }).strict(),
+  'team.team.remove': ws.extend({ slug: TeamSlug }).strict(),
+  'team.item.create': ws.extend({ item: EntryBodies['item.create'] }).strict(),
+  'team.item.update': ws.extend({ item: EntryId, title: z.string().trim().min(1).max(200).optional(), detail: z.string().max(8000).optional(), team: TeamSlug.nullable().optional(), assignee: Assignee.optional(), status: ItemStatus.optional(), priority: ItemPriority.optional() }).strict(),
+  'team.item.claim': ws.extend({ item: EntryId }).strict(),
+  'team.mission.share': z.object({ missionId: Id, item: EntryId.nullable().optional(), teams: z.array(TeamSlug).max(20).optional(), people: z.array(KeyId).max(50).optional() }).strict(),
+  'team.mission.patch': ws.extend({ missionId: Id }).strict(),
+  'team.review': ws.extend({ missionId: Id, commit: z.string().regex(/^[0-9a-f]{40}$/), verdict: z.enum(['approve', 'changes']), note: z.string().max(4000).default('') }).strict(),
+  'team.plan.approve': ws.extend({ missionId: Id }).strict(),
+  'team.comment': ws.extend({ item: EntryId.optional(), missionId: Id.optional(), text: z.string().trim().min(1).max(4000) }).strict(),
+  'team.settings': ws.extend({ settings: TeamSettingsPatch }).strict(),
   'credentials.list': empty,
   'credentials.set': z.object({ provider: credentialName, key: z.string().trim().min(8).max(500) }).strict(),
   'credentials.remove': z.object({ provider: credentialName }).strict(),

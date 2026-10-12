@@ -5,7 +5,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import {
   AtlasError, DEFAULT_BUDGET, MissionBudget, newId, nowIso, RETRYABLE, type AgentRole, type AgentRuntime, type Approval, type ApprovalMode, type Attempt, type AtlasEvent,
   type CheckRecord, type Mission, type MissionState, type NewEvent, type Plan, type ReleaseStage, type RuntimeKind, type StageContext, type Task, type TaskState,
-  type ToolResult, type Workspace, redact,
+  type ToolResult, type Workspace, type Actor, redact,
 } from '@atlas/contracts';
 import type { ArtifactStore, Repo } from '@atlas/storage';
 import { checkpoint, diffSince, git, gitOk, inspectRepo, Leases, retireWorktree, type RetireResult } from '@atlas/workspace';
@@ -23,6 +23,7 @@ import { SkillLibrary } from './skills';
 import { ExportKeys } from './signing';
 import { blockingFindings, makeFinding, type FindingArgs } from './findings';
 import { deleteMission, exportMission, importMission } from './archive';
+import { Pipeline } from './pipeline';
 import { ciState, parseRemote, type CiState, type Forge, type RemoteRef } from './forge';
 import { mkdirSync, readdirSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 
@@ -58,6 +59,11 @@ export interface OrchestratorOptions {
   forge?: () => Forge | null;
   /** The operator's MCP servers (ADR 0018). */
   mcp?: McpProvider;
+  /**
+   * Extra conditions for publishing a change (ADR 0021: owner approval from the team space). Returns why the
+   * mission cannot be published yet, in words, or null.
+   */
+  publishGate?: (m: Mission, files: string[]) => Promise<string | null>;
 }
 
 /** What `forge.published` records: where a mission's result was pushed and which pull request shows it. */
@@ -121,6 +127,8 @@ export class Orchestrator {
   /** Lost attempts whose conversation and files the next attempt continues, by task id (set by recover()). */
   private readonly resumeFrom = new Map<string, { attemptId: string; number: number; commit: string; startCommit: string }>();
   private readonly exportKeys: ExportKeys;
+  /** Automated delivery after acceptance (ADR 0022); does nothing until a repository turns it on. */
+  readonly pipeline: Pipeline;
 
   constructor(private readonly o: OrchestratorOptions) {
     this.repo = o.repo;
@@ -131,6 +139,7 @@ export class Orchestrator {
     this.exportKeys = new ExportKeys(o.keysDir ?? path.join(path.dirname(o.worktreeDir), 'keys'));
     this.skills = new SkillLibrary({ bundled: o.skillDirs?.bundled, operator: o.skillDirs?.operator ?? path.join(path.dirname(o.worktreeDir), 'skills') }, () => this.repo.setting<string[]>('skills.disabled', []));
     this.acceptance = new AcceptanceStore(o.acceptanceDir ?? path.join(path.dirname(o.worktreeDir), 'acceptance'));
+    this.pipeline = new Pipeline(this, this.repo);
     this.repo.onEvent((e) => {
       const s = e.attemptId ? this.signals.get(e.attemptId) : undefined;
       if (s && e.type !== 'attempt.stalled') {
@@ -240,6 +249,8 @@ export class Orchestrator {
 
   /** This installation's export signing key id (shown so other installations can choose to trust it). */
   exportKeyId() { return this.exportKeys.keyId; }
+  /** The installation key: signs evidence exports and this installation's team entries (ADR 0021). */
+  get signer() { return this.exportKeys; }
   async deleteMission(missionId: string) { await this.closeMissionTerminals(missionId); await deleteMission(this.repo, this.artifacts, missionId, this.o.worktreeDir); }
 
   /**
@@ -282,7 +293,7 @@ export class Orchestrator {
 
   /* ---------------- mission lifecycle ---------------- */
 
-  createMission(input: { workspaceId: string; title: string; goal: string; constraints: string; approvalMode: ApprovalMode; runtime: RuntimeKind; budget?: Partial<MissionBudget>; targetEnvironment?: string | null; followUp?: Mission['followUp']; model?: string | null }): Mission {
+  createMission(input: { workspaceId: string; title: string; goal: string; constraints: string; approvalMode: ApprovalMode; runtime: RuntimeKind; budget?: Partial<MissionBudget>; targetEnvironment?: string | null; followUp?: Mission['followUp']; model?: string | null }, by: Actor = OPERATOR): Mission {
     const w = this.repo.workspace(input.workspaceId);
     if (!w) throw new AtlasError('invalid_request', 'Unknown workspace');
     const now = nowIso();
@@ -292,7 +303,7 @@ export class Orchestrator {
       baseCommit: null, state: 'draft', planVersion: 0, policyId: 'default@2', outcome: null, decision: null, budget, integrationBranch: null, integrationCommit: null, archived: false, targetEnvironment: input.targetEnvironment ?? null, verdict: null, followUp: input.followUp ?? null, model: input.model ?? null, createdAt: now, updatedAt: now,
     };
     this.repo.insertMission(m);
-    this.emit({ missionId: m.id, type: 'mission.created', actor: OPERATOR, payload: { title: m.title, goal: m.goal, constraints: m.constraints, approvalMode: m.approvalMode, runtime: m.runtime, workspace: w.name, budget, targetEnvironment: m.targetEnvironment, ...(m.model ? { model: m.model } : {}) } });
+    this.emit({ missionId: m.id, type: 'mission.created', actor: by, payload: { title: m.title, goal: m.goal, constraints: m.constraints, approvalMode: m.approvalMode, runtime: m.runtime, workspace: w.name, budget, targetEnvironment: m.targetEnvironment, ...(m.model ? { model: m.model } : {}) } });
     return m;
   }
 
@@ -390,7 +401,7 @@ export class Orchestrator {
    * Operator approves the current plan: snapshot the base commit, materialize tasks, start scheduling.
    * Writers that declare overlapping files are serialized so they never edit the same paths in parallel (§13).
    */
-  async approvePlan(missionId: string): Promise<Mission> {
+  async approvePlan(missionId: string, by: Actor = OPERATOR): Promise<Mission> {
     const m = this.mission(missionId);
     if (m.state !== 'awaiting_approval') throw new AtlasError('invalid_request', `Mission is ${m.state}, not awaiting approval`);
     const w = await this.refreshWorkspace(m.workspaceId);
@@ -405,7 +416,7 @@ export class Orchestrator {
     const base = m.followUp?.headSha ?? w.head;
     if (m.followUp && (await git(w.root, ['cat-file', '-e', `${base}^{commit}`])).code !== 0) throw new AtlasError('workspace_conflict', `The pull request head ${base.slice(0, 7)} is not in this repository any more`);
     this.repo.updateMission(m.id, { baseCommit: base });
-    this.emit({ missionId, type: 'plan.approved', actor: OPERATOR, payload: { version: p.plan.version, baseCommit: base } });
+    this.emit({ missionId, type: 'plan.approved', actor: by, payload: { version: p.plan.version, baseCommit: base } });
 
     const deps = new Map(p.plan.tasks.map((t) => [t.key, new Set(t.dependsOn)]));
     const reaches = (from: string, to: string, seen = new Set<string>()): boolean => {
@@ -1298,7 +1309,7 @@ export class Orchestrator {
    * Accept keeps the integration branch for the operator to merge; reject removes it. Task worktrees and
    * branches are always cleaned. The user checkout is never touched.
    */
-  async decide(missionId: string, decision: 'accept' | 'reject'): Promise<Mission> {
+  async decide(missionId: string, decision: 'accept' | 'reject', by: Actor = OPERATOR): Promise<Mission> {
     const m = this.mission(missionId);
     if (!['completed', 'failed'].includes(m.state)) throw new AtlasError('invalid_request', 'Only finished missions can be accepted or rejected');
     if (m.decision) throw new AtlasError('invalid_request', `Mission already ${m.decision}`);
@@ -1334,7 +1345,7 @@ export class Orchestrator {
     }
     for (const st of this.o.stages ?? []) await (st as ReleaseStage & { onDecision?: (m: Mission, d: string) => Promise<void> }).onDecision?.(m, decision).catch(() => {});
     this.repo.updateMission(missionId, { decision: decision === 'accept' ? 'accepted' : 'rejected' });
-    this.emit({ missionId, type: 'mission.decision', actor: OPERATOR, payload: { decision, branches: kept, commit: m.integrationCommit, note: decision === 'accept' ? `Changes kept on ${kept.join(', ')} at ${m.integrationCommit?.slice(0, 7)}; merge them when ready.` : 'Worktrees and branches removed. Your checkout was not modified.' } });
+    this.emit({ missionId, type: 'mission.decision', actor: by, payload: { decision, branches: kept, commit: m.integrationCommit, note: decision === 'accept' ? `Changes kept on ${kept.join(', ')} at ${m.integrationCommit?.slice(0, 7)}; merge them when ready.` : 'Worktrees and branches removed. Your checkout was not modified.' } });
     return this.mission(missionId);
   }
 
@@ -1424,6 +1435,20 @@ export class Orchestrator {
     return { url: url ? redact(url) : null, ref: url ? parseRemote(url) : null };
   }
 
+  /** Files the integrated change touches, relative to the repository root. */
+  async changedFiles(missionId: string): Promise<string[]> {
+    const m = this.repo.mission(missionId);
+    if (!m?.baseCommit || !m.integrationCommit) return [];
+    const w = this.repo.workspace(m.workspaceId)!;
+    const r = await git(w.root, ['diff', '--name-only', '--no-renames', m.baseCommit, m.integrationCommit]);
+    return r.code === 0 ? r.out.split('\n').filter(Boolean) : [];
+  }
+
+  private async gateBlocker(m: Mission): Promise<string | null> {
+    if (!this.o.publishGate || this.publishBlocker(m)) return null;
+    return this.o.publishGate(m, await this.changedFiles(m.id));
+  }
+
   private publishBlocker(m: Mission): string | null {
     if (m.archived) return 'An imported archive is read-only.';
     if (m.decision !== 'accepted') return 'Accept the mission first: only accepted changes can be published.';
@@ -1438,6 +1463,7 @@ export class Orchestrator {
     const remote = await this.remoteOf(m);
     const configured = !!this.o.forge?.();
     const blocker = this.publishBlocker(m)
+      ?? await this.gateBlocker(m)
       ?? (!remote.url ? 'This repository has no origin remote.' : !remote.ref ? `The origin remote (${remote.url}) is not a github.com repository.` : null)
       ?? (!configured ? 'Add a GitHub token in Settings to publish pull requests.' : null);
     const followUps = this.repo.missions(m.workspaceId).filter((x) => x.followUp?.parentMissionId === m.id).map((x) => x.id);
@@ -1451,9 +1477,9 @@ export class Orchestrator {
    * Push the accepted, verified result and open (or reuse) a pull request. A follow-up pushes to its parent's branch;
    * the push is a plain fast-forward, so a branch someone else moved is refused, never overwritten.
    */
-  async publish(missionId: string, base?: string): Promise<ForgeView> {
+  async publish(missionId: string, base?: string, by: Actor = OPERATOR): Promise<ForgeView> {
     const m = this.mission(missionId);
-    const blocker = this.publishBlocker(m);
+    const blocker = this.publishBlocker(m) ?? await this.gateBlocker(m);
     if (blocker) throw new AtlasError('invalid_request', blocker);
     const forge = this.o.forge?.();
     if (!forge) throw new AtlasError('invalid_request', 'Add a GitHub token in Settings to publish pull requests.');
@@ -1473,7 +1499,7 @@ export class Orchestrator {
     const created = !pr;
     if (!pr) pr = await forge.openPullRequest(ref, { branch, base: base ?? await forge.defaultBranch(ref), title: m.title, body: this.pullRequestBody(m) });
     const record: Published = { host: ref.host, owner: ref.owner, repo: ref.repo, number: pr.number, url: pr.url, branch, headSha: commit, created };
-    this.emit({ missionId, type: 'forge.published', actor: OPERATOR, payload: { ...record } });
+    this.emit({ missionId, type: 'forge.published', actor: by, payload: { ...record } });
     return this.forgeView(missionId);
   }
 
@@ -1533,7 +1559,7 @@ export class Orchestrator {
    * Turn a failed CI run into a follow-up mission. It starts from what is on GitHub now (someone may have pushed to
    * the branch), carries the failure output as quoted data, and goes through planning and approval like any mission.
    */
-  async fixCi(missionId: string): Promise<Mission> {
+  async fixCi(missionId: string, by: Actor = OPERATOR): Promise<Mission> {
     const m = this.mission(missionId);
     const view = await this.forgeView(missionId);
     if (!view.canFixCi || !view.published || !view.ci) throw new AtlasError('invalid_request', 'CI has not failed on the latest push of this mission.');
@@ -1559,8 +1585,8 @@ export class Orchestrator {
     const follow = this.createMission({
       workspaceId: m.workspaceId, title: `Fix CI · ${m.title}`.slice(0, 200), goal, constraints: m.constraints, approvalMode: m.approvalMode, runtime: m.runtime,
       budget: m.budget, followUp: { parentMissionId: m.id, branch: published.branch, headSha, pullRequest: published.number }, model: m.model ?? null,
-    });
-    this.emit({ missionId: m.id, type: 'operator.action', actor: OPERATOR, payload: { action: 'fix_ci', followUp: follow.id, pullRequest: published.number, headSha } });
+    }, by);
+    this.emit({ missionId: m.id, type: 'operator.action', actor: by, payload: { action: 'fix_ci', followUp: follow.id, pullRequest: published.number, headSha } });
     return follow;
   }
 

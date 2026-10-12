@@ -12,3 +12,5 @@ export { exportMission, importMission, deleteMission, EXPORT_VERSION } from './a
 export { AcceptanceStore, suiteHash, ACCEPTANCE_DIR, type AcceptanceSuite } from './acceptance';
 export { SkillLibrary, parseSkill, loadSkillDir, renderSkill, harnessSkillDirs, REPO_SKILL_DIRS, type Skill, type SkillMeta, type SkillSource } from './skills';
 export { GitHubForge, parseRemote, ciState, type Forge, type RemoteRef, type CiCheck, type CiState, type PullRequest } from './forge';
+export { Pipeline, PIPELINE } from './pipeline';
+export { ExportKeys, verifySignature, keyIdOf } from './signing';

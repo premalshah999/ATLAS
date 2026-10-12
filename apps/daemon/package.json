@@ -15,12 +15,13 @@
     "@atlas/deploy": "workspace:*",
     "@atlas/desktop-control": "workspace:*",
     "@atlas/mcp": "workspace:*",
-    "@atlas/sync": "workspace:*",
     "@atlas/orchestrator": "workspace:*",
     "@atlas/policy": "workspace:*",
     "@atlas/runtime-fake": "workspace:*",
     "@atlas/runtime-pi": "workspace:*",
     "@atlas/storage": "workspace:*",
+    "@atlas/sync": "workspace:*",
+    "@atlas/team": "workspace:*",
     "@atlas/terminal": "workspace:*",
     "@atlas/workspace": "workspace:*"
   }

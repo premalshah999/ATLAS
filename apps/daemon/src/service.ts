@@ -16,6 +16,7 @@ import { DeployManager, stagingStage } from '@atlas/deploy';
 import { createDesktopTool, DesktopManager, desktopSupport } from '@atlas/desktop-control';
 import { loadConfig } from '@atlas/workspace';
 import { createLogger, type Logger } from './log';
+import { TeamHub } from './team';
 import { lockDataDir } from './lock';
 
 export interface ServiceOptions {
@@ -45,6 +46,7 @@ export class DaemonService {
   private githubToken: string | null;
   readonly deploy: DeployManager;
   readonly desktop: DesktopManager;
+  readonly team: TeamHub;
 
   constructor(private readonly o: ServiceOptions) {
     mkdirSync(o.dataDir, { recursive: true });
@@ -84,8 +86,9 @@ export class DaemonService {
       operatorInput: (i, a, ok, message) => this.record(i.missionId, i.taskId, 'desktop.action', 'operator', { sessionId: i.id, action: a.action, args: a.action === 'type' ? { chars: a.text.length } : a, ok, message, controller: i.controller, by: 'operator' }),
     });
     this.orch = new Orchestrator({ repo: this.repo, artifacts: this.artifacts, runtimes: { fake: this.fake, pi: this.pi }, worktreeDir: path.join(o.dataDir, 'worktrees'), factsDir: path.join(o.dataDir, 'facts'), skillDirs: { bundled: o.skillsDir, operator: path.join(o.dataDir, 'skills') },
-      forge: () => (this.githubToken ? new GitHubForge({ token: this.githubToken, apiBase: o.githubApi }) : null),
+      forge: () => this.forge(),
       mcp: this.mcp,
+      publishGate: (m, files) => this.team.gate(m, files),
       stages: [applicationStage(), stagingStage(this.deploy)],
       toolFactories: {
         browser_action: (c) => createBrowserTool({ worktree: c.worktree, sandbox: c.sandbox, putScreenshot: (n, png) => c.putArtifact({ kind: 'screenshot', name: n, bytes: png }).id, emit: (p, ids) => c.emit('browser.step', p, ids) }),
@@ -108,7 +111,10 @@ export class DaemonService {
         }),
       },
     });
+    this.team = new TeamHub({ repo: this.repo, orch: this.orch, log: this.log, forge: () => this.forge() });
   }
+
+  private forge() { return this.githubToken ? new GitHubForge({ token: this.githubToken, apiBase: this.o.githubApi }) : null; }
 
   /** Operator-configured MCP servers (settings); entries that no longer validate are skipped, never guessed. */
   private mcpServers(): McpServerConfig[] {
@@ -176,6 +182,7 @@ export class DaemonService {
     // CI of published pull requests, until it finishes (for a day after publishing). Network only with a token.
     this.ciTimer = setInterval(() => void this.orch.pollCi().catch(() => {}), 60_000);
     this.ciTimer.unref();
+    this.team.start();
     this.log.info('daemon started', { schema: schemaVersion(this.db), github: !!this.githubToken, ...recovered });
     return recovered;
   }
@@ -228,6 +235,7 @@ export class DaemonService {
   async stop() {
     if (this.retentionTimer) clearInterval(this.retentionTimer);
     if (this.ciTimer) clearInterval(this.ciTimer);
+    this.team.stop();
     await this.desktop.shutdown();
     await this.deploy.shutdown();
     await this.orch.shutdown();
@@ -247,7 +255,35 @@ export class DaemonService {
       case 'workspace.list': return this.repo.workspaces();
       case 'workspace.refresh': return this.orch.refreshWorkspace(p.workspaceId);
       case 'workspace.preflight': return this.orch.preflight(p.workspaceId, p.runtime);
-      case 'mission.create': return this.orch.createMission(p);
+      case 'mission.create': {
+        if (!p.item) return this.orch.createMission(p);
+        // Taking on a team item: claim it first (refused when someone else has it), then share the mission with it.
+        await this.team.write(p.workspaceId, 'item.claim', { item: p.item });
+        const m = this.orch.createMission(p);
+        await this.team.shareMission(m.id, { item: p.item });
+        return m;
+      }
+      case 'pipeline.get': return this.orch.pipeline.settings(p.workspaceId);
+      case 'pipeline.set': { const r = this.orch.pipeline.setSettings(p.workspaceId, p.settings); this.log.warn('pipeline settings changed', { workspaceId: p.workspaceId, ...r }); return r; }
+      case 'team.get': return this.team.view(p.workspaceId);
+      case 'team.sync': await this.team.sync(p.workspaceId); return this.team.view(p.workspaceId);
+      case 'team.create': await this.team.create(p.workspaceId, p); return this.team.view(p.workspaceId);
+      case 'team.join': await this.team.join(p.workspaceId, p); return this.team.view(p.workspaceId);
+      case 'team.invite': { const r = await this.team.invite(p.workspaceId, p); return { code: r.code, view: await this.team.view(p.workspaceId) }; }
+      case 'team.member.add': await this.team.write(p.workspaceId, 'member.add', { keyId: p.keyId, role: p.role, teams: p.teams }); return this.team.view(p.workspaceId);
+      case 'team.member.update': await this.team.write(p.workspaceId, 'member.update', { keyId: p.keyId, name: p.name, role: p.role, teams: p.teams }); return this.team.view(p.workspaceId);
+      case 'team.member.remove': await this.team.write(p.workspaceId, 'member.remove', { keyId: p.keyId }); return this.team.view(p.workspaceId);
+      case 'team.team.save': await this.team.write(p.workspaceId, 'team.upsert', p.team); return this.team.view(p.workspaceId);
+      case 'team.team.remove': await this.team.write(p.workspaceId, 'team.remove', { slug: p.slug }); return this.team.view(p.workspaceId);
+      case 'team.item.create': await this.team.write(p.workspaceId, 'item.create', p.item); return this.team.view(p.workspaceId);
+      case 'team.item.update': { const { workspaceId, ...b } = p; await this.team.write(workspaceId, 'item.update', b); return this.team.view(workspaceId); }
+      case 'team.item.claim': await this.team.write(p.workspaceId, 'item.claim', { item: p.item }); return this.team.view(p.workspaceId);
+      case 'team.mission.share': { await this.team.shareMission(p.missionId, p); return this.team.view(this.repo.mission(p.missionId)!.workspaceId); }
+      case 'team.mission.patch': return { patch: await this.team.patch(p.workspaceId, p.missionId) };
+      case 'team.review': await this.team.write(p.workspaceId, 'review', { missionId: p.missionId, commit: p.commit, verdict: p.verdict, note: p.note }); return this.team.view(p.workspaceId);
+      case 'team.plan.approve': await this.team.approvePlan(p.workspaceId, p.missionId); return this.team.view(p.workspaceId);
+      case 'team.comment': await this.team.write(p.workspaceId, 'comment', { item: p.item, missionId: p.missionId, text: p.text }); return this.team.view(p.workspaceId);
+      case 'team.settings': this.team.setSettings(p.workspaceId, p.settings); return this.team.view(p.workspaceId);
       case 'mission.delete': await this.orch.deleteMission(p.missionId); this.log.info('mission deleted', { missionId: p.missionId }); return { deleted: p.missionId };
       case 'mission.reverify': return this.orch.reverify(p.missionId);
       case 'finding.update': return this.orch.updateFinding(p.findingId, p.status);

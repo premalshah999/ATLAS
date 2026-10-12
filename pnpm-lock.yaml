@@ -107,6 +107,9 @@ importers:
       '@atlas/sync':
         specifier: workspace:*
         version: link:../../packages/sync
+      '@atlas/team':
+        specifier: workspace:*
+        version: link:../../packages/team
       '@atlas/terminal':
         specifier: workspace:*
         version: link:../../packages/terminal
@@ -309,6 +312,18 @@ importers:
       '@atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/team:
+    dependencies:
+      '@atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@atlas/terminal':
+        specifier: workspace:*
+        version: link:../terminal
+      zod:
+        specifier: 3.24.1
+        version: 3.24.1
 
   packages/terminal:
     dependencies:

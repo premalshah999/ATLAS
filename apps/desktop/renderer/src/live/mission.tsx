@@ -1,14 +1,14 @@
 // Live mission view (manual §35–37): plan approval, live execution, approvals, process output, evidence.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { Approval, AtlasEvent, CheckRecord, Task } from '@atlas/contracts';
+import { pipelineOf, type Approval, type AtlasEvent, type CheckRecord, type Mission, type Task } from '@atlas/contracts';
 import { Badge, Button, cx, EmptyState, Icon, PanelHead, RoleMark, Status, Tabs, Tip } from '../ui/primitives';
-import { ICheck, ICheckCircle, IClock, IFileDiff, IShield, IStopCircle, ITerminal, IWarn, IXCircle, IUndo, IMerge, IFileText, ITube, ITree, IGraph, IReviews, IGlobe, IDeploy, IComputer, IMore, IDisk, IClose } from '../lib/icons';
+import { ICheck, ICheckCircle, IClock, IFileDiff, IShield, IStopCircle, ITerminal, IWarn, IXCircle, IUndo, IMerge, IFileText, ITube, ITree, IGraph, IReviews, IGlobe, IDeploy, IComputer, IMore, IDisk, IClose, IUsers } from '../lib/icons';
 import { Menu, MenuItem } from '../ui/primitives';
 import { BrowserPanel, BudgetMeter, DeployPanel, DesktopPanel, Findings, TaskGraph, TerminalPanel } from './panels';
 import { go, refreshLists } from './store';
 import { call, type ForgeView } from './api';
 import { useMission } from './useMission';
-import { describeEvent, fmtMs, markOf, missionStatus, resultWord, roleMark, roleName, stalledTasks, stateWord, time, type Row } from './format';
+import { actorName, describeEvent, fmtMs, markOf, missionStatus, resultWord, roleMark, roleName, stalledTasks, stateWord, time, type Row } from './format';
 import { toast } from './toast';
 
 const ACTIVE = new Set(['planning', 'running', 'verifying']);
@@ -60,11 +60,13 @@ export function MissionView({ missionId }: { missionId: string }) {
                 <Button variant={verdict === 'verified' ? 'primary' : 'default'} icon={IMerge} disabled={busy || patchCount === 0} data-testid="accept" onClick={() => void act('Could not accept', () => call('mission.decide', { missionId, decision: 'accept' }))}>Accept changes</Button>
               </>
             )}
-            {m.decision && <Badge tone="human">{m.decision === 'accepted' ? 'Accepted by you' : 'Rejected by you'}</Badge>}
+            {m.decision && <Badge tone="human">{`${m.decision === 'accepted' ? 'Accepted' : 'Rejected'} by ${decidedBy(events)}`}</Badge>}
+            {events.some((e) => e.type === 'team.shared') && <Badge tone="outline" icon={IUsers}>shared with the team</Badge>}
             {m.decision === 'rejected' && m.integrationCommit && !m.archived && <Button variant="ghost" icon={IUndo} disabled={busy} data-testid="restore" onClick={() => void act('Could not restore', () => call('mission.restore', { missionId }))}>Restore change</Button>}
             {m.archived && <Badge tone="outline">imported archive · read-only</Badge>}
             {m.archived && provenance && <span data-testid="provenance"><Badge tone={provenance.trusted ? 'outline' : 'warning'}>{!provenance.signed ? 'unsigned: origin unknown' : provenance.own ? 'signed by this installation' : provenance.trusted ? `signed by trusted key ${String(provenance.keyId).slice(0, 8)}` : `signed by untrusted key ${String(provenance.keyId).slice(0, 8)}`}</Badge></span>}
             <Menu align="right" width={260} trigger={(_o, toggle) => <Button variant="ghost" icon={IMore} onClick={toggle} aria-label="Mission actions" data-testid="mission-menu">More</Button>}>{(close) => (<>
+              {!m.archived && <MenuItem icon={IUsers} onClick={() => { close(); void act('Not shared', async () => { await call('team.mission.share', { missionId }); toast({ tone: 'info', title: 'Shared with the team', body: 'Teammates see it after the next sync, and it stays up to date as it runs.' }); }); }}>Share with the team</MenuItem>}
               <MenuItem icon={IDisk} onClick={() => { close(); void act('Export failed', async () => { const r = await call('mission.export', { missionId }); if (r) toast({ tone: 'info', title: 'Audit log exported', body: `${r.records} records · SHA-256 ${r.sha256.slice(0, 16)}… → ${r.path}` }); }); }}>Export audit log (JSONL)…</MenuItem>
               <MenuItem icon={IClose} onClick={() => { close(); if (ACTIVE.has(m.state)) { toast({ tone: 'danger', title: 'Cancel the mission first' }); return; } if (window.confirm('Delete this mission? Its events, artifacts, worktrees and task branches are removed. An accepted branch is kept.')) void act('Delete failed', async () => { await call('mission.delete', { missionId }); await refreshLists(); go({ screen: 'projects' }); }); }}>Delete mission…</MenuItem>
             </>)}</Menu>
@@ -79,6 +81,8 @@ export function MissionView({ missionId }: { missionId: string }) {
           <span>{m.outcome}</span>
         </div>
       )}
+
+      {m.state !== 'draft' && !m.archived && <PipelineStrip m={m} events={events} />}
 
       {m.followUp && <div className="lv-callout" data-testid="follow-up" style={{ margin: '0 20px 8px' }}><span>Fixes CI on pull request #{m.followUp.pullRequest}. Started from its head {m.followUp.headSha.slice(0, 7)}; publishing pushes to {m.followUp.branch}.</span></div>}
       {m.decision === 'accepted' && !m.archived && <PullRequestBar missionId={missionId} events={events} />}
@@ -130,6 +134,32 @@ export function MissionView({ missionId }: { missionId: string }) {
           </aside>
         </div>
       )}
+    </div>
+  );
+}
+
+const decidedBy = (events: AtlasEvent[]) => {
+  const e = [...events].reverse().find((x) => x.type === 'mission.decision');
+  return e ? (e.actor.kind === 'operator' ? 'you' : actorName(e.actor)) : 'you';
+};
+
+/** Plan → build → verify → accept → pull request → CI → ready to merge (ADR 0022), from the mission's own record. */
+function PipelineStrip({ m, events }: { m: Mission; events: AtlasEvent[] }) {
+  const p = pipelineOf(m, events);
+  return (
+    <div className="lv-pipe" data-testid="pipeline" data-summary={p.summary}>
+      {p.stages.map((s, i) => (
+        <React.Fragment key={s.key}>
+          {i > 0 && <span className={cx('lv-pipe-link', s.state !== 'idle' && 'lv-pipe-link--on')} />}
+          <Tip label={`${s.label}: ${s.state}${s.detail ? ` · ${s.detail}` : ''}`}>
+            <span className={cx('lv-pipe-stage', `lv-pipe-stage--${s.state}`)} data-stage={s.key} data-state={s.state}>
+              <span className="lv-pipe-dot">{s.state === 'done' ? <Icon as={ICheck} size="sm" /> : s.state === 'failed' ? <Icon as={IXCircle} size="sm" /> : null}</span>
+              {s.label}{s.key === 'pr' && s.detail ? ` ${s.detail}` : ''}
+            </span>
+          </Tip>
+        </React.Fragment>
+      ))}
+      <span className="lv-pipe-summary lv-small">{p.automated ?? p.summary}</span>
     </div>
   );
 }

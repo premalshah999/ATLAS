@@ -33,6 +33,7 @@ export class ExportKeys {
   }
 
   get keyId(): string { return this.key().keyId; }
+  get publicKey(): string { return this.key().pub; }
 
   sign(digestHex: string): Signature {
     const k = this.key();

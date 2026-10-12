@@ -2,7 +2,7 @@
 import React from 'react';
 import type { IconType } from 'react-icons';
 import { cx, Dot, Icon, Kbd, Menu, MenuItem, Tip } from '../ui/primitives';
-import { IBranch, IChevronDown, IFolder, IFolderOpen, IHome, IMissions, IPlus, ISettings, IPalette, ISearch, IShield } from '../lib/icons';
+import { IBranch, IChevronDown, IFolder, IFolderOpen, IHome, IMissions, IPlus, ISettings, IPalette, ISearch, IShield, IUsers } from '../lib/icons';
 import { call } from './api';
 import { go, refreshLists, useLive, type Route } from './store';
 import { missionStatus } from './format';
@@ -27,6 +27,7 @@ export async function openRepository(): Promise<string | null> {
 const NAV: { id: Route['screen']; label: string; icon: IconType; kbd?: string }[] = [
   { id: 'projects', label: 'Projects', icon: IHome, kbd: '⌘ 1' },
   { id: 'new', label: 'New mission', icon: IPlus, kbd: '⌘ N' },
+  { id: 'team', label: 'Team', icon: IUsers, kbd: '⌘ 2' },
 ];
 
 export function LiveTitleBar() {

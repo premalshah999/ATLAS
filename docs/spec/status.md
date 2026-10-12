@@ -82,6 +82,9 @@ Report date 2026-10-12 for lint, typecheck, unit, integration and e2e; the eval,
 | MCP servers: remote (streamable HTTP) and local (stdio in the OS sandbox) behind the governed `mcp_call`, approval by default (ADR 0018) | `packages/mcp/test/mcp.test.ts`, policy tests, `tests/integration/mcp.test.ts`, `mcp.spec.ts` |
 | Skills authored, customized and turned off in ATLAS; skills from other tools untrusted until imported (ADR 0019) | `orchestrator/test/skills.test.ts`, `sync.spec.ts` |
 | Skills and MCP servers synced to Claude Code, Codex and OpenCode with preview, ownership and conflicts; no secret values written (ADR 0019) | `packages/sync/test/sync.test.ts`, `sync.spec.ts` |
+| Team spaces: people and their agents on one repository through a signed record in the repository's git remote (no server, no accounts); invitation codes, join requests, teams owning paths, board, shared missions with diff, reviews, teammate plan approval, agent runner (ADR 0021) | `packages/team/test/team.test.ts` (real git, three installations), `tests/integration/team.test.ts` (two full installations), `team.spec.ts` (two app instances) |
+| Owner approval gates publishing: a change to a team's paths needs an approving review of that commit from the team (ADR 0021) | `team.test.ts` (unit and integration), `team.spec.ts` |
+| Delivery pipeline per repository: pull request on acceptance, CI fix missions planned, approved, verified, accepted and pushed automatically within a round limit; never merges, never answers tool approvals, never approves high-risk plans (ADR 0022) | `tests/integration/pipeline.test.ts` |
 
 ## Known gaps and risks
 1. **Real-model path.** It is not exercised against a live provider in CI. The Pi adapter is contract-tested with Pi's faux provider. `ATLAS_EVAL_RUNTIME=pi pnpm eval` runs the corpus with a real model when a key is present; that has not been run for this report.

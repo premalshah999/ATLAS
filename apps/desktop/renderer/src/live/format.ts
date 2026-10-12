@@ -5,7 +5,10 @@ export type Tone = 'muted' | 'accent' | 'success' | 'warning' | 'danger' | 'huma
 export interface Row { title: string; detail?: string; meta?: string; tone: Tone; kind: 'activity' | 'decision' | 'file' | 'error' | 'approval' | 'milestone' | 'test' | 'delegation'; who: string }
 
 const ROLE_MARK: Record<string, string> = { coder: 'CO', tester: 'TE', reviewer: 'RV', orchestrator: 'OR', browser_qa: 'QA', desktop_operator: 'DK', deployment_verifier: 'DV' };
-export const markOf = (e: AtlasEvent) => e.actor.kind === 'operator' ? 'YOU' : e.actor.kind === 'agent' ? ROLE_MARK[e.actor.role] ?? 'AG' : 'AT';
+export const initials = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join('') || '?';
+export const markOf = (e: AtlasEvent) => e.actor.kind === 'operator' ? 'YOU' : e.actor.kind === 'agent' ? ROLE_MARK[e.actor.role] ?? 'AG' : e.actor.kind === 'teammate' ? initials(e.actor.name) : e.actor.component === 'pipeline' ? 'PL' : 'AT';
+/** Who did it, in words: you, an agent role, a teammate by name, the pipeline, or ATLAS. */
+export const actorName = (a: AtlasEvent['actor']) => a.kind === 'operator' ? 'You' : a.kind === 'agent' ? roleName(a.role) : a.kind === 'teammate' ? a.name : a.component === 'pipeline' ? 'Pipeline' : a.component === 'team-runner' ? 'Team runner' : 'ATLAS';
 export const roleName = (r: string) => ({ coder: 'Coder', tester: 'Tester', reviewer: 'Reviewer', orchestrator: 'Orchestrator', browser_qa: 'Browser QA', desktop_operator: 'Desktop operator', deployment_verifier: 'Deployment verifier' } as Record<string, string>)[r] ?? r;
 export const roleMark = (r: string) => ROLE_MARK[r] ?? r.slice(0, 2).toUpperCase();
 
@@ -36,7 +39,7 @@ function argText(tool: string, a: Record<string, unknown>) {
 /** Returns null for events that belong to other panes (process output) or add no information. */
 export function describeEvent(e: AtlasEvent): Row | null {
   const p = e.payload as Record<string, any>;
-  const who = e.actor.kind === 'operator' ? 'You' : e.actor.kind === 'agent' ? roleName(e.actor.role) : 'ATLAS';
+  const who = actorName(e.actor);
   switch (e.type) {
     case 'mission.created': return { title: 'Mission created', detail: p.goal, meta: `${p.runtime} runtime`, tone: 'human', kind: 'activity', who };
     case 'mission.state': return { title: `Mission ${stateWord(p.to).toLowerCase()}`, detail: p.reason, tone: p.to === 'failed' ? 'danger' : p.to === 'completed' ? 'success' : 'muted', kind: p.to === 'failed' ? 'error' : 'activity', who };
@@ -84,6 +87,11 @@ export function describeEvent(e: AtlasEvent): Row | null {
     case 'desktop.session': return { title: `Desktop ${p.change}`, meta: `${p.display} · ${p.controller}`, detail: p.change === 'started' ? p.environment : undefined, tone: e.actor.kind === 'operator' ? 'human' : 'muted', kind: 'activity', who };
     case 'desktop.action': return { title: `Desktop ${p.action}${p.ok ? '' : ' refused'}`, detail: p.ok ? undefined : p.message, meta: p.args && Object.keys(p.args).length ? JSON.stringify(p.args) : undefined, tone: p.ok ? 'muted' : 'warning', kind: 'activity', who };
     case 'operator.terminal': return { title: `Terminal ${p.action}`, meta: p.worktree, detail: p.action === 'opened' ? `${p.writable ? 'Writable' : 'Read-only (an agent holds the worktree)'} · ${p.sandboxed ? 'sandboxed' : 'unsandboxed'}` : undefined, tone: 'human', kind: 'activity', who };
+    case 'forge.published': return { title: `${p.created ? 'Opened' : 'Updated'} pull request #${p.number}`, meta: `${p.branch} @ ${String(p.headSha).slice(0, 7)}`, tone: 'accent', kind: 'milestone', who };
+    case 'forge.ci': return { title: p.state === 'success' ? `CI passed on #${p.number}` : p.state === 'failure' ? `CI failed on #${p.number}` : p.state === 'pending' ? `CI running on #${p.number}` : `No CI reported on #${p.number}`, detail: p.state === 'failure' ? (p.checks ?? []).filter((c: any) => c.conclusion && !['success', 'neutral', 'skipped'].includes(c.conclusion)).map((c: any) => c.name).join(', ') : undefined, tone: p.state === 'success' ? 'success' : p.state === 'failure' ? 'danger' : 'muted', kind: p.state === 'failure' ? 'error' : 'milestone', who };
+    case 'pipeline.step': return { title: p.text, tone: p.ok ? (p.step === 'ready' ? 'success' : 'accent') : 'warning', kind: p.ok ? 'milestone' : 'decision', who };
+    case 'team.shared': return { title: 'Shared with the team', detail: [p.teams?.length ? `Review requested from ${p.teams.join(', ')}` : '', p.item ? 'Linked to a team item' : ''].filter(Boolean).join(' · ') || undefined, tone: 'human', kind: 'activity', who };
+    case 'team.review': return { title: p.verdict === 'approve' ? `${who} approved${p.current ? '' : ' an earlier commit'}` : `${who} asked for changes`, detail: p.note || undefined, meta: `@ ${String(p.commit).slice(0, 7)}`, tone: p.verdict === 'approve' ? 'success' : 'warning', kind: 'decision', who };
     case 'error': return { title: 'Error', detail: p.message, tone: 'danger', kind: 'error', who };
     default: return null;
   }

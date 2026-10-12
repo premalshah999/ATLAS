@@ -1,6 +1,6 @@
 // Typed client over the preload bridge. The renderer holds no authority: every call is an intent the
 // main process validates and the daemon authorizes.
-import type { Approval, Artifact, Attempt, AtlasEvent, CheckRecord, Deployment, DesktopSessionInfo, Finding, McpServerView, Method, Mission, MissionBudget, ModelInfo, Plan, RequestOf, RuntimeHealth, Task, Workspace } from '@atlas/contracts';
+import type { Approval, Artifact, Attempt, AtlasEvent, CheckRecord, Deployment, DesktopSessionInfo, Finding, McpServerView, Method, Mission, MissionBudget, ModelInfo, PipelineSettings, Plan, RequestOf, RuntimeHealth, Task, TeamView, Workspace } from '@atlas/contracts';
 
 export type DaemonStatus = { state: 'starting' | 'ready' | 'restarting' | 'stopped'; pid: number | null; restarts: number; detail?: string };
 
@@ -125,6 +125,27 @@ type Results = {
   'settings.set': SettingsState;
   'sandbox.windows.setup': SettingsState;
   'sandbox.windows.remove': SettingsState;
+  'pipeline.get': PipelineSettings;
+  'pipeline.set': PipelineSettings;
+  'team.get': TeamView;
+  'team.sync': TeamView;
+  'team.create': TeamView;
+  'team.join': TeamView;
+  'team.invite': { code: string; view: TeamView };
+  'team.member.add': TeamView;
+  'team.member.update': TeamView;
+  'team.member.remove': TeamView;
+  'team.team.save': TeamView;
+  'team.team.remove': TeamView;
+  'team.item.create': TeamView;
+  'team.item.update': TeamView;
+  'team.item.claim': TeamView;
+  'team.mission.share': TeamView;
+  'team.mission.patch': { patch: string | null };
+  'team.review': TeamView;
+  'team.plan.approve': TeamView;
+  'team.comment': TeamView;
+  'team.settings': TeamView;
   'credentials.list': Credentials;
   'credentials.set': Credentials;
   'credentials.remove': Credentials;
