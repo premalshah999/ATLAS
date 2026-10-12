@@ -63,7 +63,8 @@ export class AcceptanceStore {
 /** Write the suite into a worktree; returns the directory to remove afterwards. */
 export function materialize(worktree: string, s: AcceptanceSuite): string {
   const root = path.join(worktree, ACCEPTANCE_DIR);
-  rmSync(root, { recursive: true, force: true });
+  // Windows: a just-ended test process (or antivirus) can hold a handle briefly; force alone does not retry.
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   for (const [p, c] of Object.entries(s.files)) {
     const target = path.join(root, p);
     mkdirSync(path.dirname(target), { recursive: true });

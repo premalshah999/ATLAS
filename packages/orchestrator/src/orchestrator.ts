@@ -1103,7 +1103,7 @@ export class Orchestrator {
         reason: res.spawnError ? `Could not start: ${res.spawnError}` : res.timedOut ? 'Timed out' : empty ? `No tests ran: ${empty}` : result === 'pass' ? `Your ${label} passes on the integrated code` : `Your ${label} fails on the integrated code (exit ${res.exitCode})`,
       });
     } finally {
-      rmSync(path.join(dir, ACCEPTANCE_DIR), { recursive: true, force: true });
+      rmSync(path.join(dir, ACCEPTANCE_DIR), { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
       await git(dir, ['reset', '-q', '--hard', ctx.commit]);
       await git(dir, ['clean', '-fdq']);
     }

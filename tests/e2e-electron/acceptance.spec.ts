@@ -21,7 +21,14 @@ test('a holdout acceptance suite saved in the UI runs at the gate and is require
     await expect(page.getByTestId('preflight')).toHaveAttribute('data-ready', 'true');
     await page.getByTestId('plan-mission').click();
     await page.getByTestId('approve-plan').click();
-    await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'completed', { timeout: 90_000 });
+    await expect(page.getByTestId('mission')).toHaveAttribute('data-state', /^(completed|failed)$/, { timeout: 90_000 });
+    if ((await page.getByTestId('mission').getAttribute('data-state')) !== 'completed') {
+      // Say why: the outcome and every check (Windows CI rounds 4 and 10 failed here without either).
+      const outcome = await page.getByTestId('outcome').textContent().catch(() => null);
+      await page.getByRole('tab', { name: /Evidence/ }).click().catch(() => {});
+      const rows = await page.getByTestId('check-row').allTextContents().catch(() => []);
+      expect(null, `mission failed: ${outcome}\nchecks:\n${rows.join('\n')}`).toBe('completed');
+    }
     await expect(page.getByTestId('mission-state')).toHaveAttribute('data-verdict', 'verified');
     await expect(page.getByTestId('check-row').filter({ hasText: 'acceptance (holdout)' })).toHaveAttribute('data-result', 'pass');
   } finally { await app.close(); }
