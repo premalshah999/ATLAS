@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { mkdirSync, realpathSync, symlinkSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { checkpoint, createWorktree, diffSince, inspectRepo, Leases, removeWorktree, resolveInside, retireWorktree } from '../src';
+import { addWorktree, checkpoint, createWorktree, diffSince, inspectRepo, Leases, removeWorktree, resolveInside, retireWorktree } from '../src';
 import { sampleRepo, sh, tmpDir } from '../../../tests/helpers';
 
 describe('resolveInside', () => {
@@ -46,6 +46,28 @@ describe('worktrees', () => {
     await removeWorktree(repo, wt, 'atlas/test');
     expect(existsSync(wt)).toBe(false);
     expect(sh(repo, 'git', ['branch', '--list', 'atlas/test'])).toBe('');
+  });
+  it('parallel worktrees from one checkpoint are all created; a taken branch is refused and kept', async () => {
+    const repo = sampleRepo();
+    const head = (await inspectRepo(repo)).head!;
+    const parent = tmpDir();
+    const keys = ['review', 'security', 'tester', 'browser', 'docs', 'perf'];
+    await Promise.all(keys.map((k) => addWorktree(repo, path.join(parent, k), `atlas/m1/${k}-1`, head)));
+    for (const k of keys) expect(sh(path.join(parent, k), 'git', ['rev-parse', 'HEAD'])).toBe(head);
+    // The user's (or another mission's) branch is never retried over or deleted.
+    await expect(addWorktree(repo, path.join(parent, 'again'), 'atlas/m1/review-1', head)).rejects.toThrow(/already exists/);
+    expect(sh(repo, 'git', ['branch', '--list', 'atlas/m1/review-1'])).toContain('atlas/m1/review-1');
+    expect(existsSync(path.join(parent, 'again'))).toBe(false);
+  });
+  it('a worktree add that keeps failing is undone after its retries: no branch, no directory', async () => {
+    const repo = sampleRepo();
+    const wt = path.join(tmpDir(), 'wt');
+    await expect(addWorktree(repo, wt, 'atlas/bad', 'f'.repeat(40), 2)).rejects.toThrow(/git worktree failed/);
+    expect(existsSync(wt)).toBe(false);
+    expect(sh(repo, 'git', ['branch', '--list', 'atlas/bad'])).toBe('');
+    // The lock is released: the next add on the repository proceeds.
+    await addWorktree(repo, wt, 'atlas/good', (await inspectRepo(repo)).head!);
+    expect(existsSync(path.join(wt, 'README.md'))).toBe(true);
   });
   it('checkpoint returns null when nothing changed', async () => {
     const repo = sampleRepo();

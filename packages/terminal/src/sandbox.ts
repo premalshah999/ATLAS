@@ -188,6 +188,29 @@ function sweepScratch() {
   } catch { /* best effort */ }
 }
 
+/**
+ * Do a sandbox's slow setup before wrapCommand(), without blocking the event loop. On Windows that is the ACL grants
+ * on the sandbox root and its writable paths, which take hundreds of milliseconds per worktree with icacls; while they
+ * ran synchronously the daemon stopped answering the UI. wrapCommand() then finds them cached. Elsewhere it is a no-op.
+ * Failures are left for wrapCommand() to report.
+ */
+export async function prepareSandbox(spec: SandboxSpec): Promise<void> {
+  if (process.platform !== 'win32') return;
+  const info = detectSandbox();
+  if (info.kind === 'appcontainer') {
+    const sid = win.containerSid(win.containerName(spec.root));
+    await win.grantAsync(sid, spec.root, spec.writable ? 'rw' : 'rx');
+    for (const p of spec.readWrite ?? []) await win.grantAsync(sid, p, 'rw');
+  } else if (info.kind === 'windows-account') {
+    const a = acct.readAccounts();
+    if (!a) return;
+    const sid = (spec.network ? a.network : a.offline).sid;
+    await acct.grantForAsync(sid, spec.root, spec.writable ? 'rw' : 'rx');
+    for (const p of spec.readWrite ?? []) await acct.grantForAsync(sid, p, 'rw');
+    for (const p of spec.readOnly ?? []) await acct.grantForAsync(sid, p, 'rx');
+  }
+}
+
 /** Wrap a command so it runs inside the sandbox. Throws if no sandbox is available. */
 export function wrapCommand(command: string, args: string[], cwd: string, spec: SandboxSpec, env: Record<string, string>, opts: { statusFd?: boolean } = {}): { command: string; args: string[]; env: Record<string, string>; cleanup?: () => void; statusFd?: number } {
   const info = detectSandbox();

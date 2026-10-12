@@ -47,7 +47,32 @@ export class Leases {
 export async function createWorktree(repoRoot: string, dir: string, branch: string, base: string): Promise<void> {
   mkdirSync(path.dirname(dir), { recursive: true });
   if (existsSync(dir)) throw new Error(`worktree path already exists: ${dir}`);
-  await gitOk(repoRoot, ['worktree', 'add', '-b', branch, dir, base]);
+  await addWorktree(repoRoot, dir, branch, base);
+}
+
+const adding = new Map<string, Promise<unknown>>();
+
+/**
+ * `git worktree add -b` for one repository at a time. Parallel tasks (a reviewer and a security engineer starting from
+ * the same checkpoint) otherwise race on the repository's admin directory and ref locks, and on slow disks a lost race
+ * failed the task. A failed add is undone (its branch and partial directory) and tried again, twice at most; a branch
+ * that already existed is never retried or deleted.
+ */
+export async function addWorktree(repoRoot: string, dir: string, branch: string, base: string, attempts = 3): Promise<void> {
+  const key = path.resolve(repoRoot);
+  const prev = adding.get(key) ?? Promise.resolve();
+  const run = prev.catch(() => {}).then(async () => {
+    if ((await git(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).code === 0) throw new Error(`git worktree failed: branch ${branch} already exists`);
+    for (let i = 1; ; i++) {
+      const r = await git(repoRoot, ['worktree', 'add', '-b', branch, dir, base], 120_000);
+      if (r.code === 0) return;
+      if (i >= attempts) throw new Error(`git worktree failed: ${r.out.slice(0, 400)}`);
+      await removeWorktree(repoRoot, dir, (await git(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).code === 0 ? branch : null);
+      await new Promise((res) => setTimeout(res, 250 * i));
+    }
+  });
+  adding.set(key, run);
+  try { await run; } finally { if (adding.get(key) === run) adding.delete(key); }
 }
 
 /** The worktree's own admin directory (<repo>/.git/worktrees/<name>), read from its `.git` file. */

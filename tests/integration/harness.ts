@@ -49,8 +49,14 @@ export function autoDecide(h: ReturnType<typeof makeOrchestrator>, missionId: st
 
 /** Failed checks with their reason and output tail: the assertion message when a platform fails a mission. */
 export function explainChecks(h: ReturnType<typeof makeOrchestrator>, missionId: string): string {
-  return h.repo.checks(missionId).filter((c) => c.result !== 'pass').map((c) => {
+  const checks = h.repo.checks(missionId).filter((c) => c.result !== 'pass').map((c) => {
     const out = c.artifactId ? h.artifacts.read(c.artifactId).text.slice(-1500) : '';
     return `[${c.name}: ${c.result}] ${c.command ?? ''}\n${c.reason}\n${out}`;
   }).join('\n---\n') || '(all checks passed)';
+  // A failed task fails the mission without a failed check; name it and its last error so CI logs say why.
+  const failed = h.repo.tasks(missionId).filter((t) => t.state === 'failed').map((t) => {
+    const last = h.repo.attempts(missionId).filter((a) => a.taskId === t.id).at(-1);
+    return `[task ${t.key} (${t.role}): ${t.state}] ${last?.error ?? ''}`;
+  });
+  return failed.length ? `${checks}\n---\n${failed.join('\n')}` : checks;
 }

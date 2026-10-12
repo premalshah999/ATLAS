@@ -35,7 +35,8 @@ function world(n = 2, now?: () => Date) {
   return Object.assign(spaces, { origin });
 }
 
-describe('team spaces over git (ADR 0021)', () => {
+// Each test runs dozens of git processes; process start-up on Windows runners takes several times longer than elsewhere.
+describe('team spaces over git (ADR 0021)', { timeout: 90_000 }, () => {
   it('starts a space, invites with a code, and the invitee is a member as soon as both sync', async () => {
     const w = world();
     const [alice, bob] = w;

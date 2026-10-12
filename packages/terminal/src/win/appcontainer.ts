@@ -1,5 +1,5 @@
 // Windows sandbox (ADR 0012): AppContainer + Job Object via atlas-sandbox.exe, file access by explicit ACL grants.
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -88,6 +88,33 @@ export function grant(sid: string, target: string, mode: 'rw' | 'rx'): void {
   const perm = mode === 'rw' ? 'M' : 'RX';
   execFileSync('icacls', [p, '/grant:r', `*${sid}:${dir ? '(OI)(CI)' : ''}${perm}`, '/C', '/Q'], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, timeout: 300_000 });
   granted.add(key);
+}
+
+/** Run a program without blocking the daemon's event loop; rejects with its stderr on failure. */
+export function execAsync(file: string, args: string[], timeout: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { windowsHide: true, timeout }, (err, _out, stderr) => (err ? reject(Object.assign(err, { stderr: Buffer.from(String(stderr ?? '')) })) : resolve()));
+  });
+}
+
+const granting = new Map<string, Promise<void>>();
+/**
+ * grant() without blocking: icacls propagating inheritable entries over a worktree takes hundreds of milliseconds,
+ * and the daemon must keep answering the UI meanwhile. Afterwards grant() for the same key is a cache hit.
+ */
+export function grantAsync(sid: string, target: string, mode: 'rw' | 'rx'): Promise<void> {
+  const p = real(target);
+  const key = `${sid}|${p.toLowerCase()}|${mode}`;
+  if (granted.has(key) || !existsSync(p)) return Promise.resolve();
+  let run = granting.get(key);
+  if (!run) {
+    const dir = statSync(p).isDirectory();
+    run = execAsync('icacls', [p, '/grant:r', `*${sid}:${dir ? '(OI)(CI)' : ''}${mode === 'rw' ? 'M' : 'RX'}`, '/C', '/Q'], 300_000)
+      .then(() => { granted.add(key); })
+      .finally(() => granting.delete(key));
+    granting.set(key, run);
+  }
+  return run;
 }
 
 /** Directories that are readable by every AppContainer already (Windows, Program Files). */

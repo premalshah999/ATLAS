@@ -3,7 +3,7 @@
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import { redact } from '@atlas/contracts';
-import { wrapCommand, type SandboxSpec } from './sandbox';
+import { prepareSandbox, wrapCommand, type SandboxSpec } from './sandbox';
 import { windowsCommand } from './win/appcontainer';
 import { journalStart } from './journal';
 export { setProcessJournal, reapJournaled, processIdentity, journalStart } from './journal';
@@ -18,7 +18,7 @@ export function spawnPlan(command: string, args: string[], env: Record<string, s
   return { file: w.file, args: w.args, verbatim: w.verbatim };
 }
 
-export { detectSandbox, wrapCommand, seatbeltProfile, toolchainPaths, SANDBOX_HOME, type SandboxSpec, type SandboxInfo, type SandboxKind } from './sandbox';
+export { detectSandbox, prepareSandbox, wrapCommand, seatbeltProfile, toolchainPaths, SANDBOX_HOME, type SandboxSpec, type SandboxInfo, type SandboxKind } from './sandbox';
 export { quoteArg, resolveWindowsCommand, windowsCommand } from './win/appcontainer';
 export { readAccounts as windowsAccounts, removeAccounts as removeWindowsAccounts, setupAccounts as setupWindowsAccounts, type AccountsInfo } from './win/account';
 
@@ -109,7 +109,9 @@ export function isAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
-export function run(o: RunOptions): Promise<RunResult> {
+export async function run(o: RunOptions): Promise<RunResult> {
+  // Slow sandbox setup (Windows ACL grants) off the event loop; wrapCommand below then finds it done.
+  if (o.sandbox && !o.signal?.aborted) await prepareSandbox(o.sandbox).catch(() => {});
   const started = Date.now();
   const max = o.maxOutput ?? 512 * 1024;
   return new Promise((resolve) => {

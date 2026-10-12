@@ -971,7 +971,9 @@ export class Orchestrator {
     let summary: string;
     if (failed.length) {
       verdict = 'failed';
-      summary = `Failed: ${failed.map((t) => `${t.key} ${t.state}`).join(', ')}`;
+      // Each failed task with its last attempt's error, so the outcome says why and not only which.
+      const why = (id: string) => this.repo.attempts(m.id).filter((a) => a.taskId === id && a.error).at(-1)?.error;
+      summary = `Failed: ${failed.map((t) => { const e = why(t.id); return e ? `${t.key} ${t.state} (${e.slice(0, 200)})` : `${t.key} ${t.state}`; }).join(', ')}`;
     } else {
       const integ = await this.integrate(m);
       if (!integ.ok) {

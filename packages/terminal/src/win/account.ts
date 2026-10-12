@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { alreadyReadable, atlasLocalDir, containerHome, ensureHelper, quoteArg } from './appcontainer';
+import { alreadyReadable, atlasLocalDir, containerHome, ensureHelper, execAsync, quoteArg } from './appcontainer';
 
 export interface SandboxAccount { kind: 'offline' | 'network'; name: string; sid: string }
 export interface AccountsInfo { offline: SandboxAccount; network: SandboxAccount; firewall: boolean; store: string }
@@ -66,33 +66,63 @@ export function removeAccounts(): void {
 
 const grantsFile = () => path.join(atlasLocalDir(), 'account-grants.json');
 let grantCache: Set<string> | null = null;
-/**
- * Grant the account `mode` on `target` (inherited by children), and read-attributes on each ancestor so the
- * account can resolve the path (it cannot list the operator's profile folders). Remembered per machine.
- */
-export function grantFor(sid: string, target: string, mode: 'rw' | 'rx') {
+interface GrantStep { file: string; args: string[]; timeout: number; optional: boolean; key?: string }
+
+/** The commands that grant `mode` on `target` and read-attributes on its ancestors, minus what is cached. */
+function grantPlan(sid: string, target: string, mode: 'rw' | 'rx'): { key: string; steps: GrantStep[] } | null {
   const p = real(target);
-  if (!existsSync(p)) return;
+  if (!existsSync(p)) return null;
   if (!grantCache) { try { grantCache = new Set(JSON.parse(readFileSync(grantsFile(), 'utf8'))); } catch { grantCache = new Set(); } }
   // Keyed by the folder's identity, not only its path: worktrees are deleted and recreated at the same path
   // (re-verification, the original-suite run), and a recreated folder carries no grant (CI: error 267 on start).
   const st = statSync(p);
   const key = `${sid}|${p.toLowerCase()}|${mode}|${st.ino}|${Math.round(st.birthtimeMs)}`;
-  if (grantCache.has(key)) return;
+  if (grantCache.has(key)) return null;
+  const steps: GrantStep[] = [];
   // icacls directly: appcontainer's grant() remembers grants by path alone, which is exactly what fails for a
   // recreated worktree (CI round 3: still error 267 after keying this cache by identity).
   if (!(mode === 'rx' && alreadyReadable(p))) {
-    const dir = statSync(p).isDirectory();
-    execFileSync('icacls', [p, '/grant:r', `*${sid}:${dir ? '(OI)(CI)' : ''}${mode === 'rw' ? 'M' : 'RX'}`, '/C', '/Q'], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, timeout: 300_000 });
+    steps.push({ file: 'icacls', args: [p, '/grant:r', `*${sid}:${st.isDirectory() ? '(OI)(CI)' : ''}${mode === 'rw' ? 'M' : 'RX'}`, '/C', '/Q'], timeout: 300_000, optional: false });
   }
   for (let d = path.dirname(p); path.dirname(d) !== d; d = path.dirname(d)) {
     const k = `${sid}|${d.toLowerCase()}|ra`;
     if (grantCache.has(k) || alreadyReadable(d)) continue;
-    try { execFileSync(ensureHelper(), ['grant', d, sid, 'ra'], { stdio: 'pipe', windowsHide: true, timeout: 60_000 }); } catch { /* not ours to change: the path may stay unresolvable */ }
-    grantCache.add(k);
+    // Not ours to change when it fails: the path may stay unresolvable.
+    steps.push({ file: ensureHelper(), args: ['grant', d, sid, 'ra'], timeout: 60_000, optional: true, key: k });
   }
-  grantCache.add(key);
-  try { writeFileSync(grantsFile(), JSON.stringify([...grantCache])); } catch { /* cache only */ }
+  return { key, steps };
+}
+
+function grantDone(key: string) {
+  grantCache!.add(key);
+  try { writeFileSync(grantsFile(), JSON.stringify([...grantCache!])); } catch { /* cache only */ }
+}
+
+/**
+ * Grant the account `mode` on `target` (inherited by children), and read-attributes on each ancestor so the
+ * account can resolve the path (it cannot list the operator's profile folders). Remembered per machine.
+ */
+export function grantFor(sid: string, target: string, mode: 'rw' | 'rx') {
+  const plan = grantPlan(sid, target, mode);
+  if (!plan) return;
+  for (const s of plan.steps) {
+    try { execFileSync(s.file, s.args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true, timeout: s.timeout }); }
+    catch (e) { if (!s.optional) throw e; }
+    if (s.key) grantCache!.add(s.key);
+  }
+  grantDone(plan.key);
+}
+
+/** grantFor() without blocking the daemon's event loop; afterwards grantFor() for the same folder is a cache hit. */
+export async function grantForAsync(sid: string, target: string, mode: 'rw' | 'rx'): Promise<void> {
+  const plan = grantPlan(sid, target, mode);
+  if (!plan) return;
+  for (const s of plan.steps) {
+    try { await execAsync(s.file, s.args, s.timeout); }
+    catch (e) { if (!s.optional) throw e; }
+    if (s.key) grantCache!.add(s.key);
+  }
+  grantDone(plan.key);
 }
 
 /** Private home and temp folders for commands under one sandbox root, writable by the account. */
