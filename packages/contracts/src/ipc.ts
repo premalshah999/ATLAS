@@ -62,7 +62,7 @@ export const Requests = {
   'skills.list': z.object({ workspaceId: Id.optional() }).strict(),
   'skills.read': z.object({ name: z.string().max(64), source: z.enum(['trusted', 'repository', 'external']), workspaceId: Id.optional(), path: z.string().max(300).optional(), hash: z.string().regex(/^[0-9a-f]{64}$/).optional() }).strict(),
   'skills.import': z.object({ workspaceId: Id.optional(), name: z.string().max(64), hash: z.string().regex(/^[0-9a-f]{64}$/), from: z.enum(['repository', 'external']).default('repository') }).strict(),
-  'skills.save': z.object({ name: z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/).max(64), description: z.string().trim().min(1).max(1024), roles: z.array(AgentRole).max(10).default([]), body: z.string().min(1).max(200_000) }).strict(),
+  'skills.save': z.object({ name: z.string().regex(/^[a-z0-9]+(-[a-z0-9]+)*$/).max(64), description: z.string().trim().min(1).max(1024), roles: z.array(AgentRole).max(10).default([]), triggers: z.array(z.string().trim().min(1).max(60)).max(40).default([]), body: z.string().min(1).max(200_000) }).strict(),
   'skills.setEnabled': z.object({ name: z.string().max(64), enabled: z.boolean() }).strict(),
   'sync.preview': syncTarget,
   'sync.apply': syncTarget.extend({ id: z.string().regex(/^[0-9a-f]{64}$/) }).strict(),

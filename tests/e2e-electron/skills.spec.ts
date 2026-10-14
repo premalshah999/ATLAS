@@ -19,7 +19,9 @@ test('bundled skills are listed; a repository skill is untrusted until imported'
     await expect(page.getByTestId('workspace-card')).toContainText('sample-app');
     await page.keyboard.press('Control+,');
     const skills = page.getByTestId('skills');
-    await expect(skills.locator('[data-testid="skill-row"][data-source="bundled"]')).toHaveCount(7);
+    await expect(skills.locator('[data-testid="skill-row"][data-source="bundled"]')).toHaveCount(17);
+    // Each bundled skill says when ATLAS recommends it (ADR 0029).
+    await expect(skills.locator('[data-testid="skill-row"][data-name="flaky-test-hunter"] [data-testid="skill-triggers"]')).toContainText('Recommended when a task mentions: flak*, intermittent*');
     await expect(skills).toContainText('reproduce-before-fix');
     const repoRow = skills.locator('[data-testid="skill-row"][data-source="repository"]');
     await expect(repoRow).toContainText('house-style');

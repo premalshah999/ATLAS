@@ -314,7 +314,12 @@ export function DesktopPanel({ snap, events }: { snap: MissionSnapshot; events: 
     if (!live) { setFrame(null); return; }
     let stop = false;
     const tick = async () => {
-      try { const f = await call('desktop.frame', { sessionId: live.id }); if (!stop) { setFrame(`data:image/png;base64,${f.png}`); setSessions((s) => s.map((x) => (x.id === f.info.id ? f.info : x))); } } catch { /* session ended */ }
+      try { const f = await call('desktop.frame', { sessionId: live.id }); if (!stop) { setFrame(`data:image/png;base64,${f.png}`); setSessions((s) => s.map((x) => (x.id === f.info.id ? f.info : x))); } }
+      catch {
+        // The session ended: stop asking for its frames and drop it, instead of polling a session that is gone.
+        if (!stop) { stop = true; setSessions((s) => s.filter((x) => x.id !== live.id)); }
+        return;
+      }
       if (!stop) window.setTimeout(() => void tick(), 1000);
     };
     void tick();

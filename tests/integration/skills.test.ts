@@ -33,6 +33,22 @@ describe('skills in missions', () => {
     const ctx = h.artifacts.list(id).find((a) => a.kind === 'context')!;
     expect(h.artifacts.read(ctx.id).text).toMatch(/Skills \(reviewed procedures you can load\)[\s\S]*reproduce-before-fix:/);
     expect(h.repo.mission(id)!.verdict).toBe('verified');
+    // The load counts toward the skill's record, with the mission's outcome (ADR 0029).
+    expect(h.repo.skillUsage()['reproduce-before-fix']).toEqual({ missions: 1, verified: 1, failed: 0 });
+  });
+
+  it('the skills that fit the task are recommended first, with the words that matched, and the recommendation is recorded (ADR 0029)', async () => {
+    const h = makeOrchestrator({ skillsDir: BUNDLED, scripts: [forTask('implement', [w('src/slugify.js', SAMPLE_FIX), { claim: 'done' }])] });
+    const id = await startMission(h, sampleRepo(), { goal: 'Fix the bug: slugify() is broken for titles with punctuation, and the test fails.' });
+    await h.orch.settle(id);
+    const built = h.events.filter((e) => e.type === 'context.built');
+    const coder = built.find((e) => e.taskId === h.repo.tasks(id).find((t) => t.key === 'implement')!.id)!;
+    expect((coder.payload.skillsRecommended as { name: string; matched: string[] }[])[0]).toEqual({ name: 'reproduce-before-fix', matched: ['bug', 'fix', 'fails', 'broken'] });
+    const ctx = h.artifacts.list(id).find((a) => a.kind === 'context' && a.taskId === coder.taskId)!;
+    expect(h.artifacts.read(ctx.id).text).toMatch(/Recommended for this task \(load the first before you start\):\n- reproduce-before-fix: matches "bug", "fix", "fails", "broken"/);
+    // A reviewer is recommended what fits its role, never a coder-only skill.
+    const reviewer = built.find((e) => e.taskId === h.repo.tasks(id).find((t) => t.key === 'review')!.id)!;
+    expect(((reviewer.payload.skillsRecommended ?? []) as { name: string }[]).map((r) => r.name)).not.toContain('reproduce-before-fix');
   });
 
   it('a skill committed to the repository is not offered, not loadable, and not in the context', async () => {

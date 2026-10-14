@@ -24,6 +24,10 @@ export interface SkillMeta {
   /** Roles the skill is offered to. Empty: every role that can read files. */
   roles: string[];
   version: string;
+  /** Words or phrases that make the skill relevant to a task (matched against its objective and criteria). */
+  triggers: string[];
+  /** Tools the procedure relies on; checked against the roles that are offered the skill. */
+  tools: string[];
 }
 
 export interface Skill extends SkillMeta {
@@ -66,8 +70,10 @@ export function parseSkill(text: string): { meta: SkillMeta; body: string } {
   const description = str('description');
   if (!NAME.test(name) || name.length > 64) throw new AtlasError('invalid_request', `Skill name must be lowercase words joined by hyphens (got "${name}")`);
   if (!description || description.length > 1024) throw new AtlasError('invalid_request', `Skill ${name} needs a description of at most 1024 characters`);
-  const roles = Array.isArray(fields.roles) ? fields.roles : str('roles') ? [str('roles')] : [];
-  return { meta: { name, description, roles, version: str('version') || '1' }, body: m[2].trim() };
+  const list = (k: string) => (Array.isArray(fields[k]) ? (fields[k] as string[]) : str(k) ? [str(k)] : []);
+  const triggers = list('triggers').map((t) => t.toLowerCase().trim()).filter(Boolean);
+  if (triggers.length > 40 || triggers.some((t) => t.length > 60)) throw new AtlasError('invalid_request', `Skill ${name}: at most 40 triggers of up to 60 characters`);
+  return { meta: { name, description, roles: list('roles'), version: str('version') || '1', triggers, tools: list('tools') }, body: m[2].trim() };
 }
 
 function unquote(v: string): string {
@@ -134,9 +140,30 @@ export function harnessSkillDirs(home = os.homedir(), root?: string): { origin: 
 }
 
 /** SKILL.md text for an operator-authored skill. Values are quoted; the parser below must read them back exactly. */
-export function renderSkill(m: { name: string; description: string; roles: string[]; version?: string }, body: string): string {
+export function renderSkill(m: { name: string; description: string; roles: string[]; version?: string; triggers?: string[] }, body: string): string {
   const q = (s: string) => `"${s.replace(/"/g, "'").replace(/\r?\n/g, ' ')}"`;
-  return `---\nname: ${m.name}\ndescription: ${q(m.description)}\n${m.roles.length ? `roles: [${m.roles.join(', ')}]\n` : ''}version: ${q(m.version ?? '1')}\n---\n${body.trim()}\n`;
+  const triggers = (m.triggers ?? []).map((t) => t.replace(/[,[\]"'\r\n]/g, ' ').trim()).filter(Boolean);
+  return `---\nname: ${m.name}\ndescription: ${q(m.description)}\n${m.roles.length ? `roles: [${m.roles.join(', ')}]\n` : ''}${triggers.length ? `triggers: [${triggers.join(', ')}]\n` : ''}version: ${q(m.version ?? '1')}\n---\n${body.trim()}\n`;
+}
+
+/**
+ * Skills that fit a task, best first. Each trigger found in the task's text counts once: whole words in any case, and
+ * a trailing * matches any word that starts with it ("flak*" matches flaky and flakiness). Deterministic and
+ * explainable: the matched triggers come back with each recommendation.
+ */
+export function recommendSkills(skills: Skill[], taskText: string, max = 3): { skill: Skill; matched: string[] }[] {
+  const text = taskText.toLowerCase();
+  const esc = (w: string) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const matches = (t: string) => {
+    const stem = t.endsWith('*');
+    const words = (stem ? t.slice(0, -1) : t).trim().split(/\s+/).map(esc).join('\\s+');
+    return new RegExp(`(^|[^a-z0-9])${words}${stem ? '[a-z0-9]*' : ''}(?![a-z0-9])`).test(text);
+  };
+  return skills
+    .map((skill) => ({ skill, matched: skill.triggers.filter(matches) }))
+    .filter((r) => r.matched.length > 0)
+    .sort((a, b) => b.matched.length - a.matched.length || a.skill.name.localeCompare(b.skill.name))
+    .slice(0, max);
 }
 
 export class SkillLibrary {
@@ -212,7 +239,7 @@ export class SkillLibrary {
   }
 
   /** Write or replace an operator skill authored in ATLAS. Reference files of an existing operator skill are kept. */
-  saveOperator(m: { name: string; description: string; roles: string[]; version?: string }, body: string): Skill {
+  saveOperator(m: { name: string; description: string; roles: string[]; version?: string; triggers?: string[] }, body: string): Skill {
     const text = renderSkill(m, body);
     const parsed = parseSkill(text);
     if (parsed.meta.name !== m.name || parsed.meta.description !== m.description.replace(/"/g, "'").replace(/\r?\n/g, ' ')) throw new AtlasError('invalid_request', 'The skill could not be written faithfully');
@@ -248,9 +275,17 @@ export class SkillLibrary {
   }
 
   /** Index shown in an agent's context: names and descriptions only (progressive disclosure). */
-  index(role: string): string {
+  /** The skill index for a role; with the task's text, the skills that fit it come first, with why (ADR 0029). */
+  index(role: string, taskText = ''): string {
     const list = this.forRole(role);
     if (!list.length) return '';
-    return `Load a skill with load_skill when its description matches your situation; follow its procedure. Skills are procedures, not evidence.\n${list.map((s) => `- ${s.name}: ${s.description}`).join('\n')}`;
+    const rec = taskText ? recommendSkills(list, taskText) : [];
+    const top = rec.length ? `Recommended for this task (load the first before you start):\n${rec.map((r) => `- ${r.skill.name}: matches ${r.matched.map((m) => `"${m}"`).join(', ')}`).join('\n')}\n\n` : '';
+    return `${top}Load a skill with load_skill when its description matches your situation; follow its procedure. Skills are procedures, not evidence.\n${list.map((s) => `- ${s.name}: ${s.description}`).join('\n')}`;
+  }
+
+  /** The recommendations alone, for the record of what the agent was offered. */
+  recommend(role: string, taskText: string): { name: string; matched: string[] }[] {
+    return recommendSkills(this.forRole(role), taskText).map((r) => ({ name: r.skill.name, matched: r.matched }));
   }
 }

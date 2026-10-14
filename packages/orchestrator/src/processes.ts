@@ -106,7 +106,7 @@ export class BackgroundProcesses {
     void started.done.then((code) => {
       if (p.exit) return;
       p.exit = { code, stopped: p.stopping, at: Date.now(), artifactId: '' };
-      p.exit.artifactId = this.hooks.ended(p, { exitCode: code, stopped: p.stopping });
+      try { p.exit.artifactId = this.hooks.ended(p, { exitCode: code, stopped: p.stopping }); } catch { /* recording failed (shutting down); the process is still over */ }
       for (const w of p.wake) w();
     });
     // Until it prints the expected text, says which port it listens on, exits, or the wait is over.

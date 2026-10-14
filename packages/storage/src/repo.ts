@@ -6,6 +6,10 @@ type Row = Record<string, any>;
 const j = (v: unknown) => JSON.stringify(v);
 const p = <T>(v: string): T => JSON.parse(v) as T;
 
+const toEvent = (r: Row): AtlasEvent => ({
+  missionId: r.mission_id, seq: r.seq, type: r.type, ts: r.ts, actor: p(r.actor), taskId: r.task_id, attemptId: r.attempt_id, payload: p(r.payload), artifactIds: p(r.artifact_ids),
+});
+
 export class Repo {
   private listeners = new Set<(e: AtlasEvent) => void>();
   constructor(readonly db: Db) {}
@@ -26,9 +30,52 @@ export class Repo {
   }
 
   eventsSince(missionId: string, afterSeq: number, limit = 2000): AtlasEvent[] {
-    return (this.db.prepare('SELECT * FROM events WHERE mission_id = ? AND seq > ? ORDER BY seq LIMIT ?').all(missionId, afterSeq, limit) as Row[]).map((r) => ({
-      missionId: r.mission_id, seq: r.seq, type: r.type, ts: r.ts, actor: p(r.actor), taskId: r.task_id, attemptId: r.attempt_id, payload: p(r.payload), artifactIds: p(r.artifact_ids),
-    }));
+    return (this.db.prepare('SELECT * FROM events WHERE mission_id = ? AND seq > ? ORDER BY seq LIMIT ?').all(missionId, afterSeq, limit) as Row[]).map(toEvent);
+  }
+
+  /**
+   * A mission's events chosen in SQL by type, task or attempt, oldest first. `last` keeps only the newest n. Without
+   * `last` every match is returned: a filter, never a silent cap (reading a whole log and filtering in memory dropped
+   * everything after its first 100,000 events).
+   */
+  events(missionId: string, f: { types?: readonly string[]; taskId?: string; attemptId?: string; last?: number } = {}): AtlasEvent[] {
+    const where = ['mission_id = ?'];
+    const args: (string | number)[] = [missionId];
+    if (f.types?.length) { where.push(`type IN (${f.types.map(() => '?').join(',')})`); args.push(...f.types); }
+    if (f.taskId) { where.push('task_id = ?'); args.push(f.taskId); }
+    if (f.attemptId) { where.push('attempt_id = ?'); args.push(f.attemptId); }
+    const sql = `SELECT * FROM events WHERE ${where.join(' AND ')} ORDER BY seq ${f.last ? 'DESC LIMIT ?' : 'ASC'}`;
+    if (f.last) args.push(f.last);
+    const rows = (this.db.prepare(sql).all(...args) as Row[]).map(toEvent);
+    return f.last ? rows.reverse() : rows;
+  }
+
+  /** The newest event of a type, or null. */
+  lastEvent(missionId: string, type: string): AtlasEvent | null { return this.events(missionId, { types: [type], last: 1 })[0] ?? null; }
+
+  /** Per skill: the missions that loaded it, and how many of those ended verified or failed (ADR 0029). */
+  skillUsage(): Record<string, { missions: number; verified: number; failed: number }> {
+    const rows = this.db.prepare(`SELECT json_extract(e.payload, '$.skill') AS skill, e.mission_id AS mission, m.verdict AS verdict
+      FROM events e JOIN missions m ON m.id = e.mission_id WHERE e.type = 'skill.loaded' GROUP BY skill, mission`).all() as Row[];
+    const out: Record<string, { missions: number; verified: number; failed: number }> = {};
+    for (const r of rows) {
+      if (!r.skill) continue;
+      const u = (out[r.skill] ??= { missions: 0, verified: 0, failed: 0 });
+      u.missions++;
+      if (r.verdict === 'verified') u.verified++;
+      else if (r.verdict === 'failed') u.failed++;
+    }
+    return out;
+  }
+
+  /** How many events of a type a mission has, counted in SQL. */
+  countEvents(missionId: string, type: string): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS n FROM events WHERE mission_id = ? AND type = ?').get(missionId, type) as Row).n);
+  }
+
+  /** The sequence number of a mission's newest event (0 when it has none). */
+  lastSeq(missionId: string): number {
+    return Number((this.db.prepare('SELECT MAX(seq) AS s FROM events WHERE mission_id = ?').get(missionId) as Row | undefined)?.s ?? 0);
   }
 
   /* ---------- process journal (orphan reaping after a crash) ---------- */

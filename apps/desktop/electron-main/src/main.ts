@@ -219,7 +219,7 @@ app.whenReady().then(() => {
   registerIpc();
   createWindow();
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-});
+}).catch((e: Error) => { process.stderr.write(`ATLAS failed to start: ${e.stack ?? e.message}\n`); app.exit(1); });
 
 app.on('web-contents-created', (_e, contents) => {
   contents.on('will-attach-webview', (e) => e.preventDefault());

@@ -125,4 +125,13 @@ export const MIGRATIONS: { version: number; sql: string }[] = [
       ALTER TABLE findings ADD COLUMN source TEXT NOT NULL DEFAULT 'review';
     `,
   },
+  {
+    version: 9,
+    sql: `
+      -- Event lookups by type, task and attempt run in SQL instead of reading a whole mission's log.
+      CREATE INDEX events_type ON events(mission_id, type, seq);
+      CREATE INDEX events_task ON events(mission_id, task_id, seq);
+      CREATE INDEX events_attempt ON events(attempt_id, seq) WHERE attempt_id IS NOT NULL;
+    `,
+  },
 ];

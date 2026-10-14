@@ -153,7 +153,7 @@ type Results = {
   'credentials.remove': Credentials;
 };
 
-export interface SkillView { name: string; description: string; roles: string[]; version: string; source: 'bundled' | 'operator' | 'repository' | 'external'; hash: string; files: string[]; enabled: boolean; origin?: string }
+export interface SkillView { name: string; description: string; roles: string[]; version: string; source: 'bundled' | 'operator' | 'repository' | 'external'; hash: string; files: string[]; enabled: boolean; origin?: string; triggers: string[]; tools: string[]; usage?: { missions: number; verified: number; failed: number } }
 export interface SkillsState { trusted: SkillView[]; repository: SkillView[]; external: SkillView[]; errors: string[] }
 export interface SyncChange { kind: 'skill' | 'mcp'; name: string; path: string; action: 'create' | 'update' | 'delete' | 'unchanged' | 'conflict'; reason?: string }
 export interface SyncPreview { id: string; changes: SyncChange[]; notes: string[]; locations: { skills: string | null; mcp: string | null } }

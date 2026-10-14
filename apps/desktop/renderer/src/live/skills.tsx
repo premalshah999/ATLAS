@@ -10,7 +10,7 @@ import { roleName } from './format';
 import { toast } from './toast';
 
 const ROLES: AgentRole[] = ['orchestrator', 'coder', 'reviewer', 'tester', 'browser_qa', 'desktop_operator', 'deployment_verifier'];
-type Draft = { name: string; description: string; roles: AgentRole[]; body: string; editing: boolean };
+type Draft = { name: string; description: string; roles: AgentRole[]; triggers: string; body: string; editing: boolean };
 
 /** Body of a SKILL.md: everything after the front matter. */
 const bodyOf = (text: string) => text.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '').trim();
@@ -30,7 +30,7 @@ export function SkillsSection() {
     if (open?.key === key(s)) { setOpen(null); return; }
     void read(s).then((r) => setOpen({ key: key(s), text: r.text })).catch((e) => toast({ tone: 'danger', title: 'Not readable', body: (e as Error).message }));
   };
-  const edit = (s: SkillView) => void read(s).then((r) => setDraft({ name: s.name, description: s.description, roles: s.roles as AgentRole[], body: bodyOf(r.text), editing: s.source === 'operator' })).catch(() => {});
+  const edit = (s: SkillView) => void read(s).then((r) => setDraft({ name: s.name, description: s.description, roles: s.roles as AgentRole[], triggers: s.triggers.join(', '), body: bodyOf(r.text), editing: s.source === 'operator' })).catch(() => {});
   const importIt = (s: SkillView) => void call('skills.import', { name: s.name, hash: s.hash, from: s.source === 'external' ? 'external' : 'repository', ...(ws ? { workspaceId: ws } : {}) })
     .then((r) => { setState(r); setOpen(null); toast({ tone: 'info', title: `Imported ${s.name}`, body: 'This exact version is now offered to agents.' }); })
     .catch((e) => toast({ tone: 'danger', title: 'Not imported', body: (e as Error).message }));
@@ -52,6 +52,8 @@ export function SkillsSection() {
         </div>
         <span className="at-muted lv-small">{s.description}</span>
         <span className="at-subtle lv-small">Offered to: {s.roles.length ? s.roles.map(roleName).join(', ') : 'every role'}{s.files.length > 1 ? ` · ${s.files.length - 1} reference file${s.files.length > 2 ? 's' : ''}` : ''}</span>
+        {s.triggers?.length > 0 && <span className="at-subtle lv-small" data-testid="skill-triggers">Recommended when a task mentions: {s.triggers.slice(0, 10).join(', ')}{s.triggers.length > 10 ? ` and ${s.triggers.length - 10} more` : ''}</span>}
+        {s.usage && <span className="at-subtle lv-small" data-testid="skill-usage">Loaded in {s.usage.missions} mission{s.usage.missions === 1 ? '' : 's'} · {s.usage.verified} verified · {s.usage.failed} failed</span>}
         {open?.key === key(s) && <pre className="lv-proc-body" style={{ maxHeight: 300, whiteSpace: 'pre-wrap' }}>{open.text}</pre>}
       </div>
     );
@@ -63,7 +65,7 @@ export function SkillsSection() {
       <p className="at-muted lv-small" style={{ margin: 0 }}>Reviewed procedures agents can load when relevant. Every load is recorded with the skill's hash. Skills describe how to work; ATLAS still verifies every result independently. Turn a skill off to stop offering it without deleting it.</p>
       {state?.trusted.map(row)}
       {draft ? <SkillForm draft={draft} onCancel={() => setDraft(null)} onSaved={(r) => { setState(r); setDraft(null); void reload(); }} /> : (
-        <div><Button size="sm" data-testid="skill-new" onClick={() => setDraft({ name: '', description: '', roles: [], body: '# When to use\n\n# Steps\n1. ', editing: false })}>New skill</Button></div>
+        <div><Button size="sm" data-testid="skill-new" onClick={() => setDraft({ name: '', description: '', roles: [], triggers: '', body: '## When to use\n\n## Procedure\n1. \n\n## Rules\n- ', editing: false })}>New skill</Button></div>
       )}
       {workspaces.length > 0 && (
         <>
@@ -86,7 +88,8 @@ export function SkillsSection() {
 function SkillForm({ draft, onCancel, onSaved }: { draft: Draft; onCancel: () => void; onSaved: (s: SkillsState) => void }) {
   const [d, setD] = useState(draft);
   const problem = !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(d.name) ? 'Name: lowercase words joined by hyphens.' : !d.description.trim() ? 'A description tells agents when to load it.' : !d.body.trim() ? 'Write the procedure.' : null;
-  const save = () => void call('skills.save', { name: d.name, description: d.description, roles: d.roles, body: d.body })
+  const triggers = d.triggers.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
+  const save = () => void call('skills.save', { name: d.name, description: d.description, roles: d.roles, triggers, body: d.body })
     .then((r) => { toast({ tone: 'info', title: `Saved ${d.name}`, body: 'Offered to agents from their next attempt.' }); onSaved(r); })
     .catch((e) => toast({ tone: 'danger', title: 'Skill not saved', body: (e as Error).message }));
   return (
@@ -95,6 +98,9 @@ function SkillForm({ draft, onCancel, onSaved }: { draft: Draft; onCancel: () =>
         <Input data-testid="skill-form-name" value={d.name} onChange={(e) => setD({ ...d, name: e.target.value })} placeholder="release-notes" maxLength={64} disabled={d.editing} />
       </Field>
       <Field label="Description" help="Agents see this in their skill index and load the skill when it matches."><Input data-testid="skill-form-description" value={d.description} onChange={(e) => setD({ ...d, description: e.target.value })} maxLength={1024} /></Field>
+      <Field label="Recommend when the task mentions" help="Comma-separated words or phrases; end a word with * to match its forms (flak* matches flaky). ATLAS recommends the skill to agents whose task matches.">
+        <Input data-testid="skill-form-triggers" value={d.triggers} onChange={(e) => setD({ ...d, triggers: e.target.value })} placeholder="release, changelog, version bump" maxLength={1200} />
+      </Field>
       <Field label="Offered to" help="None selected: every role.">
         <div className="at-row" style={{ gap: 10, flexWrap: 'wrap' }}>
           {ROLES.map((r) => <span key={r} className="at-row lv-small" style={{ gap: 6 }}><Check on={d.roles.includes(r)} onChange={(v) => setD({ ...d, roles: v ? [...d.roles, r] : d.roles.filter((x) => x !== r) })} label={roleName(r)} />{roleName(r)}</span>)}

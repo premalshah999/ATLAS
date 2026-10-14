@@ -439,8 +439,7 @@ ${r.text}`) });
     const m = this.repo.mission(missionId);
     const task = this.repo.task(taskId);
     if (!m || !task) return 'No mission record.';
-    const ev = this.repo.eventsSince(missionId, 0, 100_000);
-    const mine = ev.filter((e) => e.taskId === taskId);
+    const mine = this.repo.events(missionId, { taskId });
     const want = (s: string) => section === 'all' || section === s;
     const out: string[] = ['Mission memory: exact records kept by ATLAS (ground truth, not a summary).'];
     if (want('task')) {
@@ -480,7 +479,8 @@ function ok(output: string): ToolResult { return { ok: true, output, exitCode: n
 
 export function describe(tool: string, a: Record<string, any>): string {
   switch (tool) {
-    case 'shell_exec': return redact([a.command, ...(a.args ?? [])].join(' ') + (a.cwd && a.cwd !== '.' ? `   (in ${a.cwd})` : ''));
+    // Standard input is part of what runs: an approver must see it (it can be the whole program).
+    case 'shell_exec': return redact([a.command, ...(a.args ?? [])].join(' ') + (a.cwd && a.cwd !== '.' ? `   (in ${a.cwd})` : '') + (typeof a.stdin === 'string' && a.stdin ? `\n--- standard input${a.stdin.length > 4000 ? ` (first 4,000 of ${a.stdin.length} characters)` : ''} ---\n${a.stdin.slice(0, 4000)}` : ''));
     case 'process_start': return redact(`${a.serve ? 'serve' : 'background'}: ${[a.command, ...(a.args ?? [])].join(' ')}${a.cwd && a.cwd !== '.' ? `   (in ${a.cwd})` : ''}`);
     case 'process_read': case 'process_stop': return `${tool.slice(8)} ${a.id}`;
     case 'read_file': case 'list_files': case 'write_file': return a.path;

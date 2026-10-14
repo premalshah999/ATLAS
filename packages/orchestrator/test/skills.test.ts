@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseSkill, SkillLibrary } from '../src/skills';
+import { parseSkill, recommendSkills, SkillLibrary, type Skill } from '../src/skills';
+import { ROLES } from '../src/roles';
+import { TOOL_SPECS } from '../src/toolgate';
 import { tmpDir } from '../../../tests/helpers';
 
 const BUNDLED = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../skills');
@@ -13,7 +15,8 @@ const skill = (root: string, name: string, front: string, body = '# Body\nDo the
 
 describe('parseSkill', () => {
   it('reads name, description, roles (inline and block lists) and version', () => {
-    expect(parseSkill('---\nname: a-b\ndescription: "Does a, then b."\nroles: [coder, reviewer]\nversion: 3\n---\nBody').meta).toEqual({ name: 'a-b', description: 'Does a, then b.', roles: ['coder', 'reviewer'], version: '3' });
+    expect(parseSkill('---\nname: a-b\ndescription: "Does a, then b."\nroles: [coder, reviewer]\nversion: 3\n---\nBody').meta).toEqual({ name: 'a-b', description: 'Does a, then b.', roles: ['coder', 'reviewer'], version: '3', triggers: [], tools: [] });
+    expect(parseSkill('---\nname: x\ndescription: y\ntriggers: [Bug, flak*, not working]\ntools: [run_tests]\n---\n').meta).toMatchObject({ triggers: ['bug', 'flak*', 'not working'], tools: ['run_tests'] });
     expect(parseSkill('---\nname: x\ndescription: y\nroles:\n  - tester\n---\n').meta.roles).toEqual(['tester']);
   });
   it.each([
@@ -29,7 +32,7 @@ describe('SkillLibrary', () => {
     const lib = new SkillLibrary({ bundled: BUNDLED, operator: tmpDir() });
     const r = lib.trusted();
     expect(r.errors).toEqual([]);
-    expect(r.skills.map((s) => s.name)).toEqual(['architecture-tournament', 'deployment-detective', 'evidence-report', 'experimental-scientist', 'reproduce-before-fix', 'ruthless-simplifier', 'skeptical-review']);
+    expect(r.skills.map((s) => s.name)).toEqual(['api-compatibility', 'architecture-tournament', 'codebase-orientation', 'data-migration-safety', 'delegation-planner', 'dependency-upgrade', 'deployment-detective', 'evidence-report', 'experimental-scientist', 'flaky-test-hunter', 'frontend-verification', 'reproduce-before-fix', 'ruthless-simplifier', 'safe-refactor', 'skeptical-review', 'test-first-feature', 'threat-model']);
     expect(r.skills.every((s) => s.source === 'bundled' && /^[0-9a-f]{64}$/.test(s.hash))).toBe(true);
   });
 
@@ -121,3 +124,62 @@ describe('skills authored in ATLAS, disabled skills, other tools\' skills (ADR 0
     expect(lib.importFromHarness('from-opencode', oc.hash, home)).toMatchObject({ name: 'from-opencode', source: 'operator', hash: oc.hash });
   });
 });
+
+/** Tools a role can actually use: its own, plus what ATLAS offers every task (ADR 0024, 0026, 0013). */
+function toolsOf(role: string): Set<string> {
+  const own = [...(ROLES[role as keyof typeof ROLES]?.tools ?? [])];
+  return new Set([...own, 'mission_memory', 'code_graph', 'load_skill', 'read_skill_file', ...(own.includes('shell_exec') ? ['process_start', 'process_read', 'process_stop', 'process_list'] : [])]);
+}
+const TOOL_NAMES = new Set([...TOOL_SPECS.map((t) => t.name), 'inspect_logs']);
+
+describe('the bundled skill library is consistent with the harness (ADR 0029)', () => {
+  const lib = new SkillLibrary({ bundled: BUNDLED, operator: tmpDir() });
+  const skills = lib.trusted().skills;
+  it.each(skills.map((s) => [s.name, s] as [string, Skill]))('%s: roles exist, tools exist and its roles hold them, references resolve, sections and triggers present', (_n, s) => {
+    const body = readFileSync(path.join(s.dir, 'SKILL.md'), 'utf8');
+    for (const r of s.roles) expect(Object.keys(ROLES), `role ${r}`).toContain(r);
+    expect(s.tools.length, 'declares the tools it relies on').toBeGreaterThan(0);
+    const roles = s.roles.length ? s.roles : Object.keys(ROLES);
+    for (const t of s.tools) {
+      expect(TOOL_NAMES.has(t), `tool ${t} exists`).toBe(true);
+      expect(roles.some((r) => toolsOf(r).has(t)), `some role of ${s.name} can use ${t}`).toBe(true);
+    }
+    // Every tool the procedure tells an agent to use is declared, so the check above covers it.
+    const mentioned = [...body.matchAll(/`([a-z]+(?:_[a-z]+)+)`/g)].map((m) => m[1]).filter((t) => TOOL_NAMES.has(t));
+    for (const t of mentioned) expect(s.tools, `${s.name} mentions ${t}`).toContain(t);
+    for (const ref of body.matchAll(/references\/[\w.-]+\.md/g)) expect(s.files, `${s.name} links ${ref[0]}`).toContain(ref[0]);
+    expect(body).toMatch(/^## When to use$/m);
+    expect(body).toMatch(/^## (Procedure|Structure)$/m);
+    expect(body).toMatch(/^## Rules$/m);
+    expect(s.triggers.length, 'has triggers').toBeGreaterThanOrEqual(3);
+    expect(Number(s.version)).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each([
+    ['coder', 'Fix: slugify crashes on empty titles and the test fails', 'reproduce-before-fix'],
+    ['coder', 'Add a CSV export endpoint for orders', 'test-first-feature'],
+    ['tester', 'The login test fails intermittently on CI with a timeout', 'flaky-test-hunter'],
+    ['coder', 'Refactor the billing module: extract the tax calculation into its own file', 'safe-refactor'],
+    ['coder', 'Upgrade express to version 5 and fix the deprecations', 'dependency-upgrade'],
+    ['coder', 'Add a migration that renames the users.fullname column', 'data-migration-safety'],
+    ['security_reviewer', 'Add a password reset endpoint that emails a token', 'threat-model'],
+    ['browser_qa', 'Check the signup form on mobile', 'frontend-verification'],
+    ['reviewer', 'Change the response schema of the public /v1/users API', 'api-compatibility'],
+    ['coder', 'Make the search page faster: the latency is too high', 'experimental-scientist'],
+  ])('%s, "%s" → %s first', (role, task, expected) => {
+    const rec = recommendSkills(lib.forRole(role), task);
+    expect(rec[0]?.skill.name, JSON.stringify(rec.map((r) => [r.skill.name, r.matched]))).toBe(expected);
+  });
+
+  it('matching is whole-word, case-insensitive, with stems, and never recommends a skill the role is not offered', () => {
+    const one = (triggers: string[]) => ({ name: 'x', description: 'x', roles: [], version: '1', triggers, tools: [], source: 'bundled', dir: '', hash: '', files: [] }) as Skill;
+    expect(recommendSkills([one(['bug'])], 'Debugging session')).toEqual([]);
+    expect(recommendSkills([one(['bug'])], 'A BUG in parsing')[0].matched).toEqual(['bug']);
+    expect(recommendSkills([one(['flak*'])], 'flakiness on CI')[0].matched).toEqual(['flak*']);
+    expect(recommendSkills([one(['not working'])], 'login is not  working')[0].matched).toEqual(['not working']);
+    expect(lib.recommend('browser_qa', 'Fix the crash bug').map((r) => r.name)).not.toContain('reproduce-before-fix');
+    expect(lib.index('coder', 'Fix the crash bug')).toMatch(/^Recommended for this task \(load the first before you start\):\n- reproduce-before-fix: matches "bug", "fix", "crash\*"/);
+    expect(lib.index('coder')).not.toMatch(/Recommended/);
+  });
+});
+

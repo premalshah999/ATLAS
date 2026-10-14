@@ -217,12 +217,12 @@ export class PiRuntime implements AgentRuntime {
           if (m.usage) {
             tokens += (m.usage.input ?? 0) + (m.usage.output ?? 0);
             queue.push({ type: 'usage', inputTokens: m.usage.input ?? 0, outputTokens: m.usage.output ?? 0 });
-            if (tokens > input.budget.maxTokens && !budgetHit) { budgetHit = true; void session.abort(); }
+            if (tokens > input.budget.maxTokens && !budgetHit) { budgetHit = true; void session.abort().catch(() => {}); }
           }
           break;
         }
         case 'tool_execution_start':
-          if (++calls > input.budget.maxToolCalls && !budgetHit) { budgetHit = true; void session.abort(); }
+          if (++calls > input.budget.maxToolCalls && !budgetHit) { budgetHit = true; void session.abort().catch(() => {}); }
           queue.push({ type: 'tool_call', callId: e.toolCallId, tool: e.toolName, args: e.args ?? {} });
           break;
         case 'tool_execution_end': {
@@ -242,9 +242,9 @@ export class PiRuntime implements AgentRuntime {
       }
     });
 
-    const onAbort = () => { void session.abort(); };
+    const onAbort = () => { void session.abort().catch(() => {}); };
     input.signal.addEventListener('abort', onAbort, { once: true });
-    const wall = setTimeout(() => { budgetHit = true; void session.abort(); }, input.budget.wallClockMs);
+    const wall = setTimeout(() => { budgetHit = true; void session.abort().catch(() => {}); }, input.budget.wallClockMs);
 
     const done = (async () => {
       try {
@@ -297,7 +297,7 @@ Rules: at most ${req.maxTasks} tasks; no cycles; only tools listed for each role
     const unsub = session.subscribe((e: any) => {
       if (e.type === 'message_end' && e.message?.role === 'assistant' && e.message.usage) { inputTokens += e.message.usage.input ?? 0; outputTokens += e.message.usage.output ?? 0; }
     });
-    const onAbort = () => { void session.abort(); };
+    const onAbort = () => { void session.abort().catch(() => {}); };
     req.signal.addEventListener('abort', onAbort, { once: true });
     try {
       if (session.getActiveToolNames().length) throw new Error('Planner session unexpectedly has tools');

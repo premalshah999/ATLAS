@@ -20,7 +20,7 @@ function seed(repo: Repo) {
 describe('storage', () => {
   it('applies migrations once with WAL and foreign keys', () => {
     const { db } = setup();
-    expect(schemaVersion(db)).toBe(8);
+    expect(schemaVersion(db)).toBe(9);
     expect((db.prepare('PRAGMA journal_mode').get() as any).journal_mode).toBe('wal');
     expect((db.prepare('PRAGMA foreign_keys').get() as any).foreign_keys).toBe(1);
   });
@@ -35,7 +35,7 @@ describe('storage', () => {
     db.exec("DELETE FROM schema_migrations WHERE version = 5; ALTER TABLE missions DROP COLUMN verdict; DROP TABLE process_journal;");
     db.close();
     ({ db, repo } = setup(dir));
-    expect(schemaVersion(db)).toBe(8);
+    expect(schemaVersion(db)).toBe(9);
     expect(repo.mission(id)!.verdict).toBe('unverified'); // the latest gate result wins
     repo.updateMission(id, { verdict: 'verified' });
     expect(repo.mission(id)!.verdict).toBe('verified');
@@ -53,7 +53,7 @@ describe('storage', () => {
     db.exec('DELETE FROM missions WHERE follow_up IS NOT NULL; DELETE FROM schema_migrations WHERE version = 6; ALTER TABLE missions DROP COLUMN follow_up;');
     db.close();
     ({ db, repo } = setup(dir));
-    expect(schemaVersion(db)).toBe(8);
+    expect(schemaVersion(db)).toBe(9);
     expect(repo.mission(id)!.followUp).toBeNull();
   });
 
@@ -69,7 +69,7 @@ describe('storage', () => {
     db.exec(`DELETE FROM missions WHERE id = '${other}'; DELETE FROM schema_migrations WHERE version IN (7, 8); ALTER TABLE missions DROP COLUMN model; ALTER TABLE findings DROP COLUMN source;`);
     db.close();
     ({ db, repo } = setup(dir));
-    expect(schemaVersion(db)).toBe(8);
+    expect(schemaVersion(db)).toBe(9);
     expect(repo.mission(id)!.model).toBeNull();
   });
 
@@ -117,4 +117,32 @@ describe('storage', () => {
     writeFileSync(path.join(dir, 'artifacts', a.id), 'tampered');
     expect(artifacts.read(a.id).intact).toBe(false);
   });
+
+  it('filters events in SQL by type, task and attempt, newest n with last, with no cap past 100,000', () => {
+    const { repo, db } = setup();
+    const id = seed(repo);
+    const sys = { kind: 'system' as const, component: 'test' };
+    // 100,050 events: more than the 100,000 the old whole-log reads stopped at.
+    for (let i = 0; i < 100_050; i++) repo.append({ missionId: id, taskId: i % 2 ? 'tsk_a' : 'tsk_b', attemptId: i % 3 ? null : 'att_1', type: 'process.output', actor: sys, payload: { i }, artifactIds: [] });
+    repo.append({ missionId: id, taskId: 'tsk_a', attemptId: 'att_1', type: 'forge.ci', actor: sys, payload: { state: 'failure' }, artifactIds: ['art_x'] });
+    repo.append({ missionId: id, taskId: null, attemptId: null, type: 'mission.state', actor: sys, payload: { to: 'running' }, artifactIds: [] });
+    repo.append({ missionId: id, taskId: null, attemptId: null, type: 'mission.state', actor: sys, payload: { to: 'completed' }, artifactIds: [] });
+
+    expect(repo.lastSeq(id)).toBe(100_053);
+    expect(repo.lastEvent(id, 'forge.ci')).toMatchObject({ seq: 100_051, artifactIds: ['art_x'] });
+    expect(repo.lastEvent(id, 'mission.state')!.payload.to).toBe('completed');
+    expect(repo.lastEvent(id, 'forge.published')).toBeNull();
+    expect(repo.events(id, { types: ['mission.state'] }).map((e) => e.payload.to)).toEqual(['running', 'completed']);
+    expect(repo.events(id, { types: ['mission.state', 'forge.ci'], last: 2 }).map((e) => e.seq)).toEqual([100_052, 100_053]);
+    // Events after the first 100,000 are found.
+    expect(repo.events(id, { taskId: 'tsk_a', types: ['forge.ci'] })).toHaveLength(1);
+    expect(repo.events(id, { attemptId: 'att_1' }).length).toBe(Math.ceil(100_050 / 3) + 1);
+    expect(repo.countEvents(id, 'process.output')).toBe(100_050);
+    expect(repo.lastSeq('msn_none')).toBe(0);
+    // Each lookup uses an index, not a scan of the log.
+    const plan = (sql: string, ...a: string[]) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...a) as { detail: string }[]).map((r) => r.detail).join(' ');
+    expect(plan('SELECT * FROM events WHERE mission_id = ? AND type IN (?) ORDER BY seq DESC LIMIT 1', id, 'forge.ci')).toMatch(/USING INDEX events_type/);
+    expect(plan('SELECT * FROM events WHERE mission_id = ? AND attempt_id = ? ORDER BY seq', id, 'att_1')).toMatch(/USING INDEX events_(attempt|task)|USING COVERING INDEX/);
+  }, 120_000);
 });
+

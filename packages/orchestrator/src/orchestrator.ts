@@ -470,7 +470,7 @@ export class Orchestrator {
     const ac = this.aborts.get(missionId) ?? new AbortController();
     this.aborts.set(missionId, ac);
     const m = this.repo.mission(missionId)!;
-    const startedAt = this.repo.eventsSince(missionId, 0).find((e) => e.type === 'mission.state' && e.payload.to === 'running')?.ts ?? nowIso();
+    const startedAt = this.repo.events(missionId, { types: ['mission.state'] }).find((e) => e.payload.to === 'running')?.ts ?? nowIso();
     const left = new Date(startedAt).getTime() + m.budget.maxWallClockMinutes * 60_000 - Date.now();
     this.budgetTimers.set(missionId, setTimeout(() => this.exceedBudget(missionId, `Wall-clock budget of ${m.budget.maxWallClockMinutes} min exhausted`), Math.max(0, left)));
     const p = this.loop(missionId, ac.signal)
@@ -505,13 +505,13 @@ export class Orchestrator {
 
   budgetReport(missionId: string) {
     const m = this.repo.mission(missionId)!;
-    const events = this.repo.eventsSince(missionId, 0, 100_000);
-    const running = events.find((e) => e.type === 'mission.state' && e.payload.to === 'running')?.ts;
-    const end = [...events].reverse().find((e) => e.type === 'mission.state' && ['completed', 'failed', 'cancelled'].includes(String(e.payload.to)))?.ts;
+    const states = this.repo.events(missionId, { types: ['mission.state'] });
+    const running = states.find((e) => e.payload.to === 'running')?.ts;
+    const end = [...states].reverse().find((e) => ['completed', 'failed', 'cancelled'].includes(String(e.payload.to)))?.ts;
     return {
       budget: m.budget,
       tokens: this.tokensUsed(missionId),
-      toolCalls: events.filter((e) => e.type === 'agent.tool_call').length,
+      toolCalls: this.repo.countEvents(missionId, 'agent.tool_call'),
       tasks: this.repo.tasks(missionId).length,
       agentsNow: this.activeAgents.get(missionId) ?? 0,
       elapsedMs: running ? new Date(end ?? nowIso()).getTime() - new Date(running).getTime() : 0,
@@ -699,15 +699,17 @@ export class Orchestrator {
       delegate: (args, s) => this.delegate(m, t, dir, args, s),
     }, this.repo, this.artifacts, this.o.executors ?? realExecutors);
 
-    const decisions = this.repo.eventsSince(m.id, 0, 100_000)
-      .filter((e) => ['plan.approved', 'approval.decided', 'attempt.ended', 'delegation.result', 'finding.reported'].includes(e.type))
+    // What the task is about, for choosing which skills to recommend (ADR 0029).
+    const taskText = [m.goal, m.constraints, t.title, ...t.acceptance].join('\n');
+    const recommended = this.skills.recommend(t.role, taskText);
+    const decisions = this.repo.events(m.id, { types: ['plan.approved', 'approval.decided', 'attempt.ended', 'delegation.result', 'finding.reported'] })
       .map((e) => `${e.ts} ${e.type}: ${JSON.stringify(e.payload).slice(0, 240)}`);
     const ctx = await buildContext({
       worktree: dir, base: m.baseCommit!, role: t.role, objective: m.goal, constraints: m.constraints, task: t, planSummary: `${plan.summary}\nTasks: ${plan.tasks.map((x) => `${x.key} (${x.role})`).join(', ')}`,
-      facts: this.facts(w.id), decisions, graph: (() => { const g = this.graphs.peek(m.baseCommit!); return g ? graphOverview(g, 15) : undefined; })(), includeDiff: t.role === 'reviewer' || t.role === 'tester' || t.role === 'security_reviewer', skills: this.skills.index(t.role), mcp: permitted.includes('mcp_call') ? this.o.mcp?.index(t.role) : undefined,
+      facts: this.facts(w.id), decisions, graph: (() => { const g = this.graphs.peek(m.baseCommit!); return g ? graphOverview(g, 15) : undefined; })(), includeDiff: t.role === 'reviewer' || t.role === 'tester' || t.role === 'security_reviewer', skills: this.skills.index(t.role, taskText), mcp: permitted.includes('mcp_call') ? this.o.mcp?.index(t.role) : undefined,
     });
     const ctxArt = this.artifacts.put({ missionId: m.id, taskId: t.id, kind: 'context', name: `Context · ${t.key} attempt ${number}`, content: ctx.text });
-    this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'context.built', actor: SYSTEM('context'), payload: { sources: ctx.sources, chars: ctx.text.length } });
+    this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'context.built', actor: SYSTEM('context'), payload: { sources: ctx.sources, chars: ctx.text.length, ...(recommended.length ? { skillsRecommended: recommended } : {}) } });
     const prompt = `Mission: ${m.title}\n\n${ctx.text}\n\nWork on task ${t.key} now.`;
 
     this.repo.updateAttempt(attempt.id, { state: 'running' });
@@ -769,7 +771,7 @@ export class Orchestrator {
     const cur = this.repo.task(t.id)!;
     if (outcome.kind === 'completed') {
       // The agent's summary is recorded as a claim. Evidence comes from the checkpoint and checks.
-      const transcript = this.artifacts.put({ missionId: m.id, taskId: t.id, kind: 'transcript', name: `Attempt ${number} transcript`, content: this.repo.eventsSince(m.id, 0, 100_000).filter((e) => e.attemptId === attempt.id).map((e) => `${e.ts} ${e.type} ${JSON.stringify(e.payload)}`).join('\n') });
+      const transcript = this.artifacts.put({ missionId: m.id, taskId: t.id, kind: 'transcript', name: `Attempt ${number} transcript`, content: this.repo.events(m.id, { attemptId: attempt.id }).map((e) => `${e.ts} ${e.type} ${JSON.stringify(e.payload)}`).join('\n') });
       this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'agent.message', actor: agent, payload: { text: outcome.summary, claim: true }, artifactIds: [transcript.id] });
       // Only writing roles produce integrated changes; anything else a non-writer touched is discarded.
       // A writer's result is its current HEAD: work may already be committed mid-attempt (e.g. before delegating).
@@ -851,7 +853,7 @@ export class Orchestrator {
     await this.runTask(cur, child, signal, [base]);
 
     const done = this.repo.task(child.id)!;
-    const claim = [...this.repo.eventsSince(m.id, 0, 100_000)].reverse().find((e) => e.taskId === child.id && e.type === 'agent.message' && e.payload.claim)?.payload.text;
+    const claim = [...this.repo.events(m.id, { taskId: child.id, types: ['agent.message'] })].reverse().find((e) => e.payload.claim)?.payload.text;
     if (done.state !== 'done') {
       this.emit({ missionId: m.id, taskId: child.id, type: 'delegation.result', actor: SYSTEM('scheduler'), payload: { parentKey: parent.key, childKey: child.key, status: done.state } });
       return { ok: false, output: `Subtask ${child.key} ended ${done.state}. No changes were merged.`, exitCode: null, artifactIds: [], error: 'process_failed' };
@@ -1063,7 +1065,7 @@ export class Orchestrator {
   }
 
   private definitionApproved(missionId: string, hash: string): boolean {
-    return this.repo.eventsSince(missionId, 0, 100_000).some((e) => e.type === 'operator.action' && e.payload.action === 'approve_definition' && e.payload.hash === hash);
+    return this.repo.events(missionId, { types: ['operator.action'] }).some((e) => e.payload.action === 'approve_definition' && e.payload.hash === hash);
   }
 
   /**
@@ -1257,7 +1259,7 @@ export class Orchestrator {
           if (session.pending.length >= 16_384) flush();
           else session.timer ??= setTimeout(flush, 8);
         },
-        onExit: (code) => { flush(); void this.closeTerminal(sessionId, code); session.io.onExit(sessionId, code); },
+        onExit: (code) => { flush(); void this.closeTerminal(sessionId, code).catch(() => {}); session.io.onExit(sessionId, code); },
       });
     } catch (e) {
       // A failed start must not keep the worktree locked for later sessions (review finding).
@@ -1487,8 +1489,7 @@ export class Orchestrator {
   // ---- Pull requests and CI (ADR 0015). Operator actions only; never a force push. ----
 
   private forgeRecords(missionId: string): { published: Published | null; ci: CiRecord | null } {
-    const ev = this.repo.eventsSince(missionId, 0, 100_000);
-    const last = (type: string) => [...ev].reverse().find((e) => e.type === type)?.payload ?? null;
+    const last = (type: string) => this.repo.lastEvent(missionId, type)?.payload ?? null;
     return { published: last('forge.published') as Published | null, ci: last('forge.ci') as CiRecord | null };
   }
 
@@ -1611,10 +1612,10 @@ export class Orchestrator {
     if (!this.o.forge?.()) return;
     for (const m of this.repo.missions()) {
       if (m.decision !== 'accepted') continue;
-      const ev = this.repo.eventsSince(m.id, 0, 100_000);
-      const pub = [...ev].reverse().find((e) => e.type === 'forge.published');
+      const pub = this.repo.lastEvent(m.id, 'forge.published');
       if (!pub || Date.now() - Date.parse(pub.ts) > 24 * 3600_000) continue;
-      const ci = [...ev].reverse().find((e) => e.type === 'forge.ci' && e.seq > pub.seq);
+      const lastCi = this.repo.lastEvent(m.id, 'forge.ci');
+      const ci = lastCi && lastCi.seq > pub.seq ? lastCi : undefined;
       if (ci && !['pending', 'none'].includes(String(ci.payload.state))) continue;
       await this.ciRefresh(m.id).catch(() => {});
     }
@@ -1635,7 +1636,7 @@ export class Orchestrator {
     const fetched = await git(w.root, ['fetch', '--no-tags', '--no-write-fetch-head', `https://github.com/${published.owner}/${published.repo}.git`, `+refs/heads/${published.branch}:${local}`], 180_000, forge.gitEnv());
     if (fetched.code !== 0) throw new AtlasError('network_unavailable', `Could not fetch ${published.branch}: ${redact(fetched.out).slice(-400)}`);
     const headSha = await gitOk(w.root, ['rev-parse', `${local}^{commit}`]);
-    const detailId = this.repo.eventsSince(m.id, 0, 100_000).reverse().find((e) => e.type === 'forge.ci')?.artifactIds[0];
+    const detailId = this.repo.lastEvent(m.id, 'forge.ci')?.artifactIds[0];
     const detail = detailId ? this.artifacts.read(detailId).text : '';
     const failing = ci.checks.filter((c) => c.conclusion && !['success', 'neutral', 'skipped'].includes(c.conclusion)).map((c) => c.name);
     const goal = [
@@ -1663,7 +1664,7 @@ export class Orchestrator {
   private async resumable(a: Attempt, t: Task): Promise<{ attemptId: string; number: number; commit: string; startCommit: string } | null> {
     const rt = this.o.runtimes[a.runtime];
     if (!rt?.canResume?.(a.id) || !t.worktree || !existsSync(t.worktree)) return null;
-    const started = this.repo.eventsSince(a.missionId, 0, 100_000).find((e) => e.type === 'attempt.started' && e.attemptId === a.id);
+    const started = this.repo.events(a.missionId, { attemptId: a.id, types: ['attempt.started'] })[0];
     const startCommit = typeof started?.payload.startCommit === 'string' ? started.payload.startCommit : null;
     if (!startCommit || started?.payload.worktree !== t.worktree) return null;
     await checkpoint(t.worktree, `ATLAS ${a.missionId} ${t.key} attempt ${a.number} (interrupted)`);

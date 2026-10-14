@@ -44,7 +44,7 @@ export class Pipeline {
     if (!['mission.decision', 'forge.ci', 'mission.state'].includes(e.type)) return;
     // Let the action that emitted the event finish first (state written, response returned).
     const p = new Promise<void>((r) => setImmediate(r)).then(() => this.handle(e)).catch((err: Error) => {
-      if (this.repo.mission(e.missionId)) this.note(e.missionId, 'error', false, `Automatic step failed: ${err.message.slice(0, 300)}`);
+      try { if (this.repo.mission(e.missionId)) this.note(e.missionId, 'error', false, `Automatic step failed: ${err.message.slice(0, 300)}`); } catch { /* storage closed: nothing left to record into */ }
     });
     this.inflight.add(p);
     void p.finally(() => this.inflight.delete(p));

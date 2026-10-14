@@ -24,6 +24,9 @@ export interface PipelineView { stages: PipelineStage[]; summary: string; automa
 
 const last = (ev: AtlasEvent[], type: AtlasEvent['type'], after = 0) => { for (let i = ev.length - 1; i >= 0; i--) if (ev[i].type === type && ev[i].seq > after) return ev[i]; return null; };
 
+/** The only event types pipelineOf reads: callers may pass just these. */
+export const PIPELINE_EVENT_TYPES = ['plan.approved', 'forge.published', 'forge.ci', 'pipeline.step'] as const;
+
 export function pipelineOf(m: Pick<Mission, 'state' | 'verdict' | 'decision' | 'followUp' | 'archived'>, ev: AtlasEvent[]): PipelineView {
   const approved = !!last(ev, 'plan.approved');
   const pub = last(ev, 'forge.published');

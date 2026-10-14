@@ -90,6 +90,8 @@ Report date 2026-10-12 for lint, typecheck, unit, integration and e2e; the eval,
 | Session hygiene: daemon log rotation; rotated logs, unused graph caches, finished conversations, deleted missions' worktrees and the database WAL cleared automatically (start, every 30 min) or from Settings; evidence never (ADR 0025) | `apps/daemon/test/hygiene.test.ts`, `maintenance.spec.ts` |
 | Agent execution: background processes (`process_start`/`read`/`stop`/`list`) under the same policy and sandbox as `shell_exec`, with port detection, a loopback probe when serving (approval required), at most 4 per attempt, all stopped when the task ends; `shell_exec` takes `cwd` and `stdin` and keeps the start and end of long output with the full log (ADR 0026) | `packages/orchestrator/test/processes.test.ts`, `packages/policy/test`, `tests/integration/execution.test.ts` |
 | Agent browser and visual proof: `browser_action` snapshot with element refs, actions by ref (click, fill, hover, select, check), reload, back, viewport, console and network reads; a `visual` release stage renders the app's pages at the base and the result in the sandbox and records before, after and a pixel diff (optional check; a page that stops rendering fails it); a Visual tab with a compare slider (ADR 0027) | `tests/integration/agent-browser.test.ts`, `tests/integration/visual.test.ts`, `visual.spec.ts`; screenshots 36–37 |
+| Skills that find their task: 17 bundled skills (10 new, 7 at version 2) with triggers and declared tools; ATLAS recommends the matching skills first in each agent's index and records them; a consistency gate checks every skill against the harness's tools and roles; per-skill usage and outcomes in Settings (ADR 0029) | `packages/orchestrator/test/skills.test.ts`, `tests/integration/skills.test.ts`, `skills.spec.ts` |
+| Hardening pass: event queries by type, task and attempt in SQL with indexes (migration 9), replacing reads capped at 100,000 events that silently dropped the newest; full archive export; mission status without replaying the log; a daemon that logs unhandled rejections instead of dying; stopped Pi aborts and terminal closes no longer leave unhandled rejections; desktop frames stop polling after a session ends; e2e runs fail on any renderer error | `packages/storage/test/storage.test.ts`, `apps/daemon/test/guards.test.ts`, `tests/e2e-electron/app.ts` |
 
 ## Known gaps and risks
 1. **Real-model path.** It is not exercised against a live provider in CI. The Pi adapter is contract-tested with Pi's faux provider. `ATLAS_EVAL_RUNTIME=pi pnpm eval` runs the corpus with a real model when a key is present; that has not been run for this report.
@@ -99,10 +101,10 @@ Report date 2026-10-12 for lint, typecheck, unit, integration and e2e; the eval,
    - **Without accounts, Windows commands fail closed.** An AppContainer cannot create the pipes Node uses for child stdio.
    - **macOS** runs the full unit, integration and e2e suites in CI, including the Seatbelt sandbox and XQuartz desktop control.
    - Neither platform's build is signed.
-6. **Team spaces (ADR 0021).**
+4. **Team spaces (ADR 0021).**
    - Signatures attribute entries. Access to the record is repository access.
    - Order uses each author's clock.
    - Owner approval is enforced on ATLAS's publish path, not on plain git pushes; protected branches on the forge cover that.
    - The record is not compacted.
-4. **Pi resume** is supported for the Pi runtime (ADR 0014). Runtimes without it still restart a task as a new attempt in a fresh worktree.
-5. **Pi telemetry** is disabled in the adapter (`enableInstallTelemetry: false`, `PI_TELEMETRY=0`). Re-check on every Pi upgrade.
+5. **Pi resume** is supported for the Pi runtime (ADR 0014). Runtimes without it still restart a task as a new attempt in a fresh worktree.
+6. **Pi telemetry** is disabled in the adapter (`enableInstallTelemetry: false`, `PI_TELEMETRY=0`). Re-check on every Pi upgrade.

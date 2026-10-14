@@ -6,7 +6,7 @@ import { AtlasError, InternalRequests, McpServerConfig, mcpSecretEnv, parseReque
 import { McpManager } from '@atlas/mcp';
 import { apply as syncApply, foreignServers, locations as syncLocations, plan as syncPlan, type SyncState, type Target as SyncTarget } from '@atlas/sync';
 import { ArtifactStore, openDb, Repo, schemaVersion, type Db } from '@atlas/storage';
-import { GitHubForge, Orchestrator, replay, ROLES, suiteHash, type Skill } from '@atlas/orchestrator';
+import { GitHubForge, Orchestrator, ROLES, suiteHash, type Skill } from '@atlas/orchestrator';
 import { ROLE_GRANTS } from '@atlas/policy';
 import { FakeRuntime, sampleDesktopScript, samplePlanner, sampleSlugifyScript, sampleUiScript } from '@atlas/runtime-fake';
 import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
@@ -206,7 +206,8 @@ export class DaemonService {
 
   private skillsView(workspaceId?: string) {
     const off = new Set(this.repo.setting<string[]>('skills.disabled', []));
-    const view = (s: Skill) => ({ name: s.name, description: s.description, roles: s.roles, version: s.version, source: s.source, hash: s.hash, files: s.files, enabled: !off.has(s.name), ...(s.origin ? { origin: s.origin } : {}) });
+    const usage = this.repo.skillUsage();
+    const view = (s: Skill) => ({ name: s.name, description: s.description, roles: s.roles, version: s.version, source: s.source, hash: s.hash, files: s.files, enabled: !off.has(s.name), triggers: s.triggers, tools: s.tools, ...(s.origin ? { origin: s.origin } : {}), ...(usage[s.name] && (s.source === 'bundled' || s.source === 'operator') ? { usage: usage[s.name] } : {}) });
     const t = this.orch.skills.trusted();
     const w = workspaceId ? this.repo.workspace(workspaceId) : null;
     const r = w?.isGit ? this.orch.skills.inRepository(w.root) : { skills: [], errors: [] };
@@ -316,7 +317,7 @@ export class DaemonService {
         return this.skillsView(p.workspaceId);
       }
       case 'skills.save': {
-        const s = this.orch.skills.saveOperator({ name: p.name, description: p.description, roles: p.roles }, p.body);
+        const s = this.orch.skills.saveOperator({ name: p.name, description: p.description, roles: p.roles, triggers: p.triggers }, p.body);
         this.log.info('skill saved', { name: s.name, hash: s.hash });
         return this.skillsView();
       }
@@ -524,8 +525,9 @@ export class DaemonService {
   snapshot(missionId: string) {
     const mission = this.repo.mission(missionId);
     if (!mission) throw new AtlasError('invalid_request', 'Unknown mission');
-    const events = this.repo.eventsSince(missionId, 0, 1);
-    const all = this.repo.eventsSince(missionId, 0, 100_000);
+    // Called after every event the UI sees: two indexed lookups, never the whole log.
+    const lastSeq = this.repo.lastSeq(missionId);
+    const lastState = this.repo.lastEvent(missionId, 'mission.state');
     return {
       mission,
       workspace: this.repo.workspace(mission.workspaceId),
@@ -537,8 +539,9 @@ export class DaemonService {
       findings: this.repo.findings(missionId),
       budget: this.orch.budgetReport(missionId),
       artifacts: this.artifacts.list(missionId),
-      lastSeq: all.length ? all[all.length - 1].seq : 0,
-      replayed: events.length ? replay(all).mission : null,
+      lastSeq,
+      // The mission state the event log records (what a replay of the log yields).
+      replayed: lastSeq ? (lastState ? (lastState.payload.to as string) : 'draft') : null,
     };
   }
 }

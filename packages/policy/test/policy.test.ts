@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { approvalUsable, classifyCommand, evaluate } from '../src';
+import { approvalUsable, classifyCommand, evaluate, readsProgramFromStdin } from '../src';
 
 describe('policy.evaluate', () => {
   it('allows safe reads and test runs for a coder', () => {
@@ -175,5 +175,28 @@ describe('background processes (ADR 0026)', () => {
     expect(ev('reviewer', 'process_stop', { id: 'p1' }).decision).toBe('allow');
     expect(ev('browser_qa', 'process_start', { command: 'npm', args: ['run', 'dev'] }).decision).toBe('deny');
     expect(ev('browser_qa', 'process_stop', { id: 'p1' }).decision).toBe('deny');
+  });
+});
+
+describe('programs passed on standard input (ADR 0026 review)', () => {
+  const ev = (args: Record<string, unknown>, role: 'coder' | 'reviewer' = 'coder') => evaluate({ role, tool: 'shell_exec', args, mode: 'ask_risky', sandboxed: true });
+  it('node reading its program from stdin is inline code, like node -e: a person approves it', () => {
+    expect(ev({ command: 'node', args: [], stdin: 'require("fs").writeFileSync("x", "y")' })).toMatchObject({ decision: 'ask', capability: 'shell.privileged', reason: 'Runs code passed on standard input' });
+    expect(ev({ command: 'node', args: ['-'], stdin: 'x' }).decision).toBe('ask');
+    expect(ev({ command: 'node', args: ['--input-type=module'], stdin: 'x' }).decision).toBe('ask');
+    expect(ev({ command: 'C:\\Program Files\\nodejs\\node.exe', args: ['/dev/stdin'], stdin: 'x' }).decision).toBe('ask');
+    // A read-only role cannot run it at all without the privileged grant.
+    expect(ev({ command: 'node', args: [], stdin: 'x' }, 'reviewer').decision).toBe('deny');
+  });
+  it('a script file that reads stdin as data stays as safe as before, and so does stdin for non-interpreters', () => {
+    expect(ev({ command: 'node', args: ['tools/upper.mjs'], stdin: 'hello' })).toMatchObject({ decision: 'allow', capability: 'shell.safe' });
+    expect(ev({ command: 'sort', args: [], stdin: 'b\na\n' })).toMatchObject({ decision: 'allow' });
+    expect(ev({ command: 'node', args: [] })).toMatchObject({ decision: 'allow' });
+  });
+  it('readsProgramFromStdin covers the common interpreters', () => {
+    expect(readsProgramFromStdin('python3', [])).toBe(true);
+    expect(readsProgramFromStdin('python3', ['-u'])).toBe(true);
+    expect(readsProgramFromStdin('python3', ['script.py'])).toBe(false);
+    expect(readsProgramFromStdin('grep', [])).toBe(false);
   });
 });

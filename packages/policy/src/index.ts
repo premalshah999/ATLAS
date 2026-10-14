@@ -137,6 +137,15 @@ export function classifyCommand(command: string, args: readonly string[]): Shell
   return { capability: 'shell.privileged', risk: 'elevated', reason: `${exe} is not on the safe list` };
 }
 
+/** Interpreters that run a program given on standard input when no script file is named (or `-` is). */
+const STDIN_INTERPRETERS = new Set(['node', 'deno', 'bun', 'python', 'python3', 'ruby', 'perl', 'php', 'tsx', 'ts-node']);
+export function readsProgramFromStdin(command: string, args: readonly string[]): boolean {
+  const exe = command.split(/[\\/]/).pop()!.toLowerCase().replace(/\.(exe|cmd|bat)$/, '');
+  if (!STDIN_INTERPRETERS.has(exe)) return false;
+  const positional = args.filter((a) => !a.startsWith('-') || a === '-');
+  return positional.length === 0 || positional[0] === '-' || positional[0] === '/dev/stdin';
+}
+
 export const TOOL_CAPABILITY: Record<string, Capability | 'shell'> = {
   read_file: 'fs.read',
   list_files: 'fs.read',
@@ -200,6 +209,10 @@ export function evaluate({ role, tool, args, mode, sandboxed, mcpApproval }: Eva
     const c = classifyCommand(command, argv);
     if (!c.capability) return { decision: 'deny', capability: null, risk: c.risk, reason: c.reason };
     capability = c.capability; risk = c.risk; why = c.reason; network = !!c.network; projectCode = !!c.runsProjectCode;
+    // A program read from standard input is inline code, like `node -e`: it needs a person (ADR 0026 review).
+    if (typeof args.stdin === 'string' && readsProgramFromStdin(command, argv) && capability === 'shell.safe') {
+      capability = 'shell.privileged'; risk = 'elevated'; why = 'Runs code passed on standard input';
+    }
     // A served process gets the network so loopback reaches it; that is egress too, so a person approves it.
     if (tool === 'process_start' && args.serve === true) {
       network = true;

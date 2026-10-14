@@ -27,7 +27,13 @@ export function exportMission(repo: Repo, artifacts: ArtifactStore, missionId: s
   for (const a of repo.approvals(missionId)) push({ type: 'approval', data: a });
   for (const c of repo.checks(missionId)) push({ type: 'check', data: c });
   for (const f of repo.findings(missionId)) push({ type: 'finding', data: f });
-  for (const e of repo.eventsSince(missionId, 0, 1_000_000)) push({ type: 'event', data: e });
+  // Page through the whole log: an export is evidence and is never cut short.
+  for (let after = 0; ;) {
+    const page = repo.eventsSince(missionId, after, 5000);
+    for (const e of page) push({ type: 'event', data: e });
+    if (page.length < 5000) break;
+    after = page[page.length - 1].seq;
+  }
   for (const a of artifacts.list(missionId)) {
     const { bytes, intact } = artifacts.readBytes(a.id);
     // Text artifacts are already redacted at write time; redact again in case patterns improved since.

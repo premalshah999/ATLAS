@@ -1,4 +1,5 @@
 // Daemon entry. Runs as an Electron utility process (parentPort) or a Node child process (process.send).
+import { installCrashGuards, once } from './guards';
 import { PROVIDER_ENV, SERVICE_ENV, type DaemonInbound, type DaemonOutbound } from '@atlas/contracts';
 import { DaemonService } from './service';
 
@@ -35,6 +36,7 @@ async function main() {
   for (const [k, v] of Object.entries(process.env)) if (k.startsWith('ATLAS_MCP_SECRET_') && v) { mcpEnvSecrets[k] = v; delete process.env[k]; }
   const svc = new DaemonService({ dataDir, skillsDir: process.env.ATLAS_SKILLS_DIR, version: process.env.ATLAS_VERSION ?? '0.0.0', apiKeys, model: process.env.ATLAS_MODEL || undefined, deploySecrets, mcpSecrets, mcpEnvSecrets, githubToken, githubApi: process.env.ATLAS_GITHUB_API || undefined });
   const io = port();
+  installCrashGuards(svc.log);
   svc.onEvent((event) => io.send({ kind: 'event', event }));
   svc.onTerminal((sessionId, data, exit, seq) => io.send({ kind: 'terminal', sessionId, ...(data !== undefined ? { data, seq } : {}), ...(exit !== undefined ? { exit } : {}) }));
   io.on(async (msg) => {
@@ -46,12 +48,13 @@ async function main() {
       const err = e as Error & { kind?: string; issues?: unknown };
       const kind = err.kind ?? (err.name === 'ZodError' ? 'invalid_request' : 'internal');
       svc.log.warn('request failed', { method: msg.method, kind, message: err.message });
-      io.send({ kind: 'res', id: msg.id, ok: false, error: { kind, message: kind === 'invalid_request' && err.name === 'ZodError' ? 'Malformed request' : err.message } });
+      // The shell may be gone (it is restarting us); a reply that cannot be delivered is not a second failure.
+      try { io.send({ kind: 'res', id: msg.id, ok: false, error: { kind, message: kind === 'invalid_request' && err.name === 'ZodError' ? 'Malformed request' : err.message } }); } catch { /* channel closed */ }
     }
   });
   const recovered = await svc.start();
   io.send({ kind: 'ready', pid: process.pid, recovered });
-  const stop = async () => { await svc.stop().catch(() => {}); process.exit(0); };
+  const stop = once(async () => { await svc.stop().catch(() => {}); process.exit(0); });
   process.on('SIGTERM', stop);
   process.on('SIGINT', stop);
 }

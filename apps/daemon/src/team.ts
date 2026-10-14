@@ -4,7 +4,7 @@
 import os from 'node:os';
 import { createHash } from 'node:crypto';
 import {
-  AtlasError, pipelineOf, redact, SharedMission, TeamSettingsPatch, type Actor, type AtlasEvent, type EntryKind, type Mission, type TeamSettings,
+  AtlasError, pipelineOf, PIPELINE_EVENT_TYPES, redact, SharedMission, TeamSettingsPatch, type Actor, type AtlasEvent, type EntryKind, type Mission, type TeamSettings,
   type TeamSyncStatus, type TeamView,
 } from '@atlas/contracts';
 import { canonical, gitx, ownership, teamParts, TeamSpace, type TeamState } from '@atlas/team';
@@ -232,10 +232,10 @@ export class TeamHub {
 
   private async snapshot(m: Mission): Promise<SharedMission> {
     const w = this.o.repo.workspace(m.workspaceId)!;
-    const ev = this.o.repo.eventsSince(m.id, 0, 100_000);
     const plan = m.planVersion ? this.o.repo.plan(m.id, m.planVersion) : null;
-    const pub = [...ev].reverse().find((x) => x.type === 'forge.published');
-    const ci = pub ? [...ev].reverse().find((x) => x.type === 'forge.ci' && x.seq > pub.seq) : undefined;
+    const pub = this.o.repo.lastEvent(m.id, 'forge.published');
+    const lastCi = pub ? this.o.repo.lastEvent(m.id, 'forge.ci') : null;
+    const ci = lastCi && pub && lastCi.seq > pub.seq ? lastCi : undefined;
     let patch: string | null = null, truncated = false;
     if (m.baseCommit && m.integrationCommit) {
       const d = await gitx(w.root, ['diff', '--no-color', '--no-ext-diff', m.baseCommit, m.integrationCommit]);
@@ -250,7 +250,7 @@ export class TeamHub {
       tasks: this.o.repo.tasks(m.id).slice(0, 60).map((t) => ({ key: t.key, title: t.title.slice(0, 200), role: t.role, state: t.state })),
       plan: plan ? { version: plan.plan.version, summary: redact(plan.plan.summary).slice(0, 2000), hash: planHash(plan.plan), awaitingApproval: m.state === 'awaiting_approval' } : null,
       pullRequest: pub ? { number: Number(pub.payload.number), url: String(pub.payload.url), ci: ci ? (String(ci.payload.state) as 'pending') : null } : null,
-      pipeline: pipelineOf(m, ev).summary.slice(0, 200),
+      pipeline: pipelineOf(m, this.o.repo.events(m.id, { types: PIPELINE_EVENT_TYPES })).summary.slice(0, 200),
       patch, patchTruncated: truncated, requested,
     });
   }
@@ -372,7 +372,7 @@ export class TeamHub {
     const it = itemId ? st.items.get(itemId) : undefined;
     const sp = this.space(workspaceId);
     if (!it || it.assignee !== sp.me || it.status === 'done' || it.status === 'closed') return;
-    const ready = this.o.repo.eventsSince(m.id, 0, 100_000).some((x) => x.type === 'pipeline.step' && x.payload.step === 'ready');
+    const ready = this.o.repo.events(m.id, { types: ['pipeline.step'] }).some((x) => x.payload.step === 'ready');
     const status = ready ? 'done' : m.state === 'completed' && m.verdict === 'verified' && it.status === 'in_progress' ? 'review' : null;
     if (status && status !== it.status) await this.write(workspaceId, 'item.update', { item: it.id, status }).catch(() => {});
   }

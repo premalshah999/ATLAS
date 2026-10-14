@@ -19,6 +19,15 @@ export async function launch(opts: { userData?: string; openDir?: string; env?: 
   // --no-sandbox only because CI containers run as root; the renderer still runs with sandbox: true.
   const app = await electron.launch({ args: ['--no-sandbox', ...(opts.args ?? []), desktop], cwd: desktop, env });
   const page = await app.firstWindow();
+  // The renderer must run clean: an uncaught error or a console error anywhere in a test fails it when the app closes.
+  const errors: string[] = [];
+  page.on('pageerror', (e) => errors.push(`pageerror: ${e.message}`));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(`console.error: ${m.text()}`); });
+  const close = app.close.bind(app);
+  app.close = async () => {
+    await close();
+    if (errors.length) throw new Error(`The renderer reported ${errors.length} error(s):\n${errors.slice(0, 10).join('\n')}`);
+  };
   await page.getByTestId('daemon-status').and(page.locator('[data-state="ready"]')).waitFor({ timeout: 30_000 });
   return { app, page, userData };
 }
