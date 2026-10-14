@@ -298,3 +298,33 @@ test('capture team, pipeline and settings screenshots', async () => {
     await shot(page, '35-settings-security-storage');
   } finally { await app.close(); }
 });
+
+test('capture visual proof screenshots', async () => {
+  test.setTimeout(240_000);
+  const repo = projectRepo();
+  const { app, page } = await launch({ openDir: repo });
+  try {
+    await app.evaluate(({ BrowserWindow }) => { const w = BrowserWindow.getAllWindows()[0]; w.setContentSize(1440, 900); w.center(); });
+    await page.getByRole('button', { name: 'Open repository' }).first().click();
+    await expect(page.getByTestId('workspace-card')).toContainText('northwind-blog');
+    await page.getByRole('button', { name: 'New mission' }).first().click();
+    await page.getByTestId('mission-title').fill('Explain post URLs on the slug page');
+    await page.getByTestId('mission-goal').fill('[ui sample] Fix slugify, explain the tool under the heading and show the slug in a card.');
+    await expect(page.getByTestId('preflight')).toHaveAttribute('data-ready', 'true');
+    await page.getByTestId('plan-mission').click();
+    await page.getByTestId('approve-plan').click();
+    await expect(page.getByTestId('mission')).toHaveAttribute('data-state', 'completed', { timeout: 120_000 });
+    await page.getByRole('tab', { name: /Visual/ }).click();
+    const card = page.getByTestId('visual-page');
+    await card.getByRole('radio', { name: 'Compare' }).click();
+    await page.getByTestId('visual-compare').getByRole('slider').fill('12');
+    await page.getByTestId('visual-compare').getByRole('img', { name: '/ after' }).waitFor();
+    await top(page);
+    await shot(page, '36-visual-compare');
+    await card.getByRole('radio', { name: 'Diff' }).click();
+    await card.getByRole('img', { name: '/ diff' }).waitFor();
+    await shot(page, '37-visual-diff');
+  } finally {
+    await app.close();
+  }
+});

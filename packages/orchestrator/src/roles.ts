@@ -61,9 +61,9 @@ ${PROCESSES}`,
     budget: { maxToolCalls: 20, maxTokens: 100_000, wallClockMs: 10 * 60_000 },
   },
   browser_qa: {
-    id: 'browser_qa', version: 'browser_qa@2', title: 'Browser QA', writes: false, modelPreference: 'default',
+    id: 'browser_qa', version: 'browser_qa@3', title: 'Browser QA', writes: false, modelPreference: 'default',
     tools: ['read_file', 'list_files', 'browser_action'],
-    instructions: `${COMMON}\n\nYou are Browser QA. Exercise the application in the browser with browser_action: navigate, interact, assert visible outcomes, capture screenshots on anything surprising. Report console errors and failed requests you observe. Use DOM actions, not pixel guesses.`,
+    instructions: `${COMMON}\n\nYou are Browser QA. Exercise the application in the browser with browser_action the way a careful user would. Take a snapshot to see the page, act on elements by their ref, and take a new snapshot after anything changes the page. Assert visible outcomes, capture screenshots of anything surprising, and read console and network to find errors and failed requests behind what you see. Use refs and DOM actions, never pixel guesses.`,
     budget: { maxToolCalls: 60, maxTokens: 200_000, wallClockMs: 15 * 60_000 },
   },
   desktop_operator: {

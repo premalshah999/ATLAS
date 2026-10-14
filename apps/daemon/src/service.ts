@@ -8,10 +8,10 @@ import { apply as syncApply, foreignServers, locations as syncLocations, plan as
 import { ArtifactStore, openDb, Repo, schemaVersion, type Db } from '@atlas/storage';
 import { GitHubForge, Orchestrator, replay, ROLES, suiteHash, type Skill } from '@atlas/orchestrator';
 import { ROLE_GRANTS } from '@atlas/policy';
-import { FakeRuntime, sampleDesktopScript, samplePlanner, sampleSlugifyScript } from '@atlas/runtime-fake';
+import { FakeRuntime, sampleDesktopScript, samplePlanner, sampleSlugifyScript, sampleUiScript } from '@atlas/runtime-fake';
 import { PiRuntime, PI_PINNED } from '@atlas/runtime-pi';
 import { detectSandbox, reapJournaled, removeWindowsAccounts, setProcessJournal, setupWindowsAccounts, windowsAccounts } from '@atlas/terminal';
-import { applicationStage, createBrowserTool, resolveBrowser } from '@atlas/browser';
+import { applicationStage, createBrowserTool, resolveBrowser, visualStage } from '@atlas/browser';
 import { DeployManager, stagingStage } from '@atlas/deploy';
 import { createDesktopTool, DesktopManager, desktopSupport } from '@atlas/desktop-control';
 import { loadConfig } from '@atlas/workspace';
@@ -41,7 +41,7 @@ export class DaemonService {
   readonly log: Logger;
   private readonly db: Db;
   private pi: PiRuntime;
-  private readonly fake = new FakeRuntime([sampleSlugifyScript, sampleDesktopScript], 350, samplePlanner);
+  private readonly fake = new FakeRuntime([sampleUiScript, sampleSlugifyScript, sampleDesktopScript], 350, samplePlanner);
   private keys: Record<string, string>;
   private deploySecrets: Record<string, Record<string, string>>;
   private mcpSecrets: Record<string, Record<string, string>>;
@@ -92,7 +92,7 @@ export class DaemonService {
       forge: () => this.forge(),
       mcp: this.mcp,
       publishGate: (m, files) => this.team.gate(m, files),
-      stages: [applicationStage(), stagingStage(this.deploy)],
+      stages: [applicationStage(), visualStage(), stagingStage(this.deploy)],
       toolFactories: {
         browser_action: (c) => createBrowserTool({ worktree: c.worktree, sandbox: c.sandbox, putScreenshot: (n, png) => c.putArtifact({ kind: 'screenshot', name: n, bytes: png }).id, emit: (p, ids) => c.emit('browser.step', p, ids) }),
         desktop_action: (c) => createDesktopTool({

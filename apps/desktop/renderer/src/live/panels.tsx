@@ -2,8 +2,8 @@
 // the virtual desktop, the operator terminal and the budget meter. All data comes from the daemon.
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { AtlasEvent, Deployment, DesktopAction, DesktopSessionInfo, Finding, Task } from '@atlas/contracts';
-import { Badge, Button, cx, EmptyState, Icon, Input, Meter, RoleMark, Status, Tip } from '../ui/primitives';
-import { ICamera, ICheck, IComputer, IDeploy, IGlobe, IHand, IPause, IPlay, IReviews, IStop, ITerminal, IUndo, IWarn, IXCircle } from '../lib/icons';
+import { Badge, Button, cx, EmptyState, Icon, Input, Meter, RoleMark, Seg, Status, Tip } from '../ui/primitives';
+import { ICamera, ICheck, IComputer, IDeploy, IGlobe, IHand, IImage, IPause, IPlay, IReviews, IStop, ITerminal, IUndo, IWarn, IXCircle } from '../lib/icons';
 import { bridge, call, type MissionSnapshot } from './api';
 import { fmtMs, roleMark, roleName, stateWord } from './format';
 import { toast } from './toast';
@@ -129,16 +129,94 @@ export function Findings({ snap, onLog }: { snap: MissionSnapshot; onLog: (artif
 
 // ---------------------------------------------------------------- screenshots
 
-export function Screenshot({ artifactId, alt }: { artifactId: string; alt: string }) {
-  const [src, setSrc] = useState<string | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+/** A PNG artifact as a data URL, or why it cannot be shown. */
+function useArtifactImage(artifactId: string | null): { src: string | null; err: string | null } {
+  const [state, setState] = useState<{ src: string | null; err: string | null }>({ src: null, err: null });
   useEffect(() => {
+    if (!artifactId) { setState({ src: null, err: null }); return; }
     let live = true;
-    void call('artifact.read', { artifactId }).then((r) => { if (!live) return; if (r.base64) setSrc(`data:image/png;base64,${r.base64}`); else setErr(r.intact ? 'Image too large to preview' : 'Artifact missing or altered'); }).catch((e) => live && setErr((e as Error).message));
+    setState({ src: null, err: null });
+    void call('artifact.read', { artifactId }).then((r) => { if (!live) return; setState(r.base64 ? { src: `data:image/png;base64,${r.base64}`, err: null } : { src: null, err: r.intact ? 'Image too large to preview' : 'Artifact missing or altered' }); }).catch((e) => live && setState({ src: null, err: (e as Error).message }));
     return () => { live = false; };
   }, [artifactId]);
+  return state;
+}
+
+export function Screenshot({ artifactId, alt }: { artifactId: string; alt: string }) {
+  const { src, err } = useArtifactImage(artifactId);
   if (err) return <div className="lv-shot lv-shot--err at-subtle lv-small">{err}</div>;
   return src ? <img className="lv-shot" src={src} alt={alt} /> : <div className="lv-shot at-subtle lv-small">Loading…</div>;
+}
+
+// ---------------------------------------------------------------- visual proof (ADR 0027)
+
+type VisualRow = { name: string; path: string; result: 'changed' | 'unchanged' | 'new' | 'broken' | 'missing'; percent: number | null; before: string | null; after: string | null; diff: string | null; note: string | null };
+type VisualView = 'compare' | 'diff' | 'before' | 'after';
+
+/** Before over after, split where the operator drags: the same page at the mission's base and at its result. */
+function CompareSlider({ before, after, name }: { before: string; after: string; name: string }) {
+  const b = useArtifactImage(before), a = useArtifactImage(after);
+  const [at, setAt] = useState(50);
+  if (b.err || a.err) return <div className="lv-shot lv-shot--err at-subtle lv-small">{b.err ?? a.err}</div>;
+  if (!b.src || !a.src) return <div className="lv-shot at-subtle lv-small">Loading…</div>;
+  return (
+    <div className="lv-compare" data-testid="visual-compare">
+      <div className="lv-compare__stage">
+        <img className="lv-shot" src={a.src} alt={`${name} after`} />
+        <img className="lv-compare__before" src={b.src} alt={`${name} before`} style={{ clipPath: `inset(0 ${100 - at}% 0 0)` }} />
+        <div className="lv-compare__line" style={{ left: `${at}%` }} />
+      </div>
+      <div className="lv-compare__bar lv-small at-subtle">
+        <span>Before</span>
+        <input type="range" min={0} max={100} value={at} aria-label="Before and after split" onChange={(e) => setAt(Number(e.target.value))} />
+        <span>After</span>
+      </div>
+    </div>
+  );
+}
+
+function VisualPage({ row }: { row: VisualRow }) {
+  const both = !!(row.before && row.after);
+  const [view, setView] = useState<VisualView>(row.diff ? 'diff' : both ? 'compare' : 'after');
+  const shown = view === 'before' ? row.before : view === 'after' ? row.after : view === 'diff' ? row.diff : null;
+  const tone = row.result === 'changed' ? 'accent' : row.result === 'broken' || row.result === 'missing' ? 'danger' : row.result === 'new' ? 'success' : 'outline';
+  const label = row.result === 'changed' ? `${row.percent! >= 0.1 ? row.percent!.toFixed(1) : row.percent!.toFixed(2)}% changed` : row.result === 'unchanged' ? 'No visual change' : row.result === 'new' ? 'New page' : row.result === 'broken' ? 'Stopped rendering' : 'Not rendered';
+  const items: { id: VisualView; label: string }[] = [
+    ...(both ? [{ id: 'compare' as const, label: 'Compare' }] : []),
+    ...(row.diff ? [{ id: 'diff' as const, label: 'Diff' }] : []),
+    ...(row.before ? [{ id: 'before' as const, label: 'Before' }] : []),
+    ...(row.after ? [{ id: 'after' as const, label: 'After' }] : []),
+  ];
+  return (
+    <div className="lv-visual" data-testid="visual-page" data-result={row.result}>
+      <div className="lv-visual__head">
+        <span className="body-strong">{row.name}</span>
+        {row.name !== row.path && <span className="at-mono at-subtle lv-small">{row.path}</span>}
+        <Badge tone={tone}>{label}</Badge>
+        <span style={{ flex: 1 }} />
+        {items.length > 1 && <Seg items={items} value={view} onChange={setView} />}
+      </div>
+      {row.note && <p className="at-muted lv-small" style={{ margin: '4px 0 8px' }}>{row.note}</p>}
+      {view === 'compare' && both ? <CompareSlider before={row.before!} after={row.after!} name={row.name} /> : shown ? <Screenshot artifactId={shown} alt={`${row.name} ${view}`} /> : null}
+      {view === 'diff' && <p className="at-subtle lv-small" style={{ marginTop: 6 }}>Red marks every pixel that differs; the rest of the result is shown faded.</p>}
+    </div>
+  );
+}
+
+export function VisualPanel({ snap, events }: { snap: MissionSnapshot; events: AtlasEvent[] }) {
+  const check = snap.checks.filter((c) => c.name === 'visual').at(-1);
+  // The latest run per page (a re-verification renders the pages again).
+  const rows = [...new Map(events.filter((e) => e.type === 'visual.page').map((e) => [String(e.payload.path), e.payload as unknown as VisualRow])).values()];
+  if (!rows.length) return <EmptyState center icon={IImage} title="No visual comparison" body="When a project has an app section in atlas.config.json, ATLAS renders its pages at the mission's starting point and at the result, and shows what changed on screen." />;
+  return (
+    <div className="lv-scroll" data-testid="visual">
+      <div className="lv-evid">
+        <div className="at-label">What changed on screen</div>
+        {check && <p className="at-muted" style={{ margin: '6px 0 16px' }} data-testid="visual-summary">{check.reason}</p>}
+        {rows.map((r) => <VisualPage key={r.path} row={r} />)}
+      </div>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------- browser QA

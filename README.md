@@ -124,6 +124,24 @@ count as failures.
 
 ![Browser QA](docs/screenshots/16-browser-qa.png)
 
+Agents use the same browser the way a careful person would. They read the page as a list of its buttons, fields,
+links and text, act on exactly the element they mean, and check the console and network for errors behind what
+they see.
+
+### See what changed on screen
+When a mission touches a web app, ATLAS shows you the difference instead of describing it. It opens your app's pages
+twice, as they were before the mission and as they are now, and compares them pixel by pixel. Under **Visual** you
+can:
+- drag a slider across the before and after views;
+- see every changed pixel highlighted in red;
+- read how much of each page changed.
+
+A page that stops loading is flagged. All of this runs on your machine.
+
+![Before and after, compared with a slider](docs/screenshots/36-visual-compare.png)
+
+![Every changed pixel in red](docs/screenshots/37-visual-diff.png)
+
 ### Test deployments that are checked, not trusted
 You can deploy to a test (staging) server you've allowed, and only after you approve. ATLAS then checks the
 deployment independently:

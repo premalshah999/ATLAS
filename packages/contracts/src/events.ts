@@ -8,7 +8,7 @@ export const EventType = [
   'process.started', 'process.output', 'process.exited',
   'workspace.worktree', 'artifact.created', 'check.result', 'gate.result',
   'plan.planner', 'integration.result', 'finding.reported', 'finding.updated', 'delegation.requested', 'delegation.result', 'budget.exceeded', 'context.built',
-  'browser.step', 'deploy.event', 'staging.check', 'rollback.result', 'desktop.action', 'desktop.session', 'operator.terminal',
+  'browser.step', 'visual.page', 'deploy.event', 'staging.check', 'rollback.result', 'desktop.action', 'desktop.session', 'operator.terminal',
   'operator.action', 'daemon.recovered', 'skill.loaded', 'forge.published', 'forge.ci', 'mcp.called', 'pipeline.step', 'team.shared', 'team.review', 'context.compacted', 'error',
 ] as const;
 export type EventType = (typeof EventType)[number];

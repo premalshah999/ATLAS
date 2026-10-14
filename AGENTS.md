@@ -42,7 +42,7 @@ packages/policy              capabilities, role grants, command classification, 
 packages/workspace           canonical path checks, git worktrees, checkpoints, diffs, leases
 packages/terminal            argument-array executor, env allowlist, process-tree kill, timeouts
 packages/orchestrator        state machines, plan validation, scheduler, ToolGate, verification, release gate, recovery
-packages/browser             Playwright browser sessions, app start in the sandbox, API checks, browser_action tool
+packages/browser             Playwright browser sessions, app start in the sandbox, API checks, browser_action (snapshot + refs), visual proof stage
 packages/deploy              staging providers (local, command), independent verification, rollback, reconcile
 packages/desktop-control     Xvfb virtual displays, xdotool input, controller lease, desktop_action tool
 packages/mcp                 MCP client (stdio in the sandbox, streamable HTTP) and server manager behind mcp_call

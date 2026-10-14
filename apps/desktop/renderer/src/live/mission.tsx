@@ -2,9 +2,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { pipelineOf, type Approval, type AtlasEvent, type CheckRecord, type Mission, type Task } from '@atlas/contracts';
 import { Badge, Button, cx, EmptyState, Icon, PanelHead, RoleMark, Status, Tabs, Tip } from '../ui/primitives';
-import { ICheck, ICheckCircle, IClock, IFileDiff, IShield, IStopCircle, ITerminal, IWarn, IXCircle, IUndo, IMerge, IFileText, ITube, ITree, IGraph, IReviews, IGlobe, IDeploy, IComputer, IMore, IDisk, IClose, IUsers } from '../lib/icons';
+import { ICheck, ICheckCircle, IClock, IFileDiff, IShield, IStopCircle, ITerminal, IWarn, IXCircle, IUndo, IMerge, IFileText, ITube, ITree, IGraph, IReviews, IGlobe, IImage, IDeploy, IComputer, IMore, IDisk, IClose, IUsers } from '../lib/icons';
 import { Menu, MenuItem } from '../ui/primitives';
-import { BrowserPanel, BudgetMeter, DeployPanel, DesktopPanel, Findings, TaskGraph, TerminalPanel } from './panels';
+import { BrowserPanel, BudgetMeter, DeployPanel, DesktopPanel, Findings, TaskGraph, TerminalPanel, VisualPanel } from './panels';
 import { go, refreshLists } from './store';
 import { call, type ForgeView } from './api';
 import { useMission } from './useMission';
@@ -12,7 +12,7 @@ import { actorName, describeEvent, fmtMs, markOf, missionStatus, resultWord, rol
 import { toast } from './toast';
 
 const ACTIVE = new Set(['planning', 'running', 'verifying']);
-type Tab = 'activity' | 'graph' | 'changes' | 'evidence' | 'findings' | 'browser' | 'deploy' | 'desktop' | 'terminal';
+type Tab = 'activity' | 'graph' | 'changes' | 'evidence' | 'findings' | 'visual' | 'browser' | 'deploy' | 'desktop' | 'terminal';
 
 export function MissionView({ missionId }: { missionId: string }) {
   const { snap, events, error } = useMission(missionId);
@@ -35,6 +35,8 @@ export function MissionView({ missionId }: { missionId: string }) {
   const finished = m.state === 'completed' || m.state === 'failed';
   const patchCount = snap.artifacts.filter((a) => a.kind === 'patch').length;
   const hasBrowser = events.some((e) => e.type === 'browser.step') || snap.checks.some((c) => /^(api|browser):/.test(c.name));
+  const visualChanged = events.filter((e) => e.type === 'visual.page' && e.payload.result !== 'unchanged').length;
+  const hasVisual = visualChanged > 0 || events.some((e) => e.type === 'visual.page');
   const stalled = stalledTasks(events);
   const provenance = [...events].reverse().find((e) => e.type === 'operator.action' && e.payload.action === 'imported')?.payload.provenance as { signed: boolean; keyId: string | null; trusted: boolean; own: boolean } | undefined;
   const hasDesktop = events.some((e) => e.type.startsWith('desktop.')) || snap.tasks.some((t) => t.role === 'desktop_operator');
@@ -99,6 +101,7 @@ export function MissionView({ missionId }: { missionId: string }) {
                 { id: 'changes', label: 'Changes', icon: IFileDiff, count: patchCount || undefined },
                 { id: 'evidence', label: 'Evidence', icon: ITube, count: snap.checks.length || undefined },
                 { id: 'findings', label: 'Review', icon: IReviews, count: snap.findings.filter((f) => f.status === 'open').length || undefined },
+                ...(hasVisual ? [{ id: 'visual' as Tab, label: 'Visual', icon: IImage, count: visualChanged || undefined }] : []),
                 ...(hasBrowser ? [{ id: 'browser' as Tab, label: 'Browser', icon: IGlobe }] : []),
                 ...(m.targetEnvironment ? [{ id: 'deploy' as Tab, label: 'Deploy', icon: IDeploy }] : []),
                 ...(hasDesktop ? [{ id: 'desktop' as Tab, label: 'Desktop', icon: IComputer }] : []),
@@ -110,6 +113,7 @@ export function MissionView({ missionId }: { missionId: string }) {
             {tab === 'changes' && <Changes snap={snap} />}
             {tab === 'evidence' && <Evidence checks={snap.checks} gate={gate} canApproveDefinition={m.state === 'failed' && !m.decision && !m.archived} onApproveDefinition={(hash) => void act('Could not approve', () => call('mission.approveDefinition', { missionId, hash }))} />}
             {tab === 'findings' && <Findings snap={snap} onLog={showLog} />}
+            {tab === 'visual' && <VisualPanel snap={snap} events={events} />}
             {tab === 'browser' && <BrowserPanel snap={snap} events={events} />}
             {tab === 'deploy' && <DeployPanel snap={snap} events={events} />}
             {tab === 'desktop' && <DesktopPanel snap={snap} events={events} />}

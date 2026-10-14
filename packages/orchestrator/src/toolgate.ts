@@ -56,7 +56,7 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: 'browser_action',
-    description: 'Drive the project app in an isolated browser. One step per call: goto {path}, click {selector|text|role+name}, fill {selector,value}, press {key}, expectText {text,selector?}, expectNoText, expectUrl {path}, expectVisible {selector}, screenshot {name}, wait {ms}. The app is started from your worktree on first use.',
+    description: 'Drive the project app in an isolated browser. One step per call. Start with snapshot: it lists the page\'s links, buttons, fields, headings and text, each with a ref like e12. Then act by ref: click {ref}, fill {ref,value}, hover {ref}, select {ref,value}, check {ref,checked?} (a selector works instead of a ref). Also: goto {path}, press {key,selector?}, reload, back, viewport {width,height}, console (new console messages), network (new requests with status and timing), expectText {text,selector?}, expectNoText, expectUrl {path}, expectVisible {selector}, screenshot {name}, wait {ms}. Refs change when the page does: take a new snapshot after navigating. The app is started from your worktree on first use.',
     parameters: { type: 'object', additionalProperties: false, required: ['step'], properties: { step: { type: 'object', description: 'e.g. {"action":"goto","path":"/"}' } } },
   },
   {
