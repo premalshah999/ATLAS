@@ -45,8 +45,7 @@ export function MissionView({ missionId }: { missionId: string }) {
     <div className="at-screen lv-mission" data-testid="mission" data-state={m.state}>
       <div className="at-mhead">
         <div className="at-mhead-l">
-          <div className="at-row" style={{ gap: 10 }}>
-            <span className="at-mid">{m.id}</span>
+          <div className="at-row" style={{ gap: 12 }}>
             <h1 className="display at-trunc" style={{ margin: 0 }}>{m.title}</h1>
             <span data-testid="mission-state" data-verdict={m.verdict ?? ''}><Status s={missionStatus(m).dot} label={missionStatus(m).word} /></span>
             {m.runtime === 'fake' && <Tip label="Scripted sample runtime: no model is called. Tool calls, commands and checks are real."><span><Badge tone="sample">scripted runtime</Badge></span></Tip>}
@@ -73,18 +72,21 @@ export function MissionView({ missionId }: { missionId: string }) {
               <MenuItem icon={IClose} onClick={() => { close(); if (ACTIVE.has(m.state)) { toast({ tone: 'danger', title: 'Cancel the mission first' }); return; } if (window.confirm('Delete this mission? Its events, artifacts, worktrees and task branches are removed. An accepted branch is kept.')) void act('Delete failed', async () => { await call('mission.delete', { missionId }); await refreshLists(); go({ screen: 'projects' }); }); }}>Delete mission…</MenuItem>
             </>)}</Menu>
           </div>
-          <span className="at-subtle lv-small">{snap.workspace?.name} · base {m.baseCommit?.slice(0, 7) ?? 'not yet snapshotted'} · {modeWord(m.approvalMode)}</span>
+          <span className="at-subtle lv-small">{snap.workspace?.name} · base {m.baseCommit?.slice(0, 7) ?? 'not yet snapshotted'} · {modeWord(m.approvalMode)} · <span className="at-mono">{m.id}</span></span>
         </div>
       </div>
 
-      {m.outcome && (
-        <div className={cx('lv-outcome', `lv-outcome--${verdict ?? (m.state === 'failed' ? 'failed' : 'neutral')}`)} data-testid="outcome">
-          <Icon as={verdict === 'verified' ? ICheckCircle : verdict === 'failed' || m.state === 'failed' ? IXCircle : IWarn} />
-          <span>{m.outcome}</span>
+      {(m.outcome || (m.state !== 'draft' && !m.archived)) && (
+        <div className="lv-statusband">
+          {m.outcome && (
+            <div className={cx('lv-outcome', `lv-outcome--${verdict ?? (m.state === 'failed' ? 'failed' : 'neutral')}`)} data-testid="outcome">
+              <Icon as={verdict === 'verified' ? ICheckCircle : verdict === 'failed' || m.state === 'failed' ? IXCircle : IWarn} />
+              <span>{m.outcome}</span>
+            </div>
+          )}
+          {m.state !== 'draft' && !m.archived && <PipelineStrip m={m} events={events} />}
         </div>
       )}
-
-      {m.state !== 'draft' && !m.archived && <PipelineStrip m={m} events={events} />}
 
       {m.followUp && <div className="lv-callout" data-testid="follow-up" style={{ margin: '0 20px 8px' }}><span>Fixes CI on pull request #{m.followUp.pullRequest}. Started from its head {m.followUp.headSha.slice(0, 7)}; publishing pushes to {m.followUp.branch}.</span></div>}
       {m.decision === 'accepted' && !m.archived && <PullRequestBar missionId={missionId} events={events} />}
