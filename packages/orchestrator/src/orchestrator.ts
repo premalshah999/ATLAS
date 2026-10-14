@@ -151,8 +151,11 @@ export class Orchestrator {
       const s = e.attemptId ? this.signals.get(e.attemptId) : undefined;
       if (s && e.type !== 'attempt.stalled') {
         s.last = Date.now(); s.flagged = false;
-        if (e.type === 'process.started') s.live++;
-        else if (e.type === 'process.exited') s.live = Math.max(0, s.live - 1);
+        // Live work is not silence: a tool call ATLAS is still executing (sandbox setup included) or a command
+        // running in the foreground. A background process (ADR 0026) is not: an agent idle beside its dev server
+        // has stalled.
+        if (e.type === 'agent.tool_call' || (e.type === 'process.started' && !e.payload.background)) s.live++;
+        else if (e.type === 'agent.tool_result' || (e.type === 'process.exited' && !e.payload.background)) s.live = Math.max(0, s.live - 1);
       }
     });
   }
@@ -585,6 +588,9 @@ export class Orchestrator {
     if (this.o.mcp?.permits(t.role)) tools = [...new Set([...tools, 'mcp_call'])];
     // ATLAS's records of the mission and its code graph: read-only, for every role, so context is never lost (ADR 0024).
     tools = [...new Set([...tools, 'mission_memory', 'code_graph'])];
+    // Background processes come with running commands (ADR 0026): a task that may run shell_exec may also keep a
+    // program running, under the same policy, and read or stop it.
+    if (tools.includes('shell_exec')) tools = [...new Set([...tools, 'process_start', 'process_read', 'process_stop', 'process_list'])];
     return tools;
   }
 
@@ -751,6 +757,7 @@ export class Orchestrator {
       // kept, so the next start can continue it.
       if (!this.stopping) rt.discard?.(attempt.id);
       for (const x of Object.values(extras)) await x.dispose().catch(() => {});
+      await tools.dispose().catch(() => {});
       missionSignal.removeEventListener('abort', onMission);
       this.taskAborts.delete(t.id);
       this.leases.release(dir, attempt.id);

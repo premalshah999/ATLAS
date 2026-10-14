@@ -8,12 +8,13 @@ import path from 'node:path';
 import { z } from 'zod';
 import { AtlasError, newId, redact, type AgentRole, type Approval, type ApprovalMode, type ToolInvoker, type ToolResult, type ToolSpec } from '@atlas/contracts';
 import { evaluate, approvalUsable } from '@atlas/policy';
-import { run, sanitizedEnv, type RunResult, type SandboxSpec } from '@atlas/terminal';
+import { prepareSandbox, run, sanitizedEnv, startProcess, type RunResult, type SandboxSpec } from '@atlas/terminal';
 import { git, resolveInside } from '@atlas/workspace';
 import type { Repo, ArtifactStore } from '@atlas/storage';
 import { detectRecipes } from './verification';
 import { FindingArgs } from './findings';
 import type { SkillLibrary } from './skills';
+import { BackgroundProcesses, MAX_BACKGROUND, type StartedProcess } from './processes';
 
 export const TOOL_SPECS: ToolSpec[] = [
   { name: 'load_skill', description: 'Load a skill (a reviewed, versioned procedure) by name from the skill index in your context. Returns its instructions and the list of its reference files.', parameters: { type: 'object', properties: { name: { type: 'string' } }, required: ['name'], additionalProperties: false } },
@@ -21,7 +22,19 @@ export const TOOL_SPECS: ToolSpec[] = [
   { name: 'read_file', description: 'Read a UTF-8 text file in the worktree (max 200 KB).', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Path relative to the worktree root' } }, required: ['path'], additionalProperties: false } },
   { name: 'list_files', description: 'List entries of a directory in the worktree.', parameters: { type: 'object', properties: { path: { type: 'string', description: 'Directory relative to the worktree root; "." for the root' } }, required: ['path'], additionalProperties: false } },
   { name: 'write_file', description: 'Create or overwrite a text file in the worktree.', parameters: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'], additionalProperties: false } },
-  { name: 'shell_exec', description: 'Run one program with an argument array (no shell). Privileged commands need human approval.', parameters: { type: 'object', properties: { command: { type: 'string', description: 'Executable, e.g. "npm"' }, args: { type: 'array', items: { type: 'string' } }, timeoutSec: { type: 'number' } }, required: ['command', 'args'], additionalProperties: false } },
+  {
+    name: 'shell_exec',
+    description: 'Run one program with an argument array (no shell) and wait for it. Privileged commands need human approval. Output longer than 12,000 characters is shortened to its start and end; the full output is in the log artifact named in the result. For servers and watchers that keep running, use process_start.',
+    parameters: { type: 'object', properties: { command: { type: 'string', description: 'Executable, e.g. "npm"' }, args: { type: 'array', items: { type: 'string' } }, cwd: { type: 'string', description: 'Directory inside the worktree to run in (default: the worktree root)' }, stdin: { type: 'string', description: 'Text for the program\'s standard input' }, timeoutSec: { type: 'number' } }, required: ['command', 'args'], additionalProperties: false },
+  },
+  {
+    name: 'process_start',
+    description: `Start a program that keeps running in the background (a dev server, a watcher, a long build) and return while it runs. Same rules and approvals as shell_exec. Waits up to waitSec (default 5) for waitFor text in its output, or for it to print a port. Set serve to true when something must reach it over loopback (needs approval: it gets network access). At most ${MAX_BACKGROUND} at once; ATLAS stops them all when your task ends.`,
+    parameters: { type: 'object', additionalProperties: false, required: ['command', 'args'], properties: { command: { type: 'string' }, args: { type: 'array', items: { type: 'string' } }, cwd: { type: 'string', description: 'Directory inside the worktree' }, name: { type: 'string', description: 'A short label, e.g. "dev server"' }, serve: { type: 'boolean' }, waitFor: { type: 'string', description: 'Text to wait for in its output, e.g. "ready"' }, waitSec: { type: 'number' } } },
+  },
+  { name: 'process_read', description: 'Read a background process: its status, the ports it listens on (probed when it serves), and the output since your last read (last `tail` lines, default 50). With waitFor, first waits up to waitSec for that text.', parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string', description: 'e.g. "p1"' }, tail: { type: 'number' }, waitFor: { type: 'string' }, waitSec: { type: 'number' } } } },
+  { name: 'process_stop', description: 'Stop a background process and everything it started. Returns its final status and the log artifact with its full output.', parameters: { type: 'object', additionalProperties: false, required: ['id'], properties: { id: { type: 'string' } } } },
+  { name: 'process_list', description: 'List the background processes of your task with their status and ports.', parameters: { type: 'object', additionalProperties: false, properties: {} } },
   { name: 'git_status', description: 'Show git status and the diff summary of the worktree.', parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'run_tests', description: "Run the project's configured test command and return its output and exit code.", parameters: { type: 'object', properties: {}, additionalProperties: false } },
   { name: 'mission_memory', description: 'ATLAS\'s exact records of this mission for you: objective, constraints, your task and acceptance criteria, the plan and task states, files you wrote, commands you ran with exit codes, findings, denied approvals, and the current change. Use it whenever you are unsure what you already did, and always after your earlier conversation was summarized.', parameters: { type: 'object', properties: { section: { type: 'string', enum: ['all', 'task', 'files', 'commands', 'findings', 'change'], description: 'Default all' } }, additionalProperties: false } },
@@ -75,7 +88,11 @@ const ARGS: Record<string, z.ZodTypeAny> = {
   read_file: z.object({ path: z.string().min(1) }).strict(),
   list_files: z.object({ path: z.string().min(1).default('.') }).strict(),
   write_file: z.object({ path: z.string().min(1), content: z.string().max(2_000_000) }).strict(),
-  shell_exec: z.object({ command: z.string().min(1).max(200), args: z.array(z.string().max(4000)).max(200), timeoutSec: z.number().int().min(1).max(1800).optional() }).strict(),
+  shell_exec: z.object({ command: z.string().min(1).max(200), args: z.array(z.string().max(4000)).max(200), cwd: z.string().min(1).max(300).optional(), stdin: z.string().max(1_000_000).optional(), timeoutSec: z.number().int().min(1).max(1800).optional() }).strict(),
+  process_start: z.object({ command: z.string().min(1).max(200), args: z.array(z.string().max(4000)).max(200), cwd: z.string().min(1).max(300).optional(), name: z.string().min(1).max(60).optional(), serve: z.boolean().default(false), waitFor: z.string().min(1).max(200).optional(), waitSec: z.number().min(0).max(120).default(5) }).strict(),
+  process_read: z.object({ id: z.string().regex(/^p\d{1,4}$/), tail: z.number().int().min(1).max(500).default(50), waitFor: z.string().min(1).max(200).optional(), waitSec: z.number().min(0).max(120).default(10) }).strict(),
+  process_stop: z.object({ id: z.string().regex(/^p\d{1,4}$/) }).strict(),
+  process_list: z.object({}).strict(),
   git_status: z.object({}).strict(),
   run_tests: z.object({}).strict(),
   view_diff: z.object({ path: z.string().min(1).optional() }).strict(),
@@ -97,7 +114,9 @@ export interface Executors {
   readFile(abs: string): string;
   listDir(abs: string): string[];
   writeFile(abs: string, content: string): void;
-  exec(o: { command: string; args: string[]; cwd: string; timeoutMs: number; signal: AbortSignal; sandbox?: SandboxSpec; onStart(pid: number): void; onOutput(s: 'stdout' | 'stderr', t: string): void }): Promise<RunResult>;
+  exec(o: { command: string; args: string[]; cwd: string; timeoutMs: number; signal: AbortSignal; sandbox?: SandboxSpec; stdin?: string; onStart(pid: number): void; onOutput(s: 'stdout' | 'stderr', t: string): void }): Promise<RunResult>;
+  /** Start a background process (ADR 0026). Without it, process_start is refused. */
+  start?(o: { command: string; args: string[]; cwd: string; sandbox?: SandboxSpec; onOutput(t: string): void }): Promise<StartedProcess>;
 }
 
 export const realExecutors: Executors = {
@@ -110,6 +129,14 @@ export const realExecutors: Executors = {
   listDir: (abs) => readdirSync(abs, { withFileTypes: true }).filter((d) => d.name !== '.git').map((d) => (d.isDirectory() ? `${d.name}/` : d.name)).sort(),
   writeFile: (abs, content) => { mkdirSync(path.dirname(abs), { recursive: true }); writeFileSync(abs, content, 'utf8'); },
   exec: (o) => run({ ...o, env: sanitizedEnv() }),
+  start: async (o) => {
+    if (o.sandbox) await prepareSandbox(o.sandbox).catch(() => {});
+    let resolve!: (code: number | null) => void;
+    const done = new Promise<number | null>((r) => { resolve = r; });
+    const handle = startProcess({ command: o.command, args: o.args, cwd: o.cwd, env: sanitizedEnv(), sandbox: o.sandbox, maxOutput: 64 * 1024, onOutput: o.onOutput, onExit: resolve });
+    if (handle.spawnError) resolve(null);
+    return { handle, done };
+  },
 };
 
 /** The operator's MCP servers as the gate sees them (ADR 0018); implemented by the daemon's MCP manager. */
@@ -233,7 +260,25 @@ export class ToolGate implements ToolInvoker {
         const diff = await git(cwd, ['diff', '--stat']);
         return ok(`${st.out || '(clean)'}\n${diff.out}`.trim());
       }
-      case 'shell_exec': return this.process(a.command, a.args, (a.timeoutSec ?? 300) * 1000, signal, 'shell', network);
+      case 'shell_exec': return this.process(a.command, a.args, (a.timeoutSec ?? 300) * 1000, signal, 'shell', network, { cwd: this.subdir(a.cwd), stdin: a.stdin });
+      case 'process_start': {
+        if (!this.ex.start) return this.fail('unknown_tool', 'Background processes are not available in this environment.');
+        const sb = this.sandboxFor(network);
+        if (sb === 'unavailable') return this.noSandbox('process_start', [a.command, ...a.args].join(' '));
+        const dir = this.subdir(a.cwd);
+        const r = await this.background().start({ command: a.command, args: a.args, cwd: dir, relCwd: a.cwd ?? '.', name: a.name, serve: !!a.serve, waitFor: a.waitFor, waitSec: a.waitSec }, signal);
+        return { ok: r.ok, output: r.text, exitCode: r.process?.exit?.code ?? null, artifactIds: r.process?.exit?.artifactId ? [r.process.exit.artifactId] : [], error: r.ok ? null : 'process_failed' };
+      }
+      case 'process_read': {
+        const r = await this.background().read(a.id, { tail: a.tail, waitFor: a.waitFor, waitSec: a.waitSec }, signal);
+        return r.ok ? ok(r.text) : this.fail('invalid_args', r.text);
+      }
+      case 'process_stop': {
+        const r = await this.background().stop(a.id);
+        const art = this.bg?.get(a.id)?.exit?.artifactId;
+        return r.ok ? { ok: true, output: r.text, exitCode: null, artifactIds: art ? [art] : [], error: null } : this.fail('invalid_args', r.text);
+      }
+      case 'process_list': return ok(this.background().list());
       case 'mission_memory': return ok(await this.missionMemory(a.section, cwd));
       case 'code_graph': {
         if (!this.ctx.graph) return this.fail('unknown_tool', 'The code graph is not available for this task.');
@@ -293,30 +338,97 @@ ${r.text}`) });
     return this.fail('unknown_tool', name);
   }
 
-  private async process(command: string, args: string[], timeoutMs: number, signal: AbortSignal, label: string, network: boolean): Promise<ToolResult> {
-    const cmd = [command, ...args].join(' ');
+  /** The sandbox for a command of this task: the worktree is its root whatever directory it runs in. */
+  private sandboxFor(network: boolean): SandboxSpec | undefined | 'unavailable' {
     const iso = this.ctx.isolation;
-    if (iso.mode === 'unavailable') {
-      this.emit('policy.decision', { tool: label, action: redact(cmd), decision: 'deny', reason: `No OS sandbox: ${iso.detail}` });
-      return { ok: false, output: `Not executed: no OS sandbox is available (${iso.detail}). The operator can install one or explicitly allow unsandboxed execution in Settings.`, exitCode: null, artifactIds: [], error: 'sandbox_unavailable' };
-    }
-    const sandbox: SandboxSpec | undefined = iso.mode === 'sandbox'
+    if (iso.mode === 'unavailable') return 'unavailable';
+    return iso.mode === 'sandbox'
       ? { root: this.ctx.cwd, writable: this.ctx.mode !== 'plan_only', network, readOnly: iso.readOnly, readWrite: iso.readWrite, limits: { cpuSeconds: 1800, fileSizeBytes: 1024 ** 3, openFiles: 4096 } }
       : undefined;
+  }
+
+  private noSandbox(label: string, cmd: string): ToolResult {
+    const iso = this.ctx.isolation as Extract<Isolation, { mode: 'unavailable' }>;
+    this.emit('policy.decision', { tool: label, action: redact(cmd), decision: 'deny', reason: `No OS sandbox: ${iso.detail}` });
+    return { ok: false, output: `Not executed: no OS sandbox is available (${iso.detail}). The operator can install one or explicitly allow unsandboxed execution in Settings.`, exitCode: null, artifactIds: [], error: 'sandbox_unavailable' };
+  }
+
+  /** A directory inside the worktree (default its root). Escapes and files are refused like any other path. */
+  private subdir(rel: string | undefined): string {
+    if (!rel || rel === '.') return this.ctx.cwd;
+    const abs = resolveInside(this.ctx.cwd, rel);
+    let dir = false;
+    try { dir = statSync(abs).isDirectory(); } catch { /* missing */ }
+    if (!dir) throw new AtlasError('invalid_request', `cwd is not a directory in the worktree: ${rel}`);
+    return abs;
+  }
+
+  /** Background processes of this attempt (ADR 0026), created on first use. */
+  private bg: BackgroundProcesses | null = null;
+  private background(): BackgroundProcesses {
+    if (this.bg) return this.bg;
+    const flushers = new Map<string, { buf: string; at: number }>();
+    const flush = (p: { id: string; pid: number | null }) => {
+      const f = flushers.get(p.id);
+      if (f?.buf) { this.emit('process.output', { pid: p.pid, text: f.buf, background: p.id }); f.buf = ''; f.at = Date.now(); }
+    };
+    this.bg = new BackgroundProcesses({
+      start: (o) => {
+        const sb = this.sandboxFor(o.network);
+        return this.ex.start!({ command: o.command, args: o.args, cwd: o.cwd, sandbox: sb === 'unavailable' ? undefined : sb, onOutput: o.onOutput });
+      },
+      started: (p) => {
+        flushers.set(p.id, { buf: '', at: Date.now() });
+        this.emit('process.started', { pid: p.pid, command: p.command, cwd: path.join(this.ctx.cwd, p.cwd), label: 'background', background: p.id, name: p.name, sandboxed: this.ctx.isolation.mode === 'sandbox', network: this.ctx.isolation.mode === 'sandbox' ? p.serve : true });
+      },
+      output: (p, t) => {
+        const f = flushers.get(p.id);
+        if (!f) return;
+        f.buf += t;
+        if (f.buf.length > 4000 || Date.now() - f.at > 250) flush(p);
+      },
+      ended: (p, how) => {
+        flush(p);
+        const log = this.artifacts.put({ missionId: this.ctx.missionId, taskId: this.ctx.taskId, kind: 'log', name: `background ${p.id}: ${p.command}`.slice(0, 120), content: `$ ${p.command}${p.cwd !== '.' ? `   (in ${p.cwd})` : ''}\n${p.dropped ? `[${p.dropped} earlier characters dropped]\n` : ''}${p.log}\n[${how.stopped ? 'stopped by the agent or at the end of the task' : `exit ${how.exitCode ?? 'none'}`} · ${Date.now() - p.startedAt} ms]` });
+        this.emit('process.exited', { pid: p.pid, command: p.command, background: p.id, exitCode: how.exitCode, stopped: how.stopped, durationMs: Date.now() - p.startedAt, timedOut: false, cancelled: how.stopped }, [log.id]);
+        if (!how.stopped && how.exitCode !== 0 && how.exitCode !== null) this.failingRuns.add(log.id);
+        return log.id;
+      },
+      probe: async (port) => {
+        try {
+          const r = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1500), redirect: 'manual' });
+          await r.body?.cancel().catch(() => {});
+          return `HTTP ${r.status}`;
+        } catch (e) { return `not answering (${(e as { cause?: { code?: string } }).cause?.code ?? (e as Error).name})`; }
+      },
+    });
+    return this.bg;
+  }
+
+  /** The attempt ended: stop its background processes and record their logs. */
+  async dispose(): Promise<void> { await this.bg?.close(); }
+
+  private async process(command: string, args: string[], timeoutMs: number, signal: AbortSignal, label: string, network: boolean, opts: { cwd?: string; stdin?: string } = {}): Promise<ToolResult> {
+    const cmd = [command, ...args].join(' ');
+    const sb = this.sandboxFor(network);
+    if (sb === 'unavailable') return this.noSandbox(label, cmd);
+    const sandbox = sb;
+    const cwd = opts.cwd ?? this.ctx.cwd;
     let pid = 0;
     let buf = '';
     let flushAt = 0;
     const flush = () => { if (buf) { this.emit('process.output', { pid, text: buf }); buf = ''; } };
     const r = await this.ex.exec({
-      command, args, cwd: this.ctx.cwd, timeoutMs, signal, sandbox,
-      onStart: (p) => { pid = p; this.emit('process.started', { pid, command: redact(cmd), cwd: this.ctx.cwd, label, sandboxed: !!sandbox, network: sandbox ? network : true }); },
+      command, args, cwd, timeoutMs, signal, sandbox, ...(opts.stdin !== undefined ? { stdin: opts.stdin } : {}),
+      onStart: (p) => { pid = p; this.emit('process.started', { pid, command: redact(cmd), cwd, label, sandboxed: !!sandbox, network: sandbox ? network : true }); },
       onOutput: (_s, t) => { buf += t; if (buf.length > 4000 || Date.now() - flushAt > 250) { flushAt = Date.now(); flush(); } },
     });
     flush();
     const log = this.artifacts.put({ missionId: this.ctx.missionId, taskId: this.ctx.taskId, kind: 'log', name: `${label}: ${cmd}`.slice(0, 120), content: `$ ${cmd}\n${r.output}\n[exit ${r.exitCode ?? 'none'}${r.timedOut ? ', timed out' : ''}${r.cancelled ? ', cancelled' : ''} · ${r.durationMs} ms]` });
     this.emit('process.exited', { pid, command: redact(cmd), exitCode: r.exitCode, signal: r.signal, durationMs: r.durationMs, timedOut: r.timedOut, cancelled: r.cancelled, spawnError: r.spawnError }, [log.id]);
     if (r.exitCode !== 0 && !r.spawnError) this.failingRuns.add(log.id);
-    const tail = r.output.length > 12_000 ? `… [${r.output.length - 12_000} earlier characters omitted]\n${r.output.slice(-12_000)}` : r.output;
+    // Long output: its start (where commands print what they are doing) and its end (where they print the result).
+    const tail = r.output.length > 12_000 ? `${r.output.slice(0, 3_000)}\n… [${r.output.length - 12_000} characters omitted; the full output is in ${log.id}]\n${r.output.slice(-9_000)}` : r.output;
     const status = r.spawnError ? `Failed to start: ${r.spawnError}` : r.timedOut ? 'Timed out' : r.cancelled ? 'Cancelled' : `Exit code ${r.exitCode}`;
     return { ok: r.exitCode === 0, output: `${tail}\n${status} · log ${log.id}`, exitCode: r.exitCode, artifactIds: [log.id], error: r.timedOut ? 'timeout' : r.cancelled ? 'cancelled' : r.exitCode === 0 ? null : 'process_failed' };
   }
@@ -346,7 +458,7 @@ ${r.text}`) });
     }
     if (want('commands')) {
       const runs = mine.filter((e) => e.type === 'process.exited').slice(-20);
-      out.push(`\n# Commands you ran (last ${runs.length})\n${runs.length ? runs.map((e) => `- ${e.payload.command} → ${e.payload.timedOut ? 'timed out' : e.payload.cancelled ? 'cancelled' : `exit ${e.payload.exitCode}`}${e.payload.durationMs != null ? ` (${e.payload.durationMs} ms)` : ''}`).join('\n') : 'none'}`);
+      out.push(`\n# Commands you ran (last ${runs.length})\n${runs.length ? runs.map((e) => `- ${e.payload.background ? `[background ${e.payload.background}] ` : ''}${e.payload.command} → ${e.payload.stopped ? 'stopped' : e.payload.timedOut ? 'timed out' : e.payload.cancelled ? 'cancelled' : `exit ${e.payload.exitCode}`}${e.payload.durationMs != null ? ` (${e.payload.durationMs} ms)` : ''}`).join('\n') : 'none'}`);
       const denied = this.repo.approvals(missionId).filter((a) => a.taskId === taskId && (a.status === 'denied' || a.status === 'expired'));
       const policy = mine.filter((e) => e.type === 'policy.decision' && e.payload.decision === 'deny').slice(-10);
       if (denied.length || policy.length) out.push(`\n# Refused\n${[...denied.map((a) => `- approval ${a.status}: ${a.action}`), ...policy.map((e) => `- policy denied ${e.payload.tool}: ${e.payload.reason}`)].join('\n')}`);
@@ -368,7 +480,9 @@ function ok(output: string): ToolResult { return { ok: true, output, exitCode: n
 
 export function describe(tool: string, a: Record<string, any>): string {
   switch (tool) {
-    case 'shell_exec': return redact([a.command, ...(a.args ?? [])].join(' '));
+    case 'shell_exec': return redact([a.command, ...(a.args ?? [])].join(' ') + (a.cwd && a.cwd !== '.' ? `   (in ${a.cwd})` : ''));
+    case 'process_start': return redact(`${a.serve ? 'serve' : 'background'}: ${[a.command, ...(a.args ?? [])].join(' ')}${a.cwd && a.cwd !== '.' ? `   (in ${a.cwd})` : ''}`);
+    case 'process_read': case 'process_stop': return `${tool.slice(8)} ${a.id}`;
     case 'read_file': case 'list_files': case 'write_file': return a.path;
     case 'run_tests': return 'project test command';
     case 'load_skill': return `skill ${a.name}`;
@@ -381,5 +495,6 @@ function resourcesOf(tool: string, a: Record<string, any>): string[] {
   if (tool === 'write_file') return [a.path];
   if (tool === 'mcp_call') return [`external service: MCP server ${a.server}`];
   if (tool === 'shell_exec') return ['worktree files', ...(['curl', 'wget', 'npm', 'pnpm', 'yarn', 'git'].includes(a.command) ? ['network'] : [])];
+  if (tool === 'process_start') return ['worktree files', ...(a.serve ? ['network (serves on loopback)'] : []), 'runs until stopped or the task ends'];
   return [];
 }

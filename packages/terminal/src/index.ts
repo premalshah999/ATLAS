@@ -46,6 +46,8 @@ export interface RunOptions {
   onOutput?: (stream: 'stdout' | 'stderr', text: string) => void;
   /** Run inside the OS sandbox. When set and no sandbox exists, the run fails closed (spawnError). */
   sandbox?: SandboxSpec;
+  /** Text written to the command's standard input, which is then closed. Without it, stdin is empty. */
+  stdin?: string;
 }
 
 export interface RunResult {
@@ -150,8 +152,13 @@ export async function run(o: RunOptions): Promise<RunResult> {
       shell: false,
       windowsHide: true,
       windowsVerbatimArguments: plan.verbatim,
-      stdio: statusFd !== undefined ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'],
+      stdio: [o.stdin !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe', ...(statusFd !== undefined ? ['pipe' as const] : [])],
     });
+    if (o.stdin !== undefined && child.stdin) {
+      // A command that exits without reading its input closes the pipe early: that is not an error.
+      child.stdin.on('error', () => {});
+      child.stdin.end(o.stdin);
+    }
     const pid = child.pid ?? null;
     const inner = trackSandboxChild(child, statusFd);
     const unjournal = journalStart(pid, 'command', [o.command, ...o.args].join(' '));
@@ -216,7 +223,7 @@ export interface ProcessHandle {
 }
 
 /** Start a long-lived process (an app server under test, a local staging deployment). Same isolation rules as run(). */
-export function startProcess(o: { command: string; args: string[]; cwd: string; env?: Record<string, string>; sandbox?: SandboxSpec; maxOutput?: number; onOutput?: (text: string) => void; io?: boolean }): ProcessHandle {
+export function startProcess(o: { command: string; args: string[]; cwd: string; env?: Record<string, string>; sandbox?: SandboxSpec; maxOutput?: number; onOutput?: (text: string) => void; onExit?: (code: number | null) => void; io?: boolean }): ProcessHandle {
   let cmd = o.command, argv = o.args, env = o.env ?? sanitizedEnv();
   let cleanup: (() => void) | undefined;
   let statusFd: number | undefined;
@@ -236,7 +243,9 @@ export function startProcess(o: { command: string; args: string[]; cwd: string; 
   const take = (b: Buffer) => { const t = redact(b.toString('utf8')); o.onOutput?.(t); buf = (buf + t).slice(-max); };
   if (!o.io) child.stdout!.on('data', take);
   child.stderr!.on('data', take);
-  child.on('error', (e) => { spawnError = e.message; exit = { code: null }; });
+  let notified = false;
+  const notify = (code: number | null) => { if (!notified) { notified = true; o.onExit?.(code); } };
+  child.on('error', (e) => { spawnError = e.message; exit = { code: null }; notify(null); });
   const unjournal = journalStart(child.pid, 'service', [o.command, ...o.args].join(' '));
   const done = new Promise<void>((r) => child.on('close', (code) => {
     exit = { code };
@@ -247,6 +256,7 @@ export function startProcess(o: { command: string; args: string[]; cwd: string; 
     if (c && process.platform !== 'win32') { try { process.kill(-c, 'SIGKILL'); } catch { /* group already empty */ } }
     cleanup?.();
     r();
+    notify(code);
   }));
   child.on('exit', () => setTimeout(() => { if (!exit) for (const st of child.stdio) (st as Readable | null)?.destroy(); }, 3000).unref());
   return {

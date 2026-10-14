@@ -113,7 +113,8 @@ export class FakeRuntime implements AgentRuntime {
         const callId = `call-${calls}`;
         q.push({ type: 'tool_call', callId, tool: step.tool, args: step.args });
         const r = await input.tools.invoke(step.tool, step.args, signal);
-        q.push({ type: 'tool_result', callId, tool: step.tool, ok: r.ok, summary: r.output.slice(0, 2000) });
+        // Long results keep their start and their end, where commands print their status.
+        q.push({ type: 'tool_result', callId, tool: step.tool, ok: r.ok, summary: r.output.length > 2000 ? `${r.output.slice(0, 1000)}\n[…]\n${r.output.slice(-1000)}` : r.output });
         if (signal.aborted) { q.push({ type: 'error', kind: 'cancelled', message: 'Run cancelled' }); return; }
       }
     }

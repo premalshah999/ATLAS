@@ -330,6 +330,31 @@ describe('stall watchdog exemptions (P1-6 review)', () => {
     expect(h.events.some((e) => e.type === 'process.exited')).toBe(true);
     expect(h.events.filter((e) => e.type === 'attempt.stalled')).toEqual([]);
   });
+
+  it('a tool call ATLAS is still preparing is not a stall (Windows CI: slow sandbox grants before the process starts)', async () => {
+    // Setup that takes longer than the threshold before any process exists, as ACL grants on a slow runner do.
+    const slow: Executors = { ...realExecutors, exec: async (o) => { await new Promise((r) => setTimeout(r, 700)); return realExecutors.exec(o); } };
+    const steps = [{ tool: 'shell_exec', args: { command: 'node', args: ['--version'] } }, { claim: 'done' }];
+    const h = makeOrchestrator({ scripts: [forTask('implement', steps as any)], stallAfterMs: 250, executors: slow });
+    const id = await startMission(h, sampleRepo());
+    await h.orch.settle(id);
+    expect(h.events.some((e) => e.type === 'process.exited')).toBe(true);
+    expect(h.events.filter((e) => e.type === 'attempt.stalled')).toEqual([]);
+  });
+
+  it('a background process does not hide a silent agent (ADR 0026)', async () => {
+    const steps = [
+      { tool: 'write_file', args: { path: 'watch.mjs', content: 'setInterval(() => {}, 1000);\n' } },
+      { tool: 'process_start', args: { command: 'node', args: ['watch.mjs'], waitSec: 0 } },
+      { wait: 900 },
+      { claim: 'done' },
+    ];
+    const h = makeOrchestrator({ scripts: [forTask('implement', steps as any)], stallAfterMs: 250 });
+    const id = await startMission(h, sampleRepo());
+    const stalled = await waitFor(() => h.events.find((e) => e.type === 'attempt.stalled'));
+    expect(h.events.some((e) => e.type === 'process.started' && e.payload.background === 'p1' && e.seq < stalled.seq)).toBe(true);
+    await h.orch.settle(id);
+  });
 });
 
 describe('verification cannot be redefined by the agent (evolution P0-3, incl. independent-review bypasses)', () => {

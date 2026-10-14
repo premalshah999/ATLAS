@@ -151,3 +151,29 @@ describe('mcp.call (ADR 0018)', () => {
   });
   it('always asks in plan-only missions', () => { expect(call({ mcpApproval: 'allow', mode: 'plan_only' }).decision).toBe('ask'); });
 });
+
+describe('background processes (ADR 0026)', () => {
+  const ev = (role: Parameters<typeof evaluate>[0]['role'], tool: string, args: Record<string, unknown>, mode: Parameters<typeof evaluate>[0]['mode'] = 'ask_risky', sandboxed = true) => evaluate({ role, tool, args, mode, sandboxed });
+  it('starting one is classified exactly like shell_exec', () => {
+    expect(ev('coder', 'process_start', { command: 'npm', args: ['run', 'dev'] })).toMatchObject({ decision: 'allow', capability: 'shell.safe' });
+    expect(ev('coder', 'process_start', { command: 'npm', args: ['install'] })).toMatchObject({ decision: 'ask', network: true });
+    expect(ev('coder', 'process_start', { command: 'sudo', args: ['node', 'server.js'] }).decision).toBe('deny');
+    expect(ev('coder', 'process_start', { command: 'bash', args: ['-c', 'node server.js &'] }).decision).toBe('ask');
+    expect(ev('coder', 'process_start', { command: '', args: [] })).toMatchObject({ decision: 'deny', reason: 'process_start requires a command' });
+    // Without a sandbox, project code needs a person, as for shell_exec.
+    expect(ev('coder', 'process_start', { command: 'npm', args: ['run', 'dev'] }, 'ask_risky', false).decision).toBe('ask');
+  });
+  it('serving on loopback needs network, so a person approves it; roles without privileged commands cannot', () => {
+    expect(ev('coder', 'process_start', { command: 'npm', args: ['run', 'dev'], serve: true })).toMatchObject({ decision: 'ask', capability: 'shell.privileged', network: true, reason: expect.stringMatching(/network access/) });
+    expect(ev('tester', 'process_start', { command: 'npm', args: ['run', 'dev'], serve: true }).decision).toBe('deny');
+    expect(ev('tester', 'process_start', { command: 'npm', args: ['run', 'dev'] }).decision).toBe('allow');
+    expect(ev('coder', 'process_start', { command: 'npm', args: ['run', 'dev'], serve: true }, 'plan_only').decision).toBe('deny');
+  });
+  it('reading, listing and stopping need the shell grant at most; roles without a shell cannot', () => {
+    expect(ev('reviewer', 'process_read', { id: 'p1' }).decision).toBe('allow');
+    expect(ev('reviewer', 'process_list', {}).decision).toBe('allow');
+    expect(ev('reviewer', 'process_stop', { id: 'p1' }).decision).toBe('allow');
+    expect(ev('browser_qa', 'process_start', { command: 'npm', args: ['run', 'dev'] }).decision).toBe('deny');
+    expect(ev('browser_qa', 'process_stop', { id: 'p1' }).decision).toBe('deny');
+  });
+});

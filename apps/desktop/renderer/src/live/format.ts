@@ -58,8 +58,12 @@ export function describeEvent(e: AtlasEvent): Row | null {
     case 'policy.decision': return p.decision === 'deny' ? { title: `Denied by policy: ${p.tool}`, detail: p.reason, meta: p.action, tone: 'danger', kind: 'error', who } : null;
     case 'approval.requested': return { title: `Approval requested: ${p.action}`, detail: p.reason, meta: `${p.risk} risk`, tone: 'warning', kind: 'approval', who };
     case 'approval.decided': return { title: `Approval ${p.status}`, meta: p.action, tone: p.status === 'approved' ? 'human' : 'warning', kind: 'approval', who };
-    case 'process.started': return { title: `$ ${p.command}`, tone: 'muted', kind: 'activity', who };
-    case 'process.exited': return { title: `${p.command}`, meta: p.timedOut ? 'timed out' : p.cancelled ? 'cancelled' : `exit ${p.exitCode} · ${fmtMs(p.durationMs)}`, tone: p.exitCode === 0 ? 'muted' : 'warning', kind: 'test', who };
+    case 'process.started': return p.background
+      ? { title: `Background ${p.background} · ${p.name}: $ ${p.command}`, meta: p.network ? 'serves on loopback' : 'running', tone: 'muted', kind: 'activity', who }
+      : { title: `$ ${p.command}`, tone: 'muted', kind: 'activity', who };
+    case 'process.exited': return p.background
+      ? { title: `Background ${p.background}: ${p.command}`, meta: `${p.stopped ? 'stopped' : `exit ${p.exitCode}`} · ${fmtMs(p.durationMs)}`, tone: p.stopped || p.exitCode === 0 ? 'muted' : 'warning', kind: 'activity', who }
+      : { title: `${p.command}`, meta: p.timedOut ? 'timed out' : p.cancelled ? 'cancelled' : `exit ${p.exitCode} · ${fmtMs(p.durationMs)}`, tone: p.exitCode === 0 ? 'muted' : 'warning', kind: 'test', who };
     case 'workspace.worktree': return p.action === 'created'
       ? { title: 'Worktree created', detail: p.path, meta: p.branch, tone: 'muted', kind: 'activity', who }
       : { title: p.commit ? `Checkpoint ${String(p.commit).slice(0, 7)}` : 'No file changes to checkpoint', meta: p.files?.length ? `${p.files.length} file${p.files.length === 1 ? '' : 's'}` : undefined, tone: 'muted', kind: 'file', who };

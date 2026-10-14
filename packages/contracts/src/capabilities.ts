@@ -7,7 +7,7 @@ export const Capability = z.enum([
 ]);
 export type Capability = z.infer<typeof Capability>;
 
-export const ToolName = z.enum(['read_file', 'list_files', 'write_file', 'shell_exec', 'git_status', 'run_tests', 'view_diff', 'report_finding', 'delegate', 'browser_action', 'desktop_action', 'staging_deploy', 'inspect_logs', 'mcp_call', 'security_scan', 'mission_memory', 'code_graph']);
+export const ToolName = z.enum(['read_file', 'list_files', 'write_file', 'shell_exec', 'git_status', 'run_tests', 'view_diff', 'report_finding', 'delegate', 'browser_action', 'desktop_action', 'staging_deploy', 'inspect_logs', 'mcp_call', 'security_scan', 'mission_memory', 'code_graph', 'process_start', 'process_read', 'process_stop', 'process_list']);
 export type ToolName = z.infer<typeof ToolName>;
 
 export type Risk = 'low' | 'elevated' | 'high';

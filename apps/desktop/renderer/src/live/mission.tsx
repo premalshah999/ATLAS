@@ -319,9 +319,9 @@ function ProcessPane({ events }: { events: AtlasEvent[] }) {
   const lines = useMemo(() => {
     const out: { k: 'cmd' | 'out' | 'exit'; text: string; ok?: boolean }[] = [];
     for (const e of events) {
-      if (e.type === 'process.started') out.push({ k: 'cmd', text: `$ ${e.payload.command}` });
+      if (e.type === 'process.started') out.push({ k: 'cmd', text: e.payload.background ? `$ ${e.payload.command} &   # background ${e.payload.background}` : `$ ${e.payload.command}` });
       else if (e.type === 'process.output') out.push({ k: 'out', text: String(e.payload.text) });
-      else if (e.type === 'process.exited') out.push({ k: 'exit', text: e.payload.timedOut ? '[timed out]' : e.payload.cancelled ? '[cancelled]' : `[exit ${e.payload.exitCode} · ${fmtMs(e.payload.durationMs as number)}]`, ok: e.payload.exitCode === 0 });
+      else if (e.type === 'process.exited') out.push({ k: 'exit', text: e.payload.background ? `[background ${e.payload.background} ${e.payload.stopped ? 'stopped' : `exit ${e.payload.exitCode}`} · ${fmtMs(e.payload.durationMs as number)}]` : e.payload.timedOut ? '[timed out]' : e.payload.cancelled ? '[cancelled]' : `[exit ${e.payload.exitCode} · ${fmtMs(e.payload.durationMs as number)}]`, ok: e.payload.exitCode === 0 || !!e.payload.stopped });
     }
     return out;
   }, [events]);

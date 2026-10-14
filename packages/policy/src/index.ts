@@ -143,6 +143,12 @@ export const TOOL_CAPABILITY: Record<string, Capability | 'shell'> = {
   git_status: 'fs.read',
   write_file: 'fs.write',
   shell_exec: 'shell',
+  // Background processes (ADR 0026): starting one is a command like shell_exec; reading, listing and stopping the
+  // task's own processes run nothing new.
+  process_start: 'shell',
+  process_read: 'fs.read',
+  process_list: 'fs.read',
+  process_stop: 'shell.safe',
   run_tests: 'shell.safe',
   view_diff: 'fs.read',
   report_finding: 'fs.read',
@@ -190,10 +196,16 @@ export function evaluate({ role, tool, args, mode, sandboxed, mcpApproval }: Eva
   if (mapped === 'shell') {
     const command = typeof args.command === 'string' ? args.command : '';
     const argv = Array.isArray(args.args) ? args.args.map(String) : [];
-    if (!command) return { decision: 'deny', capability: null, risk: 'high', reason: 'shell_exec requires a command' };
+    if (!command) return { decision: 'deny', capability: null, risk: 'high', reason: `${tool} requires a command` };
     const c = classifyCommand(command, argv);
     if (!c.capability) return { decision: 'deny', capability: null, risk: c.risk, reason: c.reason };
     capability = c.capability; risk = c.risk; why = c.reason; network = !!c.network; projectCode = !!c.runsProjectCode;
+    // A served process gets the network so loopback reaches it; that is egress too, so a person approves it.
+    if (tool === 'process_start' && args.serve === true) {
+      network = true;
+      if (capability === 'shell.safe') { capability = 'shell.privileged'; risk = 'elevated'; }
+      why = `${why}; serving on loopback gives it network access`;
+    }
   } else {
     capability = mapped;
     if (capability === 'fs.write') risk = 'low';
