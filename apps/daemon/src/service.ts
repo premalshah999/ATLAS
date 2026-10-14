@@ -2,8 +2,9 @@
 // It receives already-validated intents from Electron main and re-validates them before acting.
 import path from 'node:path';
 import { mkdirSync, readFileSync } from 'node:fs';
-import { AtlasError, InternalRequests, McpServerConfig, mcpSecretEnv, parseRequest, PROVIDER_ENV, registerSecret, type AtlasEvent, type McpServerView, type McpToolInfo, type Method } from '@atlas/contracts';
+import { AtlasError, InternalRequests, McpServerConfig, SearchAccount, WebSettings, mcpSecretEnv, parseRequest, PROVIDER_ENV, registerSecret, type AtlasEvent, type McpServerView, type McpToolInfo, type Method } from '@atlas/contracts';
 import { McpManager } from '@atlas/mcp';
+import { emptyPoolState, environmentAccounts, WebService, type AddressFilter, type PoolState } from '@atlas/web';
 import { apply as syncApply, foreignServers, locations as syncLocations, plan as syncPlan, type SyncState, type Target as SyncTarget } from '@atlas/sync';
 import { ArtifactStore, openDb, Repo, schemaVersion, type Db } from '@atlas/storage';
 import { GitHubForge, Orchestrator, ROLES, suiteHash, type Skill } from '@atlas/orchestrator';
@@ -32,6 +33,13 @@ export interface ServiceOptions {
   githubToken?: string;
   /** GitHub API base, for GitHub-compatible test servers. Default https://api.github.com. */
   githubApi?: string;
+  /** Search account keys from the credential store (ADR 0030): account id → key. */
+  webKeys?: Record<string, string>;
+  /** TAVILY_API_KEY, BRAVE_API_KEY, GOOGLE_API_KEY and GOOGLE_CSE_ID from the launching shell. */
+  webEnv?: Record<string, string | undefined>;
+  /** Tests: the fetch used for search providers, and the addresses web tools may reach. */
+  webFetch?: typeof fetch;
+  webAllowed?: AddressFilter;
 }
 
 export class DaemonService {
@@ -46,6 +54,9 @@ export class DaemonService {
   private deploySecrets: Record<string, Record<string, string>>;
   private mcpSecrets: Record<string, Record<string, string>>;
   readonly mcp: McpManager;
+  private webKeys: Record<string, string>;
+  private readonly webEnv: ReturnType<typeof environmentAccounts>;
+  readonly web: WebService;
   private githubToken: string | null;
   readonly deploy: DeployManager;
   readonly desktop: DesktopManager;
@@ -75,6 +86,18 @@ export class DaemonService {
       allowUnsandboxed: () => this.repo.setting('execution.allowUnsandboxed', false),
       log: (m, d) => this.log.info(m, d),
     });
+    this.webKeys = { ...(o.webKeys ?? {}) };
+    this.webEnv = environmentAccounts(o.webEnv ?? {});
+    for (const v of [...Object.values(this.webKeys), ...Object.values(this.webEnv.keys)]) registerSecret(v);
+    this.web = new WebService({
+      settings: () => this.webSettings(),
+      accounts: () => [...this.webAccounts(), ...this.webEnv.accounts],
+      key: (id) => this.webKeys[id] ?? this.webEnv.keys[id],
+      fromEnvironment: (id) => id in this.webEnv.keys,
+      load: () => this.repo.setting<PoolState>('web.pool', emptyPoolState()),
+      save: (s) => this.repo.setSetting('web.pool', s),
+      fetch: o.webFetch, allowed: o.webAllowed,
+    });
     this.githubToken = o.githubToken || null;
     if (this.githubToken) registerSecret(this.githubToken);
     for (const t of Object.values(this.deploySecrets)) for (const v of Object.values(t)) registerSecret(v);
@@ -91,6 +114,7 @@ export class DaemonService {
     this.orch = new Orchestrator({ repo: this.repo, artifacts: this.artifacts, runtimes: { fake: this.fake, pi: this.pi }, worktreeDir: path.join(o.dataDir, 'worktrees'), factsDir: path.join(o.dataDir, 'facts'), skillDirs: { bundled: o.skillsDir, operator: path.join(o.dataDir, 'skills') },
       forge: () => this.forge(),
       mcp: this.mcp,
+      web: this.web,
       publishGate: (m, files) => this.team.gate(m, files),
       stages: [applicationStage(), visualStage(), stagingStage(this.deploy)],
       toolFactories: {
@@ -118,6 +142,15 @@ export class DaemonService {
   }
 
   private forge() { return this.githubToken ? new GitHubForge({ token: this.githubToken, apiBase: this.o.githubApi }) : null; }
+
+  /** Web access settings (ADR 0030); invalid stored values fall back to the defaults (web access off). */
+  private webSettings(): WebSettings {
+    const r = WebSettings.safeParse(this.repo.setting<unknown>('web.settings', {}));
+    return r.success ? r.data : WebSettings.parse({});
+  }
+  private webAccounts(): SearchAccount[] {
+    return this.repo.setting<unknown[]>('web.accounts', []).flatMap((a) => { const r = SearchAccount.safeParse(a); return r.success ? [r.data] : []; });
+  }
 
   /** Operator-configured MCP servers (settings); entries that no longer validate are skipped, never guessed. */
   private mcpServers(): McpServerConfig[] {
@@ -404,6 +437,32 @@ export class DaemonService {
       }
       case 'runtime.health': return Promise.all([this.fake.health(), this.pi.health()]);
       case 'models.list': return this.pi.models();
+      case 'web.view': return this.web.view();
+      case 'web.settings.save': {
+        this.repo.setSetting('web.settings', p.settings);
+        this.log.warn('web settings saved', { enabled: p.settings.enabled, roles: p.settings.roles, order: p.settings.order, strategy: p.settings.strategy, allowedSites: p.settings.allowedSites.length, allowSubmit: p.settings.allowSubmit });
+        return this.web.view();
+      }
+      case 'web.account.save': {
+        if (p.account.id in this.webEnv.keys) throw new AtlasError('invalid_request', 'This account comes from the environment; change it where ATLAS is launched');
+        // The key itself is stored by Electron main in the OS credential store; it never reaches this database.
+        const others = this.webAccounts().filter((a) => a.id !== p.account.id);
+        this.repo.setSetting('web.accounts', [...others, p.account]);
+        this.log.warn('search account saved', { id: p.account.id, provider: p.account.provider, enabled: p.account.enabled });
+        return this.web.view();
+      }
+      case 'web.account.remove': {
+        this.repo.setSetting('web.accounts', this.webAccounts().filter((a) => a.id !== p.id));
+        this.web.pool.forget(p.id);
+        delete this.webKeys[p.id];
+        this.log.warn('search account removed', { id: p.id });
+        return this.web.view();
+      }
+      case 'web.account.test': {
+        const test = await this.web.pool.test(p.id, AbortSignal.timeout(20_000));
+        return { ...this.web.view(), test };
+      }
+      case 'web.account.reset': this.web.pool.reset(p.id); return this.web.view();
       case 'mcp.list': return this.mcpView();
       case 'mcp.save': {
         const others = this.mcpServers().filter((s) => s.name !== p.server.name);
@@ -512,6 +571,10 @@ export class DaemonService {
       if (params.mcpSecrets) {
         this.mcpSecrets = params.mcpSecrets;
         for (const t of Object.values(this.mcpSecrets)) for (const v of Object.values(t)) registerSecret(v);
+      }
+      if (params.webKeys) {
+        this.webKeys = params.webKeys;
+        for (const v of Object.values(this.webKeys)) registerSecret(v);
       }
       if (params.deploySecrets) {
         this.deploySecrets = params.deploySecrets;

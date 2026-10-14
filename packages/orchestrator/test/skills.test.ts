@@ -1,3 +1,4 @@
+import { ROLE_GRANTS } from '@atlas/policy';
 import { describe, expect, it } from 'vitest';
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -32,7 +33,7 @@ describe('SkillLibrary', () => {
     const lib = new SkillLibrary({ bundled: BUNDLED, operator: tmpDir() });
     const r = lib.trusted();
     expect(r.errors).toEqual([]);
-    expect(r.skills.map((s) => s.name)).toEqual(['api-compatibility', 'architecture-tournament', 'codebase-orientation', 'data-migration-safety', 'delegation-planner', 'dependency-upgrade', 'deployment-detective', 'evidence-report', 'experimental-scientist', 'flaky-test-hunter', 'frontend-verification', 'reproduce-before-fix', 'ruthless-simplifier', 'safe-refactor', 'skeptical-review', 'test-first-feature', 'threat-model']);
+    expect(r.skills.map((s) => s.name)).toEqual(['api-compatibility', 'architecture-tournament', 'codebase-orientation', 'data-migration-safety', 'delegation-planner', 'dependency-upgrade', 'deployment-detective', 'evidence-report', 'experimental-scientist', 'flaky-test-hunter', 'frontend-verification', 'reproduce-before-fix', 'ruthless-simplifier', 'safe-refactor', 'skeptical-review', 'test-first-feature', 'threat-model', 'web-research']);
     expect(r.skills.every((s) => s.source === 'bundled' && /^[0-9a-f]{64}$/.test(s.hash))).toBe(true);
   });
 
@@ -125,10 +126,14 @@ describe('skills authored in ATLAS, disabled skills, other tools\' skills (ADR 0
   });
 });
 
-/** Tools a role can actually use: its own, plus what ATLAS offers every task (ADR 0024, 0026, 0013). */
+/**
+ * Tools a role can actually use: its own, plus what ATLAS offers every task (ADR 0024, 0026, 0013), plus the web tools
+ * for roles granted the web when the operator turns web access on (ADR 0030).
+ */
 function toolsOf(role: string): Set<string> {
   const own = [...(ROLES[role as keyof typeof ROLES]?.tools ?? [])];
-  return new Set([...own, 'mission_memory', 'code_graph', 'load_skill', 'read_skill_file', ...(own.includes('shell_exec') ? ['process_start', 'process_read', 'process_stop', 'process_list'] : [])]);
+  const web = ROLE_GRANTS[role as keyof typeof ROLE_GRANTS]?.includes('web.search') ? ['web_search', 'web_fetch', 'web_browse'] : [];
+  return new Set([...own, ...web, 'mission_memory', 'code_graph', 'load_skill', 'read_skill_file', ...(own.includes('shell_exec') ? ['process_start', 'process_read', 'process_stop', 'process_list'] : [])]);
 }
 const TOOL_NAMES = new Set([...TOOL_SPECS.map((t) => t.name), 'inspect_logs']);
 
@@ -166,6 +171,7 @@ describe('the bundled skill library is consistent with the harness (ADR 0029)', 
     ['browser_qa', 'Check the signup form on mobile', 'frontend-verification'],
     ['reviewer', 'Change the response schema of the public /v1/users API', 'api-compatibility'],
     ['coder', 'Make the search page faster: the latency is too high', 'experimental-scientist'],
+    ['coder', 'Look up the official documentation for the new fetch API and use it', 'web-research'],
   ])('%s, "%s" → %s first', (role, task, expected) => {
     const rec = recommendSkills(lib.forRole(role), task);
     expect(rec[0]?.skill.name, JSON.stringify(rec.map((r) => [r.skill.name, r.matched]))).toBe(expected);

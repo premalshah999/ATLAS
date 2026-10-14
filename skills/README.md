@@ -33,6 +33,7 @@ operator imports that exact version.
 | frontend-verification | browser QA, deployment verifier | Exercise a UI: states, keyboard, small screens, console, network |
 | deployment-detective | browser QA, deployment verifier, tester | Verify what is really running after a deployment |
 | evidence-report | every role | Finish with a report where every claim has evidence |
+| web-research | coder, reviewer, tester, security engineer | Answer a question from the web with version-matched, cited sources ([ADR 0030](../docs/adr/0030-web-access-for-agents.md)) |
 
 Every bundled skill passes a consistency gate (`packages/orchestrator/test/skills.test.ts`):
 - its tools exist, and its roles hold them;

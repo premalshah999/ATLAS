@@ -34,7 +34,16 @@ async function main() {
   if (process.env.ATLAS_MCP_SECRETS) { try { mcpSecrets = JSON.parse(process.env.ATLAS_MCP_SECRETS); } catch { /* ignored */ } delete process.env.ATLAS_MCP_SECRETS; }
   const mcpEnvSecrets: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (k.startsWith('ATLAS_MCP_SECRET_') && v) { mcpEnvSecrets[k] = v; delete process.env[k]; }
-  const svc = new DaemonService({ dataDir, skillsDir: process.env.ATLAS_SKILLS_DIR, version: process.env.ATLAS_VERSION ?? '0.0.0', apiKeys, model: process.env.ATLAS_MODEL || undefined, deploySecrets, mcpSecrets, mcpEnvSecrets, githubToken, githubApi: process.env.ATLAS_GITHUB_API || undefined });
+  let webKeys: Record<string, string> = {};
+  if (process.env.ATLAS_WEB_KEYS) { try { webKeys = JSON.parse(process.env.ATLAS_WEB_KEYS); } catch { /* ignored */ } delete process.env.ATLAS_WEB_KEYS; }
+  const webEnv: Record<string, string | undefined> = {};
+  for (const k of ['TAVILY_API_KEY', 'BRAVE_API_KEY', 'BRAVE_SEARCH_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_CSE_ID']) { webEnv[k] = process.env[k]; delete process.env[k]; }
+  // Tests only: send search provider requests to a fake provider on loopback instead of the real services.
+  const testBase = process.env.ATLAS_WEB_TEST_BASE;
+  const webFetch = testBase && /^http:\/\/127\.0\.0\.1:\d+$/.test(testBase)
+    ? ((url: string | URL | Request, init?: RequestInit) => { const u = new URL(String(url)); return fetch(`${testBase}/${u.hostname}${u.pathname}${u.search}`, init); }) as typeof fetch
+    : undefined;
+  const svc = new DaemonService({ dataDir, skillsDir: process.env.ATLAS_SKILLS_DIR, version: process.env.ATLAS_VERSION ?? '0.0.0', apiKeys, model: process.env.ATLAS_MODEL || undefined, deploySecrets, mcpSecrets, mcpEnvSecrets, githubToken, githubApi: process.env.ATLAS_GITHUB_API || undefined, webKeys, webEnv, webFetch });
   const io = port();
   installCrashGuards(svc.log);
   svc.onEvent((event) => io.send({ kind: 'event', event }));

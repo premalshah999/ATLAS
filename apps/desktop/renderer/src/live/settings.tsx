@@ -7,6 +7,7 @@ import { roleName } from './format';
 import { toast } from './toast';
 import { ModelSelect } from './models';
 import { McpSection } from './mcp';
+import { WebSection } from './web';
 import { SkillsSection } from './skills';
 import { SyncSection } from './sync';
 
@@ -93,6 +94,7 @@ export function Settings() {
           <RolesSection />
           <SkillsSection />
           <McpSection />
+          <WebSection />
           <SyncSection />
           <ExportKeysSection />
           <section className="lv-section" data-testid="providers">

@@ -38,6 +38,7 @@
     "@atlas/storage": "workspace:*",
     "@atlas/team": "workspace:*",
     "@atlas/terminal": "workspace:*",
+    "@atlas/web": "workspace:*",
     "@atlas/workspace": "workspace:*",
     "@eslint/js": "9.17.0",
     "@playwright/test": "1.56.1",

@@ -13,3 +13,4 @@ export * from './providers';
 export * from './mcp';
 export * from './team';
 export * from './pipeline';
+export * from './web';

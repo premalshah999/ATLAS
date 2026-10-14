@@ -5,7 +5,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { IPC, parseRequest, PROVIDER_ENV, SERVICE_ENV, type Envelope, type Method } from '@atlas/contracts';
 import { DaemonClient, type DaemonStatus } from './daemon';
-import { credentials, deploySecrets, mcpSecrets } from './credentials';
+import { credentials, deploySecrets, mcpSecrets, webKeys, webKeyValues } from './credentials';
 
 const isMac = process.platform === 'darwin';
 const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -55,17 +55,22 @@ function daemonEnv(): Record<string, string> {
   if (Object.keys(providerKeys).length) env.ATLAS_PROVIDER_KEYS = JSON.stringify(providerKeys);
   for (const [service, name] of Object.entries(SERVICE_ENV)) if (keys[service]) env[name] = keys[service];
   if (process.env.ATLAS_GITHUB_API) env.ATLAS_GITHUB_API = process.env.ATLAS_GITHUB_API;
+  if (process.env.ATLAS_WEB_TEST_BASE) env.ATLAS_WEB_TEST_BASE = process.env.ATLAS_WEB_TEST_BASE;
   const ds = deploySecrets.decrypted();
   if (Object.keys(ds).length) env.ATLAS_DEPLOY_SECRETS = JSON.stringify(ds);
   // MCP secrets exported in the launching shell (for systems without a credential store); resolved by the daemon.
   for (const [k, v] of Object.entries(process.env)) if (k.startsWith('ATLAS_MCP_SECRET_') && v) env[k] = v;
   const ms = mcpSecrets.decrypted();
   if (Object.keys(ms).length) env.ATLAS_MCP_SECRETS = JSON.stringify(ms);
+  // Search accounts (ADR 0030): stored keys, and keys exported in the launching shell.
+  const wk = webKeyValues();
+  if (Object.keys(wk).length) env.ATLAS_WEB_KEYS = JSON.stringify(wk);
+  for (const k of ['TAVILY_API_KEY', 'BRAVE_API_KEY', 'BRAVE_SEARCH_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_CSE_ID']) if (process.env[k]) env[k] = process.env[k]!;
   return env;
 }
 
 /** Hand the daemon every decrypted key and secret again after one changed. */
-const applySecrets = () => daemon.request('credentials.apply', { keys: credentials.keys(), deploySecrets: deploySecrets.decrypted(), mcpSecrets: mcpSecrets.decrypted() });
+const applySecrets = () => daemon.request('credentials.apply', { keys: credentials.keys(), deploySecrets: deploySecrets.decrypted(), mcpSecrets: mcpSecrets.decrypted(), webKeys: webKeyValues() });
 
 async function route(method: Method, params: any): Promise<unknown> {
   switch (method) {
@@ -123,6 +128,18 @@ async function route(method: Method, params: any): Promise<unknown> {
     case 'mcp.remove': {
       const out = await daemon.request('mcp.remove', params);
       mcpSecrets.removeAll(params.name);
+      await applySecrets();
+      return out;
+    }
+    // Search account keys go to the OS credential store here; the daemon gets the account without its key.
+    case 'web.account.save': {
+      const { key, account } = params as { key?: string; account: { id: string } };
+      if (key) { webKeys.set(account.id, 'key', key); await applySecrets(); }
+      return daemon.request('web.account.save', { account });
+    }
+    case 'web.account.remove': {
+      const out = await daemon.request('web.account.remove', params);
+      webKeys.removeAll(params.id);
       await applySecrets();
       return out;
     }

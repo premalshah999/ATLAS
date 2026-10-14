@@ -44,6 +44,9 @@ importers:
       '@atlas/terminal':
         specifier: workspace:*
         version: link:packages/terminal
+      '@atlas/web':
+        specifier: workspace:*
+        version: link:packages/web
       '@atlas/workspace':
         specifier: workspace:*
         version: link:packages/workspace
@@ -116,6 +119,9 @@ importers:
       '@atlas/terminal':
         specifier: workspace:*
         version: link:../../packages/terminal
+      '@atlas/web':
+        specifier: workspace:*
+        version: link:../../packages/web
       '@atlas/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace
@@ -351,6 +357,21 @@ importers:
       '@atlas/contracts':
         specifier: workspace:*
         version: link:../contracts
+
+  packages/web:
+    dependencies:
+      '@atlas/browser':
+        specifier: workspace:*
+        version: link:../browser
+      '@atlas/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      playwright-core:
+        specifier: 1.56.1
+        version: 1.56.1
+      zod:
+        specifier: 3.24.1
+        version: 3.24.1
 
   packages/workspace:
     dependencies:

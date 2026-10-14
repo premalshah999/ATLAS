@@ -15,13 +15,13 @@ export interface PolicyDecision {
 /** Capabilities granted per role. Anything absent is denied. */
 export const ROLE_GRANTS: Record<AgentRole, readonly Capability[]> = {
   orchestrator: ['fs.read', 'agent.delegate'],
-  coder: ['fs.read', 'fs.write', 'shell.safe', 'shell.privileged', 'agent.delegate', 'mcp.call'],
-  reviewer: ['fs.read', 'shell.safe', 'mcp.call'],
-  tester: ['fs.read', 'shell.safe', 'mcp.call'],
+  coder: ['fs.read', 'fs.write', 'shell.safe', 'shell.privileged', 'agent.delegate', 'mcp.call', 'web.search', 'web.fetch', 'web.browse'],
+  reviewer: ['fs.read', 'shell.safe', 'mcp.call', 'web.search', 'web.fetch', 'web.browse'],
+  tester: ['fs.read', 'shell.safe', 'mcp.call', 'web.search', 'web.fetch', 'web.browse'],
   browser_qa: ['fs.read', 'browser.navigate'],
   desktop_operator: ['fs.read', 'desktop.input'],
   deployment_verifier: ['fs.read', 'browser.navigate'],
-  security_reviewer: ['fs.read', 'shell.safe'],
+  security_reviewer: ['fs.read', 'shell.safe', 'web.search', 'web.fetch', 'web.browse'],
 };
 
 /**
@@ -176,6 +176,10 @@ export const TOOL_CAPABILITY: Record<string, Capability | 'shell'> = {
   read_skill_file: 'fs.read',
   // Tools of the operator's MCP servers (ADR 0018); which server and tool is checked before this.
   mcp_call: 'mcp.call',
+  // The open web (ADR 0030): offered only when the operator turned web access on for the role.
+  web_search: 'web.search',
+  web_fetch: 'web.fetch',
+  web_browse: 'web.browse',
 };
 
 export interface EvaluateInput {
@@ -190,10 +194,17 @@ export interface EvaluateInput {
   sandboxed: boolean;
   /** mcp_call: the server's approval policy, once the server, role and tool were checked (ADR 0018). */
   mcpApproval?: 'ask' | 'allow';
+  /**
+   * web_fetch and web_browse: whether the site is already known to this task (found by its searches, on the
+   * operator's allowed sites, or approved before). Unknown sites need a person (ADR 0030).
+   */
+  webKnown?: boolean;
+  /** web_search, web_fetch, web_browse: the query or URL contains a value registered as a secret. */
+  webLeak?: boolean;
 }
 
 /** Evaluate a proposed tool call before execution, independent of any prompt. Unknown ⇒ deny. */
-export function evaluate({ role, tool, args, mode, sandboxed, mcpApproval }: EvaluateInput): PolicyDecision {
+export function evaluate({ role, tool, args, mode, sandboxed, mcpApproval, webKnown, webLeak }: EvaluateInput): PolicyDecision {
   const mapped = TOOL_CAPABILITY[tool];
   if (!mapped) return { decision: 'deny', capability: null, risk: 'high', reason: `Unknown tool "${tool}"` };
 
@@ -232,6 +243,13 @@ export function evaluate({ role, tool, args, mode, sandboxed, mcpApproval }: Eva
     // An MCP tool can change things outside ATLAS; the gate cannot know which ones do. Plan-only missions always ask.
     if (mcpApproval === 'allow' && mode !== 'plan_only') return { decision: 'allow', capability, risk: 'elevated', reason: 'The operator trusts this MCP server' };
     return { decision: 'ask', capability, risk: 'elevated', reason: mode === 'plan_only' ? 'Plan-only mission: calls to external services need approval' : 'Calls an external service the operator connected' };
+  }
+  if (capability === 'web.search' || capability === 'web.fetch' || capability === 'web.browse') {
+    // A query or URL is data leaving the machine: one that carries a known secret never goes out.
+    if (webLeak) return { decision: 'deny', capability, risk: 'high', reason: 'The request contains a secret; it would leave the machine' };
+    if (capability === 'web.search') return { decision: 'allow', capability, risk: 'low', reason: 'Searches through the operator\'s search accounts' };
+    if (webKnown === false) return { decision: 'ask', capability, risk: 'elevated', reason: 'Opens a site that is not in this task\'s search results or the operator\'s allowed sites' };
+    return { decision: 'allow', capability, risk: 'low', reason: 'Reads a site this task found or the operator allows' };
   }
   if (mode === 'plan_only' && (capability === 'fs.write' || capability === 'shell.privileged')) {
     return { decision: 'deny', capability, risk, reason: 'Mission runs in plan-only mode: no writes or privileged commands' };

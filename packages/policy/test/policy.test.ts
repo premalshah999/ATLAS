@@ -200,3 +200,28 @@ describe('programs passed on standard input (ADR 0026 review)', () => {
     expect(readsProgramFromStdin('grep', [])).toBe(false);
   });
 });
+
+describe('the open web (ADR 0030)', () => {
+  const web = (tool: string, over: Partial<Parameters<typeof evaluate>[0]> = {}) => evaluate({ role: 'coder', tool, args: {}, mode: 'ask_risky', sandboxed: true, ...over });
+  it('searching is allowed; reading a known site is allowed; an unknown site needs a person', () => {
+    expect(web('web_search')).toMatchObject({ decision: 'allow', capability: 'web.search' });
+    expect(web('web_fetch', { webKnown: true })).toMatchObject({ decision: 'allow', capability: 'web.fetch' });
+    expect(web('web_fetch', { webKnown: false })).toMatchObject({ decision: 'ask', capability: 'web.fetch', risk: 'elevated' });
+    expect(web('web_browse', { webKnown: false })).toMatchObject({ decision: 'ask', capability: 'web.browse' });
+    // A step that opens no URL (snapshot, click) adds no new site.
+    expect(web('web_browse')).toMatchObject({ decision: 'allow' });
+    // Plan-only missions may read the web: nothing is written.
+    expect(web('web_fetch', { webKnown: true, mode: 'plan_only' }).decision).toBe('allow');
+  });
+  it('a query or URL carrying a secret never leaves, even to a known site', () => {
+    expect(web('web_search', { webLeak: true })).toMatchObject({ decision: 'deny', risk: 'high' });
+    expect(web('web_fetch', { webKnown: true, webLeak: true }).decision).toBe('deny');
+  });
+  it('roles without web capabilities are denied', () => {
+    for (const role of ['browser_qa', 'desktop_operator', 'deployment_verifier', 'orchestrator'] as const) {
+      expect(web('web_search', { role }).decision, role).toBe('deny');
+      expect(web('web_fetch', { role, webKnown: true }).decision, role).toBe('deny');
+    }
+    for (const role of ['coder', 'reviewer', 'tester', 'security_reviewer'] as const) expect(web('web_search', { role }).decision, role).toBe('allow');
+  });
+});

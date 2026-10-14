@@ -95,3 +95,7 @@ function secretStore(fileName: string, what: string) {
 export const deploySecrets = secretStore('deploy-secrets.json', 'deploy secrets');
 /** MCP server secrets: environment variables and headers (ADR 0018). */
 export const mcpSecrets = secretStore('mcp-secrets.json', 'MCP server secrets');
+/** Search account keys (ADR 0030): one "key" per account id. */
+export const webKeys = secretStore('web-keys.json', 'search account keys');
+/** Account id → key, as the daemon takes them. */
+export const webKeyValues = (): Record<string, string> => Object.fromEntries(Object.entries(webKeys.decrypted()).flatMap(([id, v]) => (v.key ? [[id, v.key]] : [])));

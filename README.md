@@ -219,6 +219,10 @@ permission each time. You can take over, pause or stop it at any moment, and eve
   mission. Keys are kept in your system's password store.
 - **MCP servers.** Connect tools agents can use, such as documentation search or your issue tracker. Each call can ask
   you first.
+- **Web access.** When you turn it on, agents search the web through your Tavily, Brave or Google accounts, read pages
+  and browse in a read-only browser. Add several accounts per provider: ATLAS moves to the next one when an account is
+  rate limited or out of searches. Sites agents did not find by searching need your approval, and your local network is
+  never reachable.
 - **Skills.** Reviewed, versioned procedures agents can follow. Write your own, or bring them in from other tools.
 - **Sync with Claude Code, Codex and OpenCode.** Keep the same skills and MCP servers in those tools, with a preview
   before anything is written and no secrets copied.

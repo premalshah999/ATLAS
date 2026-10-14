@@ -13,7 +13,7 @@ import { detectSandbox, openPty, ptySupported, run, sanitizedEnv, startProcess, 
 import { assertMission, assertTask, TERMINAL_TASK } from './states';
 import { defaultPlan, validatePlan } from './plan';
 import { ROLES, role } from './roles';
-import { ToolGate, realExecutors, type Executors, type Isolation, type McpProvider } from './toolgate';
+import { ToolGate, realExecutors, type Executors, type Isolation, type McpProvider, type WebProvider } from './toolgate';
 import { detectRecipes, gate, noTestsRan, type Verdict } from './verification';
 import { definitionChange, weakening, type DefinitionChange } from './definition';
 import { buildContext, repoMap } from './context';
@@ -63,6 +63,8 @@ export interface OrchestratorOptions {
   forge?: () => Forge | null;
   /** The operator's MCP servers (ADR 0018). */
   mcp?: McpProvider;
+  /** Web access (ADR 0030): which web tools a role is offered, what it is told about them, and the tools themselves. */
+  web?: WebProvider & { tools(role: AgentRole): string[]; index(role: AgentRole): string };
   /**
    * Extra conditions for publishing a change (ADR 0021: owner approval from the team space). Returns why the
    * mission cannot be published yet, in words, or null.
@@ -586,6 +588,9 @@ export class Orchestrator {
     if (this.skills.forRole(t.role).length) tools = [...new Set([...tools, 'load_skill', 'read_skill_file'])];
     // MCP tools are offered to the roles the operator chose per server; every call is still checked by the gate.
     if (this.o.mcp?.permits(t.role)) tools = [...new Set([...tools, 'mcp_call'])];
+    // The open web, when the operator turned it on for this role (ADR 0030); each call is still checked by the gate.
+    const web = this.o.web?.tools(t.role) ?? [];
+    if (web.length) tools = [...new Set([...tools, ...web])];
     // ATLAS's records of the mission and its code graph: read-only, for every role, so context is never lost (ADR 0024).
     tools = [...new Set([...tools, 'mission_memory', 'code_graph'])];
     // Background processes come with running commands (ADR 0026): a task that may run shell_exec may also keep a
@@ -694,7 +699,7 @@ export class Orchestrator {
       isolation, missionId: m.id, taskId: t.id, attemptId: attempt.id, role: t.role, mode: m.approvalMode, cwd: dir, permitted, base: m.baseCommit!,
       approvalTtlMs: this.approvalTtlMs, awaitApproval: (a: Approval, s: AbortSignal) => this.awaitApproval(a, s),
       onFinding: (args, failing) => this.recordFinding(m, t, attempt.id, args, failing),
-      skills: this.skills, mcp: this.o.mcp,
+      skills: this.skills, mcp: this.o.mcp, web: this.o.web,
       graph: () => this.graphs.forWorktree(dir, m.baseCommit!),
       delegate: (args, s) => this.delegate(m, t, dir, args, s),
     }, this.repo, this.artifacts, this.o.executors ?? realExecutors);
@@ -706,7 +711,7 @@ export class Orchestrator {
       .map((e) => `${e.ts} ${e.type}: ${JSON.stringify(e.payload).slice(0, 240)}`);
     const ctx = await buildContext({
       worktree: dir, base: m.baseCommit!, role: t.role, objective: m.goal, constraints: m.constraints, task: t, planSummary: `${plan.summary}\nTasks: ${plan.tasks.map((x) => `${x.key} (${x.role})`).join(', ')}`,
-      facts: this.facts(w.id), decisions, graph: (() => { const g = this.graphs.peek(m.baseCommit!); return g ? graphOverview(g, 15) : undefined; })(), includeDiff: t.role === 'reviewer' || t.role === 'tester' || t.role === 'security_reviewer', skills: this.skills.index(t.role, taskText), mcp: permitted.includes('mcp_call') ? this.o.mcp?.index(t.role) : undefined,
+      facts: this.facts(w.id), decisions, graph: (() => { const g = this.graphs.peek(m.baseCommit!); return g ? graphOverview(g, 15) : undefined; })(), includeDiff: t.role === 'reviewer' || t.role === 'tester' || t.role === 'security_reviewer', skills: this.skills.index(t.role, taskText), mcp: permitted.includes('mcp_call') ? this.o.mcp?.index(t.role) : undefined, web: permitted.some((x) => x.startsWith('web_')) ? this.o.web?.index(t.role) : undefined,
     });
     const ctxArt = this.artifacts.put({ missionId: m.id, taskId: t.id, kind: 'context', name: `Context · ${t.key} attempt ${number}`, content: ctx.text });
     this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'context.built', actor: SYSTEM('context'), payload: { sources: ctx.sources, chars: ctx.text.length, ...(recommended.length ? { skillsRecommended: recommended } : {}) } });

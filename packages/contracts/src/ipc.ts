@@ -5,6 +5,7 @@ import { AgentRole, ApprovalMode, Id, MissionBudget, RuntimeKind } from './domai
 import { DesktopAction, DesktopControl } from './desktop';
 import { MODEL_REF, PROVIDER_IDS } from './providers';
 import { MCP_NAME, McpServerConfig } from './mcp';
+import { SearchAccount, WEB_ACCOUNT_ID, WebSettings } from './web';
 import { PipelineSettings } from './pipeline';
 import { EntryBodies, EntryId, ItemPriority, ItemStatus, KeyId, MemberRole, TeamSettingsPatch, TeamSlug, Assignee } from './team';
 
@@ -116,6 +117,13 @@ export const Requests = {
   'mcp.test': z.object({ name: z.string().regex(MCP_NAME) }).strict(),
   'mcp.secret.set': z.object({ server: z.string().regex(MCP_NAME), name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/), value: z.string().min(1).max(10_000) }).strict(),
   'mcp.secret.remove': z.object({ server: z.string().regex(MCP_NAME), name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_-]{0,63}$/) }).strict(),
+  /** Web access for agents (ADR 0030). The key goes to Electron main's credential store, never to the daemon's database. */
+  'web.view': empty,
+  'web.settings.save': z.object({ settings: WebSettings }).strict(),
+  'web.account.save': z.object({ account: SearchAccount, key: z.string().trim().min(8).max(500).optional() }).strict(),
+  'web.account.remove': z.object({ id: z.string().regex(WEB_ACCOUNT_ID) }).strict(),
+  'web.account.test': z.object({ id: z.string().regex(WEB_ACCOUNT_ID) }).strict(),
+  'web.account.reset': z.object({ id: z.string().regex(WEB_ACCOUNT_ID) }).strict(),
   /** Automated delivery for one repository (ADR 0022). */
   'pipeline.get': z.object({ workspaceId: Id }).strict(),
   'pipeline.set': z.object({ workspaceId: Id, settings: PipelineSettings.partial() }).strict(),
@@ -152,7 +160,7 @@ export const InternalRequests = {
   'workspace.register': z.object({ path: z.string().min(1).max(4096) }).strict(),
   'mission.exportTo': z.object({ missionId: Id, path: z.string().min(1).max(4096) }).strict(),
   'mission.importFrom': z.object({ path: z.string().min(1).max(4096) }).strict(),
-  'credentials.apply': z.object({ keys: z.record(z.string(), z.string()), deploySecrets: z.record(z.string(), z.record(z.string(), z.string())).optional(), mcpSecrets: z.record(z.string(), z.record(z.string(), z.string())).optional() }).strict(),
+  'credentials.apply': z.object({ keys: z.record(z.string(), z.string()), deploySecrets: z.record(z.string(), z.record(z.string(), z.string())).optional(), mcpSecrets: z.record(z.string(), z.record(z.string(), z.string())).optional(), webKeys: z.record(z.string(), z.string()).optional() }).strict(),
 } as const;
 export type InternalMethod = keyof typeof InternalRequests;
 

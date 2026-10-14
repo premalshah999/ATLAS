@@ -23,6 +23,7 @@
     "@atlas/sync": "workspace:*",
     "@atlas/team": "workspace:*",
     "@atlas/terminal": "workspace:*",
+    "@atlas/web": "workspace:*",
     "@atlas/workspace": "workspace:*"
   }
 }

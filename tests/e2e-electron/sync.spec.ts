@@ -44,8 +44,8 @@ test('skills and MCP servers sync to Claude Code and Codex; other tools\' items 
     await page.getByTestId('sync-claude-code-preview').click();
     const changes = page.getByTestId('sync-claude-code-changes');
     await expect(changes).toContainText('~/.claude.json');
-    // 17 bundled skills, one turned off, plus the two operator skills (release-notes, team-style).
-    await expect(changes.locator('[data-action="create"]')).toHaveCount(17 - 1 + 2);
+    // 18 bundled skills, one turned off, plus the two operator skills (release-notes, team-style).
+    await expect(changes.locator('[data-action="create"]')).toHaveCount(18 - 1 + 2);
     await page.getByTestId('sync-claude-code-apply').click();
     await expect(page.getByTestId('sync-claude-code-apply')).toHaveText('In sync');
     expect(readFileSync(path.join(home, '.claude/skills/release-notes/SKILL.md'), 'utf8')).toContain('Group by user impact.');
