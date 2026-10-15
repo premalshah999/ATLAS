@@ -171,6 +171,30 @@ setInterval(() => {}, 1000);`, { signal: ac.signal, timeoutMs: 60_000 });
     }
   });
 
+  // ADR 0031. Windows has no deny-write ACE for these yet (documented TODO); the daemon's pinned git covers it there.
+  it.skipIf(process.platform === 'win32')('protected paths stay read-only inside the writable root: the .git pointer and the admin dir', async () => {
+    const root = tmpDir();
+    const admin = tmpDir('atlas-admin-');
+    writeFileSync(path.join(root, '.git'), `gitdir: ${admin}\n`);
+    writeFileSync(path.join(admin, 'HEAD'), 'ref: refs/heads/atlas/t\n');
+    writeFileSync(path.join(root, 'probe.cjs'), `const fs = require('fs');
+const t = (what, f) => { try { f(); console.log(what + ' WROTE'); } catch (e) { console.log(what + ' DENIED ' + e.code); } };
+t('pointer', () => fs.writeFileSync('.git', 'gitdir: /tmp/evil'));
+t('pointer-rename', () => fs.renameSync('.git', 'moved'));
+t('pointer-unlink', () => fs.unlinkSync('.git'));
+t('config.worktree', () => fs.writeFileSync(${JSON.stringify(path.join(admin, 'config.worktree'))}, '[filter "x"]'));
+t('head', () => fs.writeFileSync(${JSON.stringify(path.join(admin, 'HEAD'))}, 'ref: refs/heads/main'));
+t('work', () => fs.writeFileSync('work.txt', 'ok'));`);
+    const r = await run({ command: 'node', args: ['probe.cjs'], cwd: root, timeoutMs: 30_000, env: sanitizedEnv(), sandbox: { root, writable: true, network: false, readOnly: [admin], protect: [path.join(root, '.git'), admin] } });
+    expect(r.exitCode, r.output).toBe(0);
+    const denied = info.kind === 'bwrap' ? /DENIED (EROFS|EBUSY)/ : /DENIED (EPERM|EACCES)/;
+    for (const what of ['pointer', 'pointer-rename', 'pointer-unlink', 'config.worktree', 'head']) expect(r.output, r.output).toMatch(new RegExp(`^${what} ${denied.source}`, 'm'));
+    expect(r.output, r.output).toContain('work WROTE');
+    expect(readFileSync(path.join(root, '.git'), 'utf8')).toBe(`gitdir: ${admin}\n`);
+    expect(existsSync(path.join(admin, 'config.worktree'))).toBe(false);
+    if (info.kind === 'bwrap') expect(r.output).toMatch(/^pointer DENIED EROFS/m);
+  });
+
   it('fails closed when the sandbox is disabled', async () => {
     process.env.ATLAS_SANDBOX = 'none';
     detectSandbox(true);

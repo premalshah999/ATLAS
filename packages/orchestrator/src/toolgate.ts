@@ -187,7 +187,7 @@ const PAGE_CHUNK = 20_000;
 
 /** How untrusted commands are isolated for this task (manual §23, ADR 0007). */
 export type Isolation =
-  | { mode: 'sandbox'; readOnly: string[]; readWrite: string[] }
+  | { mode: 'sandbox'; readOnly: string[]; readWrite: string[]; /** Read-only inside the writable root: the worktree's git metadata (ADR 0031). */ protect?: string[] }
   | { mode: 'unsandboxed' }
   | { mode: 'unavailable'; detail: string };
 
@@ -400,7 +400,7 @@ ${r.text}`) });
     const iso = this.ctx.isolation;
     if (iso.mode === 'unavailable') return 'unavailable';
     return iso.mode === 'sandbox'
-      ? { root: this.ctx.cwd, writable: this.ctx.mode !== 'plan_only', network, readOnly: iso.readOnly, readWrite: iso.readWrite, limits: { cpuSeconds: 1800, fileSizeBytes: 1024 ** 3, openFiles: 4096 } }
+      ? { root: this.ctx.cwd, writable: this.ctx.mode !== 'plan_only', network, readOnly: iso.readOnly, readWrite: iso.readWrite, protect: iso.protect, limits: { cpuSeconds: 1800, fileSizeBytes: 1024 ** 3, openFiles: 4096 } }
       : undefined;
   }
 

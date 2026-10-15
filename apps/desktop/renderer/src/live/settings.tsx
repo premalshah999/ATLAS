@@ -137,6 +137,7 @@ export function Settings() {
             {info && <KV col={150} rows={[
               ['ATLAS', info.version], ['Electron', info.electron], ['Chromium', info.chrome], ['Daemon Node', info.node], ['Database schema', `v${info.schema}`],
               ['Pi runtime', `${info.pi.package}@${info.pi.version}`], ['Pi source', `${info.pi.repository} @ ${info.pi.gitHead.slice(0, 12)} · ${info.pi.license}`],
+              ...(info.git ? [['Git', `${info.git.version} · ${info.git.mode === 'attr-source' ? 'worktree attributes ignored (GIT_ATTR_SOURCE)' : 'attribute drivers disabled by name (git before 2.40)'}`] as [string, string]] : []),
               ['Network', 'No telemetry. Outbound traffic only to model providers you configure, and to GitHub when you publish or read CI.'],
             ]} />}
           </section>

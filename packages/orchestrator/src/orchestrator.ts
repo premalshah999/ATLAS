@@ -8,7 +8,8 @@ import {
   type ToolResult, type Workspace, type Actor, redact,
 } from '@atlas/contracts';
 import type { ArtifactStore, Repo } from '@atlas/storage';
-import { checkpoint, diffSince, git, gitOk, inspectRepo, Leases, retireWorktree, type RetireResult } from '@atlas/workspace';
+import { checkpoint, diffSince, git, gitOk, inspectRepo, Leases, pinFor, retireWorktree, verifyWorktreeMetadata, WorktreeTampered, type RetireResult } from '@atlas/workspace';
+import { TamperWatch } from './tamper';
 import { detectSandbox, openPty, ptySupported, run, sanitizedEnv, startProcess, type PtyHandle, type SandboxSpec } from '@atlas/terminal';
 import { assertMission, assertTask, TERMINAL_TASK } from './states';
 import { defaultPlan, validatePlan } from './plan';
@@ -137,6 +138,8 @@ export class Orchestrator {
   readonly pipeline: Pipeline;
   /** Code graphs of mission base commits (ADR 0024). */
   readonly graphs: GraphStore;
+  /** Worktrees whose git metadata was tampered with (ADR 0031). */
+  private readonly tamper: TamperWatch;
 
   constructor(private readonly o: OrchestratorOptions) {
     this.repo = o.repo;
@@ -148,6 +151,7 @@ export class Orchestrator {
     this.skills = new SkillLibrary({ bundled: o.skillDirs?.bundled, operator: o.skillDirs?.operator ?? path.join(path.dirname(o.worktreeDir), 'skills') }, () => this.repo.setting<string[]>('skills.disabled', []));
     this.acceptance = new AcceptanceStore(o.acceptanceDir ?? path.join(path.dirname(o.worktreeDir), 'acceptance'));
     this.pipeline = new Pipeline(this, this.repo);
+    this.tamper = new TamperWatch(o.worktreeDir, this.repo, (e) => this.emit(e), (taskId) => this.taskAborts.get(taskId)?.abort());
     this.graphs = new GraphStore(path.join(path.dirname(o.worktreeDir), 'graphs'));
     this.repo.onEvent((e) => {
       const s = e.attemptId ? this.signals.get(e.attemptId) : undefined;
@@ -196,21 +200,26 @@ export class Orchestrator {
 
   /* ---------------- isolation ---------------- */
 
-  /** Sandbox for a worktree: its git admin dir is writable, the shared object store read-only. Fails closed. */
+  /**
+   * Sandbox for a worktree. Its git metadata is the daemon's (ADR 0031): the repository and the worktree's admin dir
+   * are read-only, and `<worktree>/.git` and the admin dir stay read-only inside the writable root. Agents never
+   * commit (ADR 0008); `git status`, `diff` and `log` still work. Paths come from the pin, not the pointer file.
+   */
   async isolationFor(worktree: string): Promise<Isolation> {
     const sb = detectSandbox();
     if (sb.kind === 'none') {
       return this.repo.setting('execution.allowUnsandboxed', false) ? { mode: 'unsandboxed' } : { mode: 'unavailable', detail: sb.detail };
     }
-    const r = await git(worktree, ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir']);
-    const [gitDir, common] = r.code === 0 ? r.out.split('\n') : [];
-    return { mode: 'sandbox', readOnly: common ? [common] : [], readWrite: gitDir ? [gitDir] : [] };
+    const pin = await pinFor(worktree);
+    if (!pin) throw new AtlasError('workspace_conflict', `${worktree} is not a worktree ATLAS created`);
+    verifyWorktreeMetadata(pin.worktree, pin.adminDir, pin);
+    return { mode: 'sandbox', readOnly: [pin.commonDir, pin.adminDir], readWrite: [], protect: [path.join(pin.worktree, '.git'), pin.adminDir] };
   }
 
   private sandboxSpec(iso: Isolation, worktree: string, network = false): SandboxSpec | undefined | null {
     if (iso.mode === 'unavailable') return null;
     if (iso.mode === 'unsandboxed') return undefined;
-    return { root: worktree, writable: true, network, readOnly: iso.readOnly, readWrite: iso.readWrite, limits: { cpuSeconds: 1800, fileSizeBytes: 1024 ** 3, openFiles: 4096 } };
+    return { root: worktree, writable: true, network, readOnly: iso.readOnly, readWrite: iso.readWrite, protect: iso.protect, limits: { cpuSeconds: 1800, fileSizeBytes: 1024 ** 3, openFiles: 4096 } };
   }
 
   /* ---------------- workspaces ---------------- */
@@ -774,14 +783,22 @@ export class Orchestrator {
     if (this.stopping) return;
 
     const cur = this.repo.task(t.id)!;
+    const tampered = this.tamper.get(dir);
+    if (tampered) return this.failTampered(m, w, cur, attempt, number, tokens, dir, branch, tampered);
     if (outcome.kind === 'completed') {
       // The agent's summary is recorded as a claim. Evidence comes from the checkpoint and checks.
       const transcript = this.artifacts.put({ missionId: m.id, taskId: t.id, kind: 'transcript', name: `Attempt ${number} transcript`, content: this.repo.events(m.id, { attemptId: attempt.id }).map((e) => `${e.ts} ${e.type} ${JSON.stringify(e.payload)}`).join('\n') });
       this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'agent.message', actor: agent, payload: { text: outcome.summary, claim: true }, artifactIds: [transcript.id] });
       // Only writing roles produce integrated changes; anything else a non-writer touched is discarded.
       // A writer's result is its current HEAD: work may already be committed mid-attempt (e.g. before delegating).
-      const sha = def.writes ? await checkpoint(dir, `ATLAS ${m.id} ${t.key} attempt ${number}`) : null;
-      const head = def.writes ? await gitOk(dir, ['rev-parse', 'HEAD']) : startCommit;
+      let sha: string | null, head: string;
+      try {
+        sha = def.writes ? await checkpoint(dir, `ATLAS ${m.id} ${t.key} attempt ${number}`) : null;
+        head = def.writes ? await gitOk(dir, ['rev-parse', 'HEAD']) : startCommit;
+      } catch (e) {
+        if (e instanceof WorktreeTampered) return this.failTampered(m, w, cur, attempt, number, tokens, dir, branch, e);
+        throw e;
+      }
       let artifactIds: string[] = [];
       let files: { path: string; add: number; del: number }[] = [];
       if (head !== startCommit) {
@@ -811,6 +828,19 @@ export class Orchestrator {
       return;
     }
     this.setTask(cur, 'failed', { errorKind: outcome.errorKind, reason: outcome.message });
+  }
+
+  /** The worktree's git metadata was tampered with (ADR 0031): no checkpoint, no retry; the tree is snapshotted for audit and kept. */
+  private async failTampered(m: Mission, w: Workspace, t: Task, attempt: Attempt, number: number, tokens: number, dir: string, branch: string, e: WorktreeTampered) {
+    this.repo.updateAttempt(attempt.id, { state: 'failed', endedAt: nowIso(), error: e.message, tokens });
+    this.emit({ missionId: m.id, taskId: t.id, attemptId: attempt.id, type: 'attempt.ended', actor: SYSTEM('scheduler'), payload: { number, state: 'failed', errorKind: 'workspace_conflict', message: e.message, tokens } });
+    try {
+      const kept = await this.tamper.preserve(w.root, m.id, dir, branch);
+      if (kept) this.recordPreserved(m.id, { refs: [{ ...kept, what: 'uncommitted' }], retained: null });
+    } catch (err) {
+      this.emit({ missionId: m.id, taskId: t.id, type: 'error', actor: SYSTEM('workspace'), payload: { message: `Could not snapshot ${dir} for audit: ${(err as Error).message}` } });
+    }
+    this.setTask(t, 'failed', { errorKind: 'workspace_conflict', reason: e.message });
   }
 
   /* ---------------- review findings (manual §29) ---------------- */
@@ -1672,7 +1702,8 @@ export class Orchestrator {
     const started = this.repo.events(a.missionId, { attemptId: a.id, types: ['attempt.started'] })[0];
     const startCommit = typeof started?.payload.startCommit === 'string' ? started.payload.startCommit : null;
     if (!startCommit || started?.payload.worktree !== t.worktree) return null;
-    await checkpoint(t.worktree, `ATLAS ${a.missionId} ${t.key} attempt ${a.number} (interrupted)`);
+    try { await checkpoint(t.worktree, `ATLAS ${a.missionId} ${t.key} attempt ${a.number} (interrupted)`); }
+    catch (e) { if (e instanceof WorktreeTampered) return null; throw e; } // never continue from tampered metadata (ADR 0031)
     const commit = await gitOk(t.worktree, ['rev-parse', 'HEAD']);
     return { attemptId: a.id, number: a.number, commit, startCommit };
   }
@@ -1685,6 +1716,7 @@ export class Orchestrator {
     for (const t of this.budgetTimers.values()) clearTimeout(t);
     if (this.watchdog) { clearInterval(this.watchdog); this.watchdog = null; }
     await Promise.allSettled(this.running.values());
+    this.tamper.dispose();
   }
 }
 

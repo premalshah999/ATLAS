@@ -18,8 +18,15 @@ export interface SandboxSpec {
   network: boolean;
   /** Extra read-only paths (e.g. the main repository's .git for a worktree). */
   readOnly?: string[];
-  /** Extra writable paths (e.g. the worktree's git admin directory). */
+  /** Extra writable paths. */
   readWrite?: string[];
+  /**
+   * Paths that stay read-only even inside the writable root (ADR 0031: the worktree's `.git` pointer file and its admin
+   * directory). bwrap binds them read-only after the root; Seatbelt denies writes to them last.
+   * TODO(windows): no deny-write ACE yet. There the daemon's pinned git calls never follow the pointer file and the
+   * admin directory is not granted to the sandbox account, so a rewritten pointer only makes ATLAS refuse the worktree.
+   */
+  protect?: string[];
   /** Operator terminal session: may allocate a pseudo-terminal (macOS Seatbelt needs /dev/ptmx and /dev/ttys*). */
   pty?: boolean;
   /** Resource limits applied with prlimit when available. */
@@ -99,6 +106,8 @@ export function detectSandbox(force = false): SandboxInfo {
 }
 
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
+/** Real path of the parent directory, then the last component as written (a symlink there is not followed). */
+const lexReal = (p: string) => path.join(real(path.dirname(path.resolve(p))), path.basename(path.resolve(p)));
 
 /** Toolchain directories commands need (node, npm, git…): every PATH entry and its install prefix, read-only. */
 export function toolchainPaths(env: Record<string, string | undefined> = process.env): string[] {
@@ -139,6 +148,8 @@ export interface SeatbeltInput {
   root: string; scratch: string; network: boolean; readWrite: string[]; readOnly: string[]; home: string; userTemp: string;
   /** Allow allocating a pseudo-terminal. Only for operator terminals: /dev/ttys* also names the user's other terminals. */
   pty?: boolean;
+  /** Never writable, even inside the root (ADR 0031). */
+  protect?: string[];
 }
 
 /** Every parent directory of `p` (not `p` itself), e.g. /Users, /Users/runner for /Users/runner/work. */
@@ -170,6 +181,8 @@ export function seatbeltProfile(i: SeatbeltInput): string {
     `(deny file-read-data file-read-xattr (require-all ${inUserData} ${notReadable}))`,
     `(deny file-read-metadata (require-all ${inUserData} ${notReadable} ${parents.map((p) => `(require-not (literal ${q(p)}))`).join(' ')}))`,
     ...(i.network ? [] : ['(deny network-outbound (require-not (remote unix-socket)))', '(deny network-inbound)']),
+    // Last, so it wins over the writable root it lies in.
+    ...(i.protect?.length ? [`(deny file-write* ${i.protect.map((p) => `(literal ${q(p)}) (subpath ${q(p)})`).join(' ')})`] : []),
   ].join('\n');
 }
 
@@ -234,6 +247,9 @@ export function wrapCommand(command: string, args: string[], cwd: string, spec: 
     for (const p of [...(spec.readOnly ?? []), ...net.files]) a.push('--ro-bind-try', real(p), real(p));
     a.push(spec.writable ? '--bind' : '--ro-bind', root, root);
     for (const p of spec.readWrite ?? []) a.push('--bind-try', real(p), real(p));
+    // After the root and its writable paths, or their binds would overlay these. A missing protected path fails the
+    // command instead of leaving it writable. The last component is not followed: `.git` is bound where it is.
+    for (const p of spec.protect ?? []) { const at = lexReal(p); a.push('--ro-bind', at, at); }
     a.push('--chdir', real(cwd), '--', inner.command, ...inner.args);
     return { command: info.path!, args: a, env: envOut, ...(bwrapStatusFd && opts.statusFd ? { statusFd: SANDBOX_STATUS_FD } : {}) };
   }
@@ -244,7 +260,7 @@ export function wrapCommand(command: string, args: string[], cwd: string, spec: 
       root, scratch, network: spec.network,
       readWrite: (spec.readWrite ?? []).map(real),
       readOnly: [...(spec.readOnly ?? []).map(real), ...toolchainPaths(env), ...net.files.map(real)],
-      home: real(os.homedir()), userTemp: real(os.tmpdir()), pty: !!spec.pty,
+      home: real(os.homedir()), userTemp: real(os.tmpdir()), pty: !!spec.pty, protect: (spec.protect ?? []).map(lexReal),
     });
     const file = path.join(scratch, 'profile.sb');
     writeFileSync(file, profile);

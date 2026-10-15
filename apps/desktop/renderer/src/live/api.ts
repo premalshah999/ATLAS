@@ -49,7 +49,7 @@ export interface ForgeView {
   followUps: string[];
 }
 export type Credentials = { available: boolean; providers: { provider: string; stored: boolean; fromEnvironment: boolean; env: string }[] };
-export type AppInfo = { version: string; schema: number; pi: { package: string; version: string; gitHead: string; license: string; repository: string }; platform: string; node: string; electron: string; chrome: string; daemon: DaemonStatus; credentialStore: boolean };
+export type AppInfo = { version: string; schema: number; pi: { package: string; version: string; gitHead: string; license: string; repository: string }; platform: string; node: string; electron: string; chrome: string; daemon: DaemonStatus; credentialStore: boolean; git?: { version: string; mode: 'attr-source' | 'neutralize-drivers'; detail: string } };
 
 type Results = {
   'app.info': AppInfo;

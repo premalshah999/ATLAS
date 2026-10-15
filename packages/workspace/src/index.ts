@@ -1,11 +1,17 @@
 // Repository manager (manual §18–19): inspection, per-task worktrees, checkpoints and diffs.
-import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, existsSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { AtlasError } from '@atlas/contracts';
 import { git, gitOk } from './git';
+import { adminDirOf, forgetWorktree, gitPinned, pinFor, pinWorktree, WorktreeTampered, type WorktreePin } from './pinned';
 
 export { resolveInside } from './paths';
 export { git, gitOk } from './git';
+export {
+  EMPTY_TREE, WorktreeTampered, attributeDrivers, forceGitVersionForTests, forgetWorktree, gitHardening, gitPinned, manageWorktrees, onWorktreeTampered, pinFor, pinWorktree,
+  preserveTampered, registeredPin, verifyWorktreeMetadata, type GitHardening, type TamperField, type WorktreePin,
+} from './pinned';
 
 export interface RepoInfo { root: string; name: string; isGit: boolean; branch: string | null; head: string | null; dirty: number }
 
@@ -65,7 +71,11 @@ export async function addWorktree(repoRoot: string, dir: string, branch: string,
     if ((await git(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).code === 0) throw new Error(`git worktree failed: branch ${branch} already exists`);
     for (let i = 1; ; i++) {
       const r = await git(repoRoot, ['worktree', 'add', '-b', branch, dir, base], 120_000);
-      if (r.code === 0) return;
+      if (r.code === 0) {
+        // Record the metadata git just wrote, before any agent can touch the tree (ADR 0031).
+        try { await pinWorktree(repoRoot, dir, { branch }); return; }
+        catch (e) { await removeWorktree(repoRoot, dir, branch); throw e; }
+      }
       if (i >= attempts) throw new Error(`git worktree failed: ${r.out.slice(0, 400)}`);
       await removeWorktree(repoRoot, dir, (await git(repoRoot, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])).code === 0 ? branch : null);
       await new Promise((res) => setTimeout(res, 250 * i));
@@ -75,23 +85,16 @@ export async function addWorktree(repoRoot: string, dir: string, branch: string,
   try { await run; } finally { if (adding.get(key) === run) adding.delete(key); }
 }
 
-/** The worktree's own admin directory (<repo>/.git/worktrees/<name>), read from its `.git` file. */
-function adminDir(dir: string): string | null {
-  try {
-    const f = path.join(dir, '.git');
-    if (!statSync(f).isFile()) return null;
-    const m = /^gitdir:\s*(.+)$/m.exec(readFileSync(f, 'utf8'));
-    return m ? path.resolve(dir, m[1].trim()) : null;
-  } catch { return null; }
-}
-
 export async function removeWorktree(repoRoot: string, dir: string, branch: string | null): Promise<void> {
-  const admin = adminDir(dir);
+  // The admin dir as the repository knows it, never as the worktree's `.git` file claims: an agent could point that
+  // file at another worktree's metadata (ADR 0031).
+  const admin = await adminDirOf(repoRoot, dir);
   await git(repoRoot, ['worktree', 'remove', '--force', dir]);
   if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
   // Only this worktree's metadata. `git worktree prune` would also drop the user's own worktrees that are
   // temporarily missing (an unmounted drive, a moved directory): never run it on the user's repository.
   if (admin && existsSync(admin) && path.basename(path.dirname(admin)) === 'worktrees') rmSync(admin, { recursive: true, force: true });
+  forgetWorktree(dir);
   if (branch) await git(repoRoot, ['branch', '-D', branch]);
 }
 
@@ -107,8 +110,18 @@ export class PreserveError extends Error {}
  * worktree's own index and its files are never modified. Ignored files are not captured.
  */
 export async function preserveWorktree(repoRoot: string, dir: string, branch: string | null, refBase: string): Promise<PreservedRef[]> {
+  try { return await preserveSnapshot(repoRoot, dir, branch, refBase); }
+  catch (e) {
+    // Tampered metadata: no git runs there, so the worktree is kept as it is (ADR 0031).
+    if (e instanceof WorktreeTampered) throw new PreserveError(`its git metadata was tampered with (${e.field}), so it is kept for audit`);
+    throw e;
+  }
+}
+
+async function preserveSnapshot(repoRoot: string, dir: string, branch: string | null, refBase: string): Promise<PreservedRef[]> {
   const out: PreservedRef[] = [];
   if (existsSync(dir)) {
+    await pinWorktree(repoRoot, dir);
     const status = await git(dir, ['status', '--porcelain', '--untracked-files=all']);
     const head = await git(dir, ['rev-parse', '--verify', 'HEAD']);
     if (status.code !== 0 || head.code !== 0) throw new PreserveError(`its state could not be read: ${(status.code !== 0 ? status : head).out.slice(0, 200)}`);
@@ -169,20 +182,37 @@ export async function deleteRefs(repoRoot: string, prefix: string): Promise<numb
   return refs.length;
 }
 
-/** Commit everything in a task worktree as a checkpoint. Returns the commit, or null when nothing changed. */
+/** Pinned git for a worktree ATLAS created (ADR 0031). Any other directory is refused, never discovered. */
+async function pinnedGit(worktree: string): Promise<(args: string[]) => ReturnType<typeof gitPinned>> {
+  const pin: WorktreePin | null = await pinFor(worktree);
+  if (!pin) throw new AtlasError('workspace_conflict', `${worktree} is not a worktree ATLAS created`);
+  return (args) => gitPinned(pin.worktree, pin.adminDir, args, { pin, cwd: worktree, timeoutMs: 120_000 });
+}
+
+const ok = async (r: ReturnType<typeof gitPinned>, what: string) => {
+  const x = await r;
+  if (x.code !== 0) throw new Error(`git ${what} failed: ${x.out.slice(0, 400)}`);
+  return x.out;
+};
+
+/**
+ * Commit everything in a task worktree as a checkpoint. Returns the commit, or null when nothing changed.
+ * Pinned: planted metadata fails closed with WorktreeTampered, and no driver named in the tree runs.
+ */
 export async function checkpoint(worktree: string, message: string): Promise<string | null> {
-  await gitOk(worktree, ['add', '-A']);
-  const st = await git(worktree, ['diff', '--cached', '--quiet']);
-  if (st.code === 0) return null;
-  await gitOk(worktree, ['-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-q', '-m', message]);
-  return gitOk(worktree, ['rev-parse', 'HEAD']);
+  const g = await pinnedGit(worktree);
+  await ok(g(['add', '-A']), 'add');
+  if ((await g(['diff', '--cached', '--quiet'])).code === 0) return null;
+  await ok(g(['-c', 'commit.gpgsign=false', 'commit', '--no-verify', '-q', '-m', message]), 'commit');
+  return ok(g(['rev-parse', 'HEAD']), 'rev-parse');
 }
 
 export interface DiffSummary { patch: string; files: { path: string; add: number; del: number }[] }
 
 export async function diffSince(worktree: string, base: string): Promise<DiffSummary> {
-  const patch = await gitOk(worktree, ['diff', '--no-color', '--no-ext-diff', base, 'HEAD']);
-  const stat = await gitOk(worktree, ['diff', '--numstat', base, 'HEAD']);
+  const g = await pinnedGit(worktree);
+  const patch = await ok(g(['diff', '--no-color', '--no-ext-diff', '--no-textconv', base, 'HEAD']), 'diff');
+  const stat = await ok(g(['diff', '--numstat', base, 'HEAD']), 'diff');
   const files = stat.split('\n').filter(Boolean).map((l) => {
     const [a, d, ...p] = l.split('\t');
     return { path: p.join('\t'), add: a === '-' ? 0 : Number(a), del: d === '-' ? 0 : Number(d) };

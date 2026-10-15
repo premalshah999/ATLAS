@@ -6,7 +6,7 @@ export const EventType = [
   'agent.message', 'agent.tool_call', 'agent.tool_result', 'agent.usage',
   'policy.decision', 'approval.requested', 'approval.decided',
   'process.started', 'process.output', 'process.exited',
-  'workspace.worktree', 'artifact.created', 'check.result', 'gate.result',
+  'workspace.worktree', 'workspace.tampered', 'artifact.created', 'check.result', 'gate.result',
   'plan.planner', 'integration.result', 'finding.reported', 'finding.updated', 'delegation.requested', 'delegation.result', 'budget.exceeded', 'context.built',
   'browser.step', 'visual.page', 'deploy.event', 'staging.check', 'rollback.result', 'desktop.action', 'desktop.session', 'operator.terminal',
   'operator.action', 'daemon.recovered', 'skill.loaded', 'forge.published', 'forge.ci', 'mcp.called', 'pipeline.step', 'team.shared', 'team.review', 'context.compacted', 'web.searched', 'web.fetched', 'web.browsed', 'error',

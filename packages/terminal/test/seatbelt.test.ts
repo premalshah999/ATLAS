@@ -46,4 +46,11 @@ describe('seatbeltProfile', () => {
     expect(rule(pty, 'file-write*')).toContain('(require-not (literal "/dev/ptmx"))');
     expect(pty).toContain('(allow pseudo-tty)');
   });
+
+  it('protected paths (the worktree git metadata, ADR 0031) are denied writes last, inside the writable root', () => {
+    const protect = [`${base.root}/.git`, '/Users/dev/work/repo/.git/worktrees/t1'];
+    const lines = seatbeltProfile({ ...base, protect }).split('\n');
+    expect(lines.at(-1)).toBe(`(deny file-write* ${protect.map((p) => `(literal "${p}") (subpath "${p}")`).join(' ')})`);
+    expect(seatbeltProfile(base).split('\n').filter((l) => l.startsWith('(deny file-write*'))).toHaveLength(1);
+  });
 });

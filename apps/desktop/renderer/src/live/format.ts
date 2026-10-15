@@ -67,6 +67,7 @@ export function describeEvent(e: AtlasEvent): Row | null {
     case 'workspace.worktree': return p.action === 'created'
       ? { title: 'Worktree created', detail: p.path, meta: p.branch, tone: 'muted', kind: 'activity', who }
       : { title: p.commit ? `Checkpoint ${String(p.commit).slice(0, 7)}` : 'No file changes to checkpoint', meta: p.files?.length ? `${p.files.length} file${p.files.length === 1 ? '' : 's'}` : undefined, tone: 'muted', kind: 'file', who };
+    case 'workspace.tampered': return { title: 'Worktree git metadata was tampered with', detail: `${p.detail ?? ''}\nATLAS ran no git there and stopped the attempt. The worktree is kept for audit.`.trim(), meta: p.field, tone: 'danger', kind: 'error', who };
     case 'check.result': return { title: `Check ${p.name}: ${resultWord(p.result)}`, detail: p.reason, meta: p.commit ? `@ ${String(p.commit).slice(0, 7)}` : undefined, tone: p.result === 'pass' ? 'success' : p.result === 'fail' ? 'danger' : 'warning', kind: p.result === 'pass' ? 'milestone' : 'test', who };
     case 'gate.result': return { title: p.summary, tone: p.verdict === 'verified' ? 'success' : p.verdict === 'failed' ? 'danger' : 'warning', kind: p.verdict === 'verified' ? 'milestone' : 'error', who };
     case 'mission.decision': return { title: p.decision === 'accept' ? 'Changes accepted' : p.decision === 'restore' ? 'Rejected change restored' : 'Changes rejected', detail: p.note, tone: 'human', kind: 'decision', who };

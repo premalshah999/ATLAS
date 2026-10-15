@@ -20,7 +20,7 @@ import { createLogger, type Logger } from './log';
 import { TeamHub } from './team';
 import { cleanup as hygieneCleanup, CLEANABLE, report as hygieneReport, type Category, type CleanupResult, type HygieneInput } from './hygiene';
 import { rotateLog } from './log';
-import { git } from '@atlas/workspace';
+import { git, gitHardening } from '@atlas/workspace';
 import { lockDataDir } from './lock';
 
 export interface ServiceOptions {
@@ -294,7 +294,7 @@ export class DaemonService {
     const { params } = parseRequest(method, payload);
     const p = params as any;
     switch (method as Method) {
-      case 'app.info': return { version: this.o.version, schema: schemaVersion(this.db), pi: PI_PINNED, platform: process.platform, node: process.versions.node, sandbox: detectSandbox(), browser: resolveBrowser() };
+      case 'app.info': return { version: this.o.version, schema: schemaVersion(this.db), pi: PI_PINNED, platform: process.platform, node: process.versions.node, sandbox: detectSandbox(), browser: resolveBrowser(), git: await gitHardening() };
       case 'workspace.list': return this.repo.workspaces();
       case 'workspace.refresh': return this.orch.refreshWorkspace(p.workspaceId);
       case 'workspace.preflight': return this.orch.preflight(p.workspaceId, p.runtime);
